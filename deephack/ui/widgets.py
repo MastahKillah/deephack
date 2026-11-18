@@ -1,7 +1,7 @@
 """Small custom widgets: toggle switch, LCD preview, status dot, mode button, app icon."""
 from __future__ import annotations
 
-from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, QRectF, QSize, Qt
+from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QAbstractButton, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
@@ -61,14 +61,28 @@ class Preview(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._image: QImage | None = None
+        self._frames: list[QImage] = []
+        self._index = 0
         self._dimmed = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._advance)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
     def sizeHint(self) -> QSize:  # noqa: N802
         return QSize(354, 466)
 
-    def set_image(self, image: QImage, dimmed: bool = False) -> None:
-        self._image, self._dimmed = image, dimmed
+    def set_frames(self, frames: list[QImage], duration_ms: int = 0, dimmed: bool = False) -> None:
+        """Show a still (one frame) or loop an animation that lasts duration_ms."""
+        self._frames, self._index, self._dimmed = frames, 0, dimmed
+        self._image = frames[0] if frames else None
+        self._timer.stop()
+        if len(frames) > 1 and duration_ms > 0:
+            self._timer.start(max(20, duration_ms // len(frames)))
+        self.update()
+
+    def _advance(self) -> None:
+        self._index = (self._index + 1) % len(self._frames)
+        self._image = self._frames[self._index]
         self.update()
 
     def set_dimmed(self, dimmed: bool) -> None:

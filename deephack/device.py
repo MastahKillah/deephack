@@ -15,6 +15,9 @@ Image upload (to on-device flash, addressed by a 32 char id; re-using an id over
     raw JPEG in 64 byte packets    480x640 baseline JPEG, 4:2:0
     "dcldfinish" padded to 55      no reply; device commits to flash
     cmd 0x08 <type> <index>        show slot (type 0 = jpg, 1 = gif)
+
+Animations ("GIFs") are a sequence of JPEG frames: one start command, then header + JPEG per frame with
+type 2 and frame_count:u16 total_duration_ms:u16 frame_index:u16 at header offset 13, then one finish.
 """
 from __future__ import annotations
 
@@ -45,7 +48,9 @@ CMD_START_DOWNLOAD = 0x0F
 CMD_ROTATE_QUERY = 0x10
 CMD_GET_UUID = 0x12
 
-TYPE_JPG, TYPE_GIF = 0, 1
+TYPE_JPG, TYPE_GIF = 0, 1   # slot type in the show / delete commands
+FILE_JPG, FILE_GIF = 1, 2   # file type in the upload header
+MAX_GIF_DURATION_MS = 0xFFFF
 MODE_MOTION = 2             # the mode in which stored images are displayed
 ANIMATION_NONE, ANIMATION_SLIDE, ANIMATION_FADE = 0, 1, 2
 
@@ -65,7 +70,9 @@ def frame(cmd: int, payload: bytes = b"") -> bytes:
     return bytes(b)
 
 
-def upload_header(file_id: str, data: bytes, ftype: int = 1) -> bytes:
+def upload_header(file_id: str, data: bytes, ftype: int = FILE_JPG, frame_count: int = 0, duration_ms: int = 0,
+                  frame_index: int = 0) -> bytes:
+    """Header that precedes every uploaded JPEG. The three frame fields are zero for stills."""
     fid = file_id.encode("ascii")
     if len(fid) != 32:
         raise ValueError("file id must be exactly 32 ASCII characters")
@@ -74,6 +81,7 @@ def upload_header(file_id: str, data: bytes, ftype: int = 1) -> bytes:
     h[4] = ftype
     struct.pack_into("<I", h, 5, len(data))
     struct.pack_into("<I", h, 9, sum16(data))
+    struct.pack_into("<HHH", h, 13, frame_count, duration_ms, frame_index)
     h[20:52] = fid
     struct.pack_into("<H", h, 62, sum16(h[:62]))
     return bytes(h)
@@ -155,6 +163,20 @@ class Mystique:
             self.dev.write(1, jpeg[off:off + 64], self.timeout)
         self.dev.write(1, b"dcldfinish".ljust(55, b"\0"), self.timeout)
         time.sleep(1.0)  # device writes to flash; the official app also waits here
+
+    def upload_gif(self, file_id: str, frames: list[bytes], duration_ms: int) -> None:
+        """Store an animation: a list of 480x640 JPEG frames that loops over duration_ms in total."""
+        if not frames or not 0 < duration_ms <= MAX_GIF_DURATION_MS:
+            raise ValueError("need at least one frame and a duration of 1..65535 ms")
+        self.command(CMD_START_DOWNLOAD)
+        for i, jpeg in enumerate(frames):
+            if jpeg[:2] != b"\xff\xd8" or jpeg[-2:] != b"\xff\xd9":
+                raise ValueError("not a JPEG")
+            self.dev.write(1, upload_header(file_id, jpeg, FILE_GIF, len(frames), duration_ms, i), self.timeout)
+            for off in range(0, len(jpeg), 64):
+                self.dev.write(1, jpeg[off:off + 64], self.timeout)
+        self.dev.write(1, b"dcldfinish".ljust(55, b"\0"), self.timeout)
+        time.sleep(1.0)
 
 
 def encode_jpeg(image, quality: int = 92) -> bytes:

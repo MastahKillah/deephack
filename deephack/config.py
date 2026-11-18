@@ -10,6 +10,7 @@ from . import APP_NAME
 
 # Fixed id of our image slot on the device; uploading to the same id overwrites in place.
 SLOT_ID = "0de3b4c4" + "0" * 23 + "1"
+GIF_SLOT_ID = "0de3b4c4" + "0" * 23 + "2"     # same idea for animations, which the device stores separately
 
 DEFAULTS = {
     "enabled": True,
@@ -17,6 +18,7 @@ DEFAULTS = {
     "slideshow": False,        # False: keep our image on screen. True: cooler cycles through all stored images.
     "close_to_tray": True,
     "slot_index": None,        # index of our image among the JPGs stored on the device
+    "gif_slot_index": None,    # index of our animation among the GIFs stored on the device
     "restore_index": 0,        # JPG shown when deephack is paused or quits
     "modes": {},               # per-mode settings, keyed by mode id
 }

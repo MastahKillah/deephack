@@ -3,7 +3,6 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton,
                                QVBoxLayout, QWidget)
 
@@ -230,9 +229,9 @@ class MainWindow(QMainWindow):
         self._set_enabled(on)
 
     # ------------------------------------------------------------ engine events
-    def _on_frame(self, image: QImage, placeholder: bool) -> None:
+    def _on_frame(self, frames: list, duration_ms: int, placeholder: bool) -> None:
         self._placeholder = placeholder
-        self._preview.set_image(image, dimmed=not self.config.get("enabled"))
+        self._preview.set_frames(frames, duration_ms, dimmed=not self.config.get("enabled"))
         self._refresh_caption()
 
     def _on_state(self, state: dict) -> None:

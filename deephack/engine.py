@@ -19,8 +19,9 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
 from . import device, render
-from .config import SLOT_ID, Config
+from .config import GIF_SLOT_ID, SLOT_ID, Config
 from .modes import BY_ID, MODES, Mode
+from .modes.base import Animation
 
 MIN_UPLOAD_INTERVAL = 8.0     # seconds between flash writes, whatever the mode asks for
 REOPEN_INTERVAL = 3.0
@@ -42,10 +43,13 @@ def quit_deepcool() -> None:
     subprocess.run(["taskkill", "/IM", DEEPCOOL_EXE, "/T", "/F"], capture_output=True, timeout=10, creationflags=_NO_WINDOW)
 
 
-def _stored_jpg_count() -> int:
-    """The device has no known 'list files' command; the official app tracks its uploads in this folder."""
+def _stored_count(kind: str) -> int:
+    """How many files of a kind ("jpg" / "gif") the official app uploaded; ours goes after them.
+
+    The device has no known 'list files' command; the official app tracks its uploads in this folder.
+    """
     base = Path(os.environ.get("APPDATA", "")) / "DeepCool" / "Pictures"
-    return sum(1 for p in base.glob("*/jpg/*") if p.is_dir())
+    return sum(1 for p in base.glob(f"*/{kind}/*") if p.is_dir())
 
 
 def to_qimage(img: Image.Image) -> QImage:
@@ -54,7 +58,7 @@ def to_qimage(img: Image.Image) -> QImage:
 
 
 class Engine(QThread):
-    frameChanged = Signal(QImage, bool)   # image, is_placeholder
+    frameChanged = Signal(object, int, bool)   # list[QImage], loop duration in ms (0 for a still), is_placeholder
     stateChanged = Signal(dict)
 
     def __init__(self, config: Config, use_device: bool = True, parent=None):
@@ -64,7 +68,8 @@ class Engine(QThread):
         self._commands: queue.Queue = queue.Queue()
         self._stop = False
         self._mode: Mode | None = None
-        self._frame: Image.Image | None = None
+        self._frame: Image.Image | Animation | None = None
+        self._ours: tuple[int, int] | None = None     # (slot type, index) of what we last uploaded
         self._frame_seq = 0
         self._uploaded_seq = -1
         self._last_upload = 0.0
@@ -107,7 +112,7 @@ class Engine(QThread):
     def _emit_placeholder(self) -> None:
         self._placeholder_shown = self._mode.placeholder
         title, subtitle = self._mode.placeholder or (self._mode.title, "")
-        self.frameChanged.emit(to_qimage(render.message(title, subtitle)), True)
+        self.frameChanged.emit([to_qimage(render.message(title, subtitle))], 0, True)
 
     async def _main(self) -> None:
         self._make_mode()
@@ -128,7 +133,10 @@ class Engine(QThread):
                 if img is not None:
                     self._frame = img
                     self._frame_seq += 1
-                    self.frameChanged.emit(to_qimage(img), False)
+                    if isinstance(img, Animation):
+                        self.frameChanged.emit([to_qimage(f) for f in img.frames], img.duration_ms, False)
+                    else:
+                        self.frameChanged.emit([to_qimage(img)], 0, False)
                 elif self._frame is None and self._mode.placeholder != self._placeholder_shown:
                     self._emit_placeholder()   # a mode may refine its placeholder (e.g. "city not found")
             if self.use_device:
@@ -173,17 +181,25 @@ class Engine(QThread):
             if self._frame_seq != self._uploaded_seq:
                 if now - self._last_upload < MIN_UPLOAD_INTERVAL:
                     return
-                index = self.config.get("slot_index")
+                animated = isinstance(self._frame, Animation)
+                key, kind = ("gif_slot_index", "gif") if animated else ("slot_index", "jpg")
+                index = self.config.get(key)
                 if index is None:
-                    index = _stored_jpg_count()
-                    self.config.set("slot_index", index)
-                self._dev.upload_jpeg(SLOT_ID, device.encode_jpeg(self._frame))
-                self._dev.show_slot(index)
+                    index = _stored_count(kind)
+                    self.config.set(key, index)
+                if animated:
+                    frames = [device.encode_jpeg(f, quality=88) for f in self._frame.frames]
+                    self._dev.upload_gif(GIF_SLOT_ID, frames, self._frame.duration_ms)
+                    self._ours = (device.TYPE_GIF, index)
+                else:
+                    self._dev.upload_jpeg(SLOT_ID, device.encode_jpeg(self._frame))
+                    self._ours = (device.TYPE_JPG, index)
+                self._dev.show_slot(self._ours[1], self._ours[0])
                 self._uploaded_seq = self._frame_seq
                 self._last_upload, self._last_upload_wall = time.monotonic(), time.time()
                 self._on_screen = "ours"
-            elif self._on_screen != "ours":
-                self._dev.show_slot(self.config.get("slot_index"))
+            elif self._on_screen != "ours" and self._ours is not None:
+                self._dev.show_slot(self._ours[1], self._ours[0])
                 self._on_screen = "ours"
         except (usb.core.USBError, RuntimeError):
             traceback.print_exc()

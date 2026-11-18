@@ -11,6 +11,13 @@ from dataclasses import dataclass, field
 from PIL import Image
 
 
+@dataclass
+class Animation:
+    """A looping animation. Every frame is stored on the cooler's flash, so keep the frame count low."""
+    frames: list[Image.Image]
+    duration_ms: int               # length of one loop
+
+
 @dataclass(frozen=True)
 class Setting:
     key: str
@@ -35,7 +42,7 @@ class Mode:
         self.status = ""                                  # one-line state shown in the UI
         self.placeholder: tuple[str, str] | None = None   # (title, subtitle) for the preview when there is no frame
 
-    async def frame(self) -> Image.Image | None:
+    async def frame(self) -> Image.Image | Animation | None:
         raise NotImplementedError
 
     async def close(self) -> None:

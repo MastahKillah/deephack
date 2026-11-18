@@ -15,6 +15,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **Now Playing** | Cover, title and artist of the current track. Uses Windows' system media controls, so it works with Spotify, anything playing in a browser, foobar2000 and so on. |
 | **Weather** | Current conditions and a three day outlook for a city you pick, from [Open-Meteo](https://open-meteo.com) (no account or key). |
 | **Claude Code** | Plan limits (5-hour and weekly) and today's tokens, requests, hourly activity and model split. All from local files, see below. |
+| **Claude Pet** | An animated pixel pet with your plan limit percentages. Its mood follows the fullest limit: happy, fine, stressed, exhausted. |
 
 **Keep on screen** decides whether the cooler stays on deephack's image or cycles through every image
 stored on it (the cooler's own slideshow).
@@ -43,10 +44,11 @@ autostart entry.
   image first. deephack rate-limits writes (at most one every 8 seconds, tracks have to settle before they
   are drawn), but the flash endurance of the device is unknown. "Cover only" writes once per album instead
   of once per track.
-- **deephack adds one image the DeepCool app does not know about.** It is stored after the JPGs you uploaded
-  with the official app. If you later add images there, its numbering will be off by one;
-  `python -m deephack.device delete <index>` removes deephack's image (the index is `slot_index` in
-  `%APPDATA%\deephack\config.json`).
+- **deephack adds files the DeepCool app does not know about:** one image, and one animation once you use
+  Claude Pet. They are stored after the JPGs / GIFs you uploaded with the official app. If you later add
+  files there, its numbering will be off by one. `python -m deephack.device delete <index>` (add `--gif`
+  for the animation) removes them; the indexes are `slot_index` and `gif_slot_index` in
+  `%APPDATA%\deephack\config.json`.
 - Only the MYSTIQUE (USB `3633:0009`, 480x640 portrait) is supported. The MYSTIQUE PLUS appears to share
   much of the protocol but is untested.
 
@@ -124,6 +126,14 @@ AA 2E <cmd> <payload, zero padded to 39 bytes> 'H' 'I' 'D' 'C' <sum16 LE of byte
 5. command `08` to show it
 
 Uploading with an id that already exists replaces that image in place.
+
+**Animations** (what the official app calls GIFs) are a sequence of JPEG frames, stored separately from the
+stills and shown with type 1. One `0F` command, then a header + JPEG for every frame, then one
+`dcldfinish`. The frame headers use type 2 and fill three `u16` fields at offset 13: frame count, total
+loop duration in milliseconds, and the frame's index.
+
+A mode returns an `Animation(frames, duration_ms)` instead of an image to use this (see `tamagotchi.py`).
+Every frame is written to flash, so keep them few.
 
 `python -m deephack.device --help` exposes the driver on the command line.
 
