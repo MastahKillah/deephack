@@ -51,7 +51,15 @@ CMD_GET_UUID = 0x12
 TYPE_JPG, TYPE_GIF = 0, 1   # slot type in the show / delete commands
 FILE_JPG, FILE_GIF = 1, 2   # file type in the upload header
 MAX_GIF_DURATION_MS = 0xFFFF
+MODE_SITUATIONAL = 1        # the firmware's own sensor dashboard, fed by CMD_SENSORS
 MODE_MOTION = 2             # the mode in which stored images are displayed
+MODE_RECORDER = 3           # the firmware's CPU clock / temperature recorder
+
+# CMD_SENSORS payload: seven 3-byte fields, each <integer part:u16 LE> <fraction:u8> (the fraction byte is
+# printed as-is after the decimal point). Confirmed on the device: cpu_temp and the three voltage rails.
+# cpu_freq is inferred from captured values (5.22 .. 5.50); field_1 and field_2 are not identified yet
+# (captured ranges 9..91 and 64..77, so probably CPU load and GPU temperature).
+SENSOR_FIELDS = {"cpu_temp": 0, "field_1": 3, "field_2": 6, "v3_3": 9, "v5": 12, "v12": 15, "cpu_freq": 18}
 ANIMATION_NONE, ANIMATION_SLIDE, ANIMATION_FADE = 0, 1, 2
 
 
@@ -68,6 +76,16 @@ def frame(cmd: int, payload: bytes = b"") -> bytes:
     b[42:46] = b"HIDC"
     struct.pack_into("<H", b, 46, sum16(b[:46]))
     return bytes(b)
+
+
+def sensor_payload(**values: float) -> bytes:
+    payload = bytearray(39)
+    for key, value in values.items():
+        hundredths = round(value * 100)
+        if not 0 <= hundredths <= 0xFFFF * 100 + 99:
+            raise ValueError(f"{key} out of range")
+        struct.pack_into("<HB", payload, SENSOR_FIELDS[key], hundredths // 100, hundredths % 100)
+    return bytes(payload)
 
 
 def upload_header(file_id: str, data: bytes, ftype: int = FILE_JPG, frame_count: int = 0, duration_ms: int = 0,
@@ -135,6 +153,14 @@ class Mystique:
 
     def set_mode(self, mode: int) -> None:
         self.command(CMD_MODE, bytes([mode]))
+
+    def send_sensors(self, **values: float) -> None:
+        """Feed live values to the firmware's sensor dashboard (not stored, so no flash wear). Keys: SENSOR_FIELDS.
+
+        Values are sent with two decimals; which of them are visible depends on the dashboard layout
+        selected on the cooler.
+        """
+        self.command(CMD_SENSORS, sensor_payload(**values), ep=2)
 
     def set_slideshow(self, enabled: bool) -> None:
         """Cycle through all stored images (fade transition) or keep the selected one on screen.
@@ -204,9 +230,23 @@ def _main() -> int:
     p = sub.add_parser("delete", help="delete a stored slot")
     p.add_argument("index", type=int)
     p.add_argument("--gif", action="store_true")
+    p = sub.add_parser("probe-sensors", help="show the firmware's sensor dashboard fed with one recognisable number per field")
+    p.add_argument("--seconds", type=int, default=120)
+    p.add_argument("--mode", type=int, default=MODE_SITUATIONAL, choices=(MODE_SITUATIONAL, MODE_RECORDER))
     a = ap.parse_args()
 
     with Mystique() as m:
+        if a.cmd == "probe-sensors":
+            probe = {"cpu_temp": 51, "field_1": 22, "field_2": 63, "v3_3": 3.33, "v5": 5.05, "v12": 12.12, "cpu_freq": 4.44}
+            print("feeding:", probe)
+            m.set_mode(a.mode)
+            try:
+                for _ in range(a.seconds):
+                    m.send_sensors(**probe)
+                    time.sleep(1)
+            finally:
+                m.set_mode(MODE_MOTION)
+            return 0
         if a.cmd == "info":
             print("uuid:", m.uuid())
         elif a.cmd == "upload":

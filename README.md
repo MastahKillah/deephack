@@ -107,15 +107,29 @@ AA 2E <cmd> <payload, zero padded to 39 bytes> 'H' 'I' 'D' 'C' <sum16 LE of byte
 
 | cmd | meaning | payload |
 | --- | --- | --- |
-| `01` | sensor values (ep 2, once a second) | not decoded |
+| `01` | sensor values (ep 2, once a second) | seven 3-byte fields, see below |
 | `02` | device options | not decoded |
-| `03` | display mode | `mode` (2 = stored images) |
+| `03` | display mode | `mode` (1 = sensor dashboard, 2 = stored images, 3 = recorder) |
 | `07` | slideshow | `duration` `animation` (0 none, 1 slide, 2 fade) |
 | `08` | show stored image | `type` (0 jpg, 1 gif) `index` |
 | `09` | delete stored image | `type` `index` |
 | `0A` | set clock (ep 2) | `year:u16` `month` `day` `hour` `minute` `second` |
 | `0F` | start upload | none |
 | `12` | get UUID | reply: status byte + 32 ASCII characters |
+
+**Sensor values** (command `01`) feed the firmware's own dashboard and are not stored, so they can change
+every second without wearing the flash. The payload is seven fields of `integer:u16` `fraction:u8`; the
+fraction byte is printed as-is after the decimal point.
+
+| offset | field | status |
+| --- | --- | --- |
+| 0 | CPU temperature | confirmed on the device |
+| 3 | probably CPU load | not confirmed |
+| 6 | probably GPU temperature | not confirmed |
+| 9, 12, 15 | 3.3 V, 5 V, 12 V rails | confirmed on the device |
+| 18 | probably CPU frequency (GHz) | inferred from captured values |
+
+`python -m deephack.device probe-sensors` shows the dashboard with test values.
 
 **Image upload**
 
