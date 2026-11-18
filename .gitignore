@@ -1,0 +1,12 @@
+# python
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# reverse engineering scratch: extracted vendor code and USB captures stay local
+extracted/
+captures/
+assets/

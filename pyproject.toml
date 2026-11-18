@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deephack"
+version = "0.1.0"
+description = "Custom content (now playing, weather, ...) for the DeepCool MYSTIQUE cooler LCD"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pyusb>=1.3",
+    "libusb-package>=1.0.26",
+    "pillow>=10.1",
+    "PySide6-Essentials>=6.6",
+    "winrt-runtime>=3",
+    "winrt-Windows.Foundation>=3",
+    "winrt-Windows.Foundation.Collections>=3",
+    "winrt-Windows.Media>=3",
+    "winrt-Windows.Media.Control>=3",
+    "winrt-Windows.Storage.Streams>=3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.gui-scripts]
+deephack = "deephack.app:main"
+
+[tool.setuptools.packages.find]
+include = ["deephack*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
