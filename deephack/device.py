@@ -55,11 +55,13 @@ MODE_SITUATIONAL = 1        # the firmware's own sensor dashboard, fed by CMD_SE
 MODE_MOTION = 2             # the mode in which stored images are displayed
 MODE_RECORDER = 3           # the firmware's CPU clock / temperature recorder
 
-# CMD_SENSORS payload: seven 3-byte fields, each <integer part:u16 LE> <fraction:u8> (the fraction byte is
-# printed as-is after the decimal point). Confirmed on the device: cpu_temp and the three voltage rails.
-# cpu_freq is inferred from captured values (5.22 .. 5.50); field_1 and field_2 are not identified yet
-# (captured ranges 9..91 and 64..77, so probably CPU load and GPU temperature).
-SENSOR_FIELDS = {"cpu_temp": 0, "field_1": 3, "field_2": 6, "v3_3": 9, "v5": 12, "v12": 15, "cpu_freq": 18}
+# CMD_SENSORS payload: 3-byte fields, each <integer part:u16 LE> <fraction:u8> (the fraction byte is
+# printed as-is after the decimal point). Confirmed with photos of the device: cpu_temp, ram_usage, the
+# three voltage rails and cpu_freq. field_1 is not identified yet (captured range 9..91, probably CPU load).
+# The official app only ever filled the first seven fields in our captures; field_7.. are probe slots for
+# the fan / pump speeds, which the dashboards show but which were always zero.
+SENSOR_FIELDS = {"cpu_temp": 0, "field_1": 3, "ram_usage": 6, "v3_3": 9, "v5": 12, "v12": 15, "cpu_freq": 18,
+                 "field_7": 21, "field_8": 24, "field_9": 27, "field_10": 30}
 ANIMATION_NONE, ANIMATION_SLIDE, ANIMATION_FADE = 0, 1, 2
 
 
@@ -162,6 +164,13 @@ class Mystique:
         """
         self.command(CMD_SENSORS, sensor_payload(**values), ep=2)
 
+    def set_dashboard(self, main: int, style: int = 0, byte2: int = 0, byte3: int = 0) -> None:
+        """Layout of the sensor dashboard. main: 0 frequency, 1 time, 2 pump fan, 3 CPU fan, 4 CPU + pump fan,
+        5 temperature. style (frequency only): 0 normal, 1 ring, 2 stopwatch. The official app also has an
+        auxiliary area (0 voltage, 1 system, 2 core) and a spectrum type; which of byte2 / byte3 they are
+        is still being mapped."""
+        self.command(CMD_SITUATION_MODE, bytes([main, style, byte2, byte3]))
+
     def set_slideshow(self, enabled: bool) -> None:
         """Cycle through all stored images (fade transition) or keep the selected one on screen.
 
@@ -233,11 +242,38 @@ def _main() -> int:
     p = sub.add_parser("probe-sensors", help="show the firmware's sensor dashboard fed with one recognisable number per field")
     p.add_argument("--seconds", type=int, default=120)
     p.add_argument("--mode", type=int, default=MODE_SITUATIONAL, choices=(MODE_SITUATIONAL, MODE_RECORDER))
+    p = sub.add_parser("map-dashboards", help="step through the sensor dashboard layouts with test values (beeps at each step)")
+    p.add_argument("--hold", type=int, default=15, help="seconds per layout")
     a = ap.parse_args()
 
     with Mystique() as m:
+        if a.cmd == "map-dashboards":
+            import winsound
+
+            probe = {"field_1": 22, "ram_usage": 63, "v3_3": 3.33, "v5": 5.05, "v12": 12.12, "cpu_freq": 4.44,
+                     "field_7": 1111, "field_8": 2222, "field_9": 3333, "field_10": 4444}
+            steps = [  # (main, style, byte2, byte3); the big temperature number shows 10 + step
+                (5, 1, 1, 0), (5, 1, 2, 0), (5, 1, 0, 1), (5, 1, 0, 2), (4, 1, 0, 0),
+            ]
+            print("feeding:", probe)
+            m.set_time()
+            m.set_mode(MODE_SITUATIONAL)
+            try:
+                for n, step in enumerate(steps, 1):
+                    m.set_dashboard(*step)
+                    print(f"step {n:2d}/{len(steps)}: main={step[0]} style={step[1]} byte2={step[2]} byte3={step[3]}", flush=True)
+                    for i in range(a.hold):
+                        m.send_sensors(cpu_temp=10 + n, **probe)
+                        if i == 1:
+                            winsound.Beep(1200 if n % 2 else 900, 180)   # the layout has settled: photo time
+                        time.sleep(1)
+            finally:
+                m.set_dashboard(5, 1, 0, 0)      # the layout the cooler had before
+                m.set_mode(MODE_MOTION)
+                winsound.Beep(600, 500)
+            return 0
         if a.cmd == "probe-sensors":
-            probe = {"cpu_temp": 51, "field_1": 22, "field_2": 63, "v3_3": 3.33, "v5": 5.05, "v12": 12.12, "cpu_freq": 4.44}
+            probe = {"cpu_temp": 51, "field_1": 22, "ram_usage": 63, "v3_3": 3.33, "v5": 5.05, "v12": 12.12, "cpu_freq": 4.44}
             print("feeding:", probe)
             m.set_mode(a.mode)
             try:

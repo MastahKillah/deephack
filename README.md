@@ -118,18 +118,24 @@ AA 2E <cmd> <payload, zero padded to 39 bytes> 'H' 'I' 'D' 'C' <sum16 LE of byte
 | `12` | get UUID | reply: status byte + 32 ASCII characters |
 
 **Sensor values** (command `01`) feed the firmware's own dashboard and are not stored, so they can change
-every second without wearing the flash. The payload is seven fields of `integer:u16` `fraction:u8`; the
-fraction byte is printed as-is after the decimal point.
+every second without wearing the flash. The payload is a row of 3-byte fields, `integer:u16` `fraction:u8`;
+the fraction byte is printed as-is after the decimal point.
 
 | offset | field | status |
 | --- | --- | --- |
 | 0 | CPU temperature | confirmed on the device |
 | 3 | probably CPU load | not confirmed |
-| 6 | probably GPU temperature | not confirmed |
+| 6 | RAM usage % | confirmed on the device |
 | 9, 12, 15 | 3.3 V, 5 V, 12 V rails | confirmed on the device |
-| 18 | probably CPU frequency (GHz) | inferred from captured values |
+| 18 | CPU frequency (GHz) | confirmed on the device |
+| 21 and up | unknown; fan and pump RPM are expected here | being probed |
 
-`python -m deephack.device probe-sensors` shows the dashboard with test values.
+Command `04` picks the dashboard layout: `main` (0 frequency, 1 time, 2 pump, 3 CPU fan, 4 CPU fan + pump,
+5 temperature), `style` (frequency only), then two bytes of which one selects the bottom strip (voltage /
+system / core). The labels on every layout are fixed in the firmware.
+
+`python -m deephack.device probe-sensors` shows the dashboard with test values, and `map-dashboards` steps
+through layouts.
 
 **Image upload**
 
