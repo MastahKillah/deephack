@@ -14,6 +14,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | --- | --- |
 | **Now Playing** | Cover, title and artist of the current track. Uses Windows' system media controls, so it works with Spotify, anything playing in a browser, foobar2000 and so on. |
 | **Weather** | Current conditions and a three day outlook for a city you pick, from [Open-Meteo](https://open-meteo.com) (no account or key). |
+| **Claude Code** | Plan limits (5-hour and weekly) and today's tokens, requests, hourly activity and model split. All from local files, see below. |
 
 **Keep on screen** decides whether the cooler stays on deephack's image or cycles through every image
 stored on it (the cooler's own slideshow).
@@ -48,6 +49,22 @@ autostart entry.
   `%APPDATA%\deephack\config.json`).
 - Only the MYSTIQUE (USB `3633:0009`, 480x640 portrait) is supported. The MYSTIQUE PLUS appears to share
   much of the protocol but is untested.
+
+### Claude Code mode
+
+Nothing leaves your machine and no credentials are read.
+
+- **Today's numbers** are summed from Claude Code's session logs in `~/.claude/projects`.
+- **Plan limits** are only handed out by Claude Code to status line plugins. deephack reads the snapshot file
+  that the [claude-hud](https://github.com/jarrodwatts/claude-hud) plugin can write. Add this to
+  `~/.claude/plugins/claude-hud/config.json` (adjust the user name):
+
+  ```json
+  { "display": { "externalUsageWritePath": "C:\\Users\\you\\AppData\\Roaming\\deephack\\claude-usage.json" } }
+  ```
+
+  The snapshot only updates while a Claude Code session is open. Only the windows your plan
+  has are drawn (some plans have no 5-hour window); without a snapshot the limits card is left out.
 
 ## Adding a mode
 
