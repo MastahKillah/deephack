@@ -55,8 +55,9 @@ class EmulatedUsb:
         raise Timeout(f"the firmware did not get there in {self.patience} code blocks")
 
     def write(self, endpoint: int, data, timeout=None) -> int:
-        usb = self.machine.usb
-        usb.send(endpoint, bytes(data))
+        usb, data = self.machine.usb, bytes(data)
+        for at in range(0, max(len(data), 1), 64):          # as the host controller does: 64 byte packets
+            usb.send(endpoint, data[at:at + 64])
         self._until(lambda: None if usb.events else True)
         return len(data)
 
@@ -101,6 +102,9 @@ class EmulatedCooler:
             def upload_gif(self, file_id, frames, duration_ms):
                 self._upload(super().upload_gif, file_id, frames, duration_ms)
 
+            def draw_jpeg(self, jpeg, patience=0.5):
+                self._upload(super().draw_jpeg, jpeg, patience)
+
             @staticmethod
             def _upload(send, *args):
                 real_sleep, device.time.sleep = device.time.sleep, lambda seconds: cooler.run_for(seconds)
@@ -127,13 +131,19 @@ class EmulatedCooler:
 
 
 def _main() -> int:
+    import argparse
     import io
 
     from PIL import Image, ImageDraw
 
     from deephack import device
 
-    cooler = EmulatedCooler(functions=Path.home() / "Desktop" / "m_fmw_decompiled" / "functions_index.txt")
+    ap = argparse.ArgumentParser(description="Boot the firmware in the emulator and put deephack's driver through it")
+    ap.add_argument("--firmware", default=str(boot.DEFAULT_IMAGE), help="the image to run (default: the stock one; "
+                    "tools/fw/patch.py writes one that draws without storing)")
+    a = ap.parse_args()
+    cooler = EmulatedCooler(firmware=Path(a.firmware),
+                            functions=Path.home() / "Desktop" / "m_fmw_decompiled" / "functions_index.txt")
     driver = cooler.driver()
     print("uuid:", repr(driver.uuid()))
     driver.set_options(brightness=70, light=device.LIGHT_SCREEN)
@@ -153,6 +163,17 @@ def _main() -> int:
           + (f", errors: {cooler.machine.jpeg.errors}" if cooler.machine.jpeg.errors else ""))
     for name, content in cooler.files().items():
         print(f"  on the card: {name} ({len(content)} bytes{', identical to what was sent' if content == buf.getvalue() else ''})")
+    if driver.can_draw():
+        frame = Image.new("RGB", (480, 640), (70, 20, 30))
+        ImageDraw.Draw(frame).rectangle((60, 380, 420, 560), fill=(250, 250, 250))
+        jpeg, source = device.encode_jpeg(frame, quality=80), cooler.machine.jpeg
+        driver.draw_jpeg(jpeg)
+        cooler.run_for(0.3)
+        at = int.from_bytes(source.reg[0x18:0x1C], "little")
+        print(f"direct drawing: a {len(jpeg)} byte frame is on screen, decoded from RAM at {at:#x}; "
+              f"still {len(cooler.files())} file on the card")
+    else:
+        print("direct drawing: not in this firmware")
     if cooler.console:
         print("debug port:", cooler.console[-800:])
     out = Path(__file__).resolve().parents[2] / "captures"

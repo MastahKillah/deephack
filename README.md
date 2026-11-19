@@ -223,6 +223,13 @@ Every frame is written to flash, so keep them few. For real-time changes a mode 
 `Flipbook(key, frames, index)` and sets `tick = 0.1`: the frames are stored once as stills, then only
 `index` decides which one shows (see `visualizer.py`, which is kept out of the mode list for now).
 
+**Drawing without storing** is not something the stock firmware can do. `tools/fw/patch.py` builds a
+firmware that can: one new command (`20`, size and sum16, then the JPEG) puts a frame on screen straight
+from RAM, and the driver has `can_draw()` and `draw_jpeg()` for it. So far it runs **only in the
+emulator** (`python tools/emu/bench.py --firmware ...`, and `tests/test_direct_draw.py`). It has not
+been flashed to a cooler, and nothing in this repository does that: see "Direct drawing" in
+[docs/firmware-analysis.md](docs/firmware-analysis.md) for what is still unknown.
+
 `python -m deephack.device --help` exposes the driver on the command line.
 
 **DeepCool's sensor service.** The DeepCool app installs a Windows service, "JZFS Sensor Bridge Service",

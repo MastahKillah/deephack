@@ -50,6 +50,11 @@ CMD_GET_UUID = 0x12
 CMD_FACTORY_RESET = 0x13    # reboots, erases every stored image (cmd 12 returns junk until a power cycle)
 CMD_DELETE_ALL = 0x14       # erases every stored image, no reboot
 
+CMD_DIRECT = 0x20           # <size:u32> <sum16:u16>: show a JPEG without storing it. Not in the stock firmware:
+                            # only one patched with tools/fw/patch.py has it (the stock one answers status 0)
+DIRECT_GO, DIRECT_LATER, DIRECT_REFUSED = 0x10, 0x11, 0x12
+DIRECT_MAX = 128 * 1024     # bytes of JPEG the patched firmware takes for one frame
+
 TYPE_JPG, TYPE_GIF = 0, 1   # slot type in the show / delete commands
 FILE_JPG, FILE_GIF = 1, 2   # file type in the upload header
 MAX_GIF_DURATION_MS = 0xFFFF
@@ -237,6 +242,57 @@ class Mystique:
                 self.dev.write(1, jpeg[off:off + 64], self.timeout)
         self.dev.write(1, b"dcldfinish".ljust(55, b"\0"), self.timeout)
         time.sleep(1.0)
+
+    # -- direct drawing (patched firmware only) ---------------------------
+    def _direct(self, size: int, checksum: int) -> int:
+        """Ask to send a frame; the firmware's answer (DIRECT_*, or 0 from a stock firmware)."""
+        self.dev.write(1, frame(CMD_DIRECT, struct.pack("<IH", size, checksum)), self.timeout)
+        r = bytes(self.dev.read(0x81, 64, self.timeout))
+        if len(r) != 48 or r[0] != 0x55 or sum16(r[:46]) != struct.unpack_from("<H", r, 46)[0]:
+            raise RuntimeError(f"unexpected reply to cmd {CMD_DIRECT:#04x}: {r.hex()}")
+        return r[3]
+
+    def can_draw(self) -> bool:
+        """True when the cooler runs a firmware that draws without storing (asks for an impossible frame:
+        the patched firmware refuses it, the stock one says 'ok' as it does to anything it does not know)."""
+        return self._direct(0, 0) == DIRECT_REFUSED
+
+    def draw_jpeg(self, jpeg: bytes, patience: float = 0.5) -> None:
+        """Show a 480x640 baseline JPEG now, without storing it: no flash write. Needs the patched firmware
+        and the image mode with a stored still on show (the frame replaces it on screen until the next
+        show_slot). Raises TimeoutError when the cooler is still busy with the last frame after `patience`
+        seconds, RuntimeError on a firmware that cannot do this (nothing is sent to it then)."""
+        if jpeg_size(jpeg) != (WIDTH, HEIGHT):
+            raise ValueError(f"need a {WIDTH}x{HEIGHT} baseline JPEG")
+        if len(jpeg) > DIRECT_MAX:
+            raise ValueError(f"frame too large: {len(jpeg)} bytes, the firmware takes {DIRECT_MAX}")
+        for _ in range(max(1, round(patience / 0.002))):
+            status = self._direct(len(jpeg), sum16(jpeg))
+            if status == DIRECT_GO:
+                break
+            if status != DIRECT_LATER:
+                raise RuntimeError("this firmware cannot draw without storing" if status == 0
+                                   else f"the cooler refused the frame (status {status:#04x})")
+            time.sleep(0.002)
+        else:
+            raise TimeoutError("the cooler did not take the frame")
+        self.dev.write(1, jpeg, self.timeout)       # the host controller cuts it into 64 byte packets
+
+
+def jpeg_size(data: bytes) -> tuple[int, int] | None:
+    """(width, height) of a baseline JPEG, None for anything else (progressive, truncated, not a JPEG)."""
+    if data[:2] != b"\xff\xd8" or data[-2:] != b"\xff\xd9":
+        return None
+    at = 2
+    while at + 9 <= len(data) and data[at] == 0xFF:
+        marker, length = data[at + 1], struct.unpack_from(">H", data, at + 2)[0]
+        if marker == 0xC0:
+            height, width = struct.unpack_from(">HH", data, at + 5)
+            return width, height
+        if marker == 0xDA or 0xC1 <= marker <= 0xCF and marker not in (0xC4, 0xCC):
+            return None                              # the picture starts, or another kind of JPEG
+        at += 2 + length
+    return None
 
 
 def encode_jpeg(image, quality: int = 92) -> bytes:

@@ -170,6 +170,84 @@ Target flow: `USB → staging buffer → decode → panel` (drop the two flash s
 Flashing a rejected or malformed image with SWD locked can brick the unit with no recovery. Order of
 operations: confirm SWD access → dump → understand update verification → only then flash anything.
 
+### The patch
+
+`tools/fw/patch.py` builds the patched image from the stock v2.70 one (checked by hash; the result goes
+to `captures/`, which is not in the repository). **It runs in the emulator. It has not been flashed.**
+
+It appends 472 bytes of code after the image and changes sixteen bytes of it: four 4-byte jumps.
+
+| where | stock | patched |
+| --- | --- | --- |
+| `0x109A4`, `main` before its loop | sets a "running" flag | the same, and clears the patch's state |
+| `0x109A8`, the main loop | `lv_task_handler()` | shows a finished frame, then the same |
+| `0x2F158`, end of the command dispatcher | sends the reply | command `20` starts a frame and sends its own reply; anything else as before |
+| `0x34C54`, USB interrupt, endpoint 1 OUT | "does this packet start `AA 2E`?" | while a frame is coming in the packet is picture data; otherwise as before |
+
+The command, on endpoint 1: `AA 2E 20 <size:u32> <sum16 of the JPEG:u16>`, then the JPEG in packets of up
+to 64 bytes. The reply's status byte says what to do:
+
+| status | meaning |
+| --- | --- |
+| `10` | go ahead, send the JPEG |
+| `11` | not now: the last frame is not on screen yet, or the buffers are still being made. Ask again |
+| `12` | refused: size 0 or more than 128 KiB |
+| `00` | what the **stock** firmware answers to every command it does not know. `deephack.device` takes it for "no direct drawing here" and sends no picture data (data without an upload in progress would be left in the endpoint's buffer, and the endpoint would stay shut) |
+
+How it works:
+
+- The frame is received **inside the USB interrupt**, so its speed is the USB's and not the main loop's,
+  into the one of two 128 KiB buffers that is not on screen. The buffers come from the firmware's heap
+  the first time the command is used (the main loop makes them; the command says `11` until then) and
+  are kept. Each has an `lv_img_dsc_t` in front, as the stock loader makes it (`0x50078001`: raw,
+  480 x 640).
+- When the last byte is in and the sum matches, the **main loop** gives the buffer to the picture widget
+  with `lv_img_set_src` (`0x58D34`), the call the stock firmware makes after reading a file. LVGL
+  redraws and the hardware decoder writes into the frame buffer. No file, no screen change.
+- A frame with a wrong sum is not shown. A frame that is not complete two seconds after its command is
+  given up, so a host that dies half way cannot leave the cooler taking commands for picture data.
+- It only acts on the image screen (`90E`, mode 2); a frame that arrives on another screen is dropped.
+  The screen needs one stored picture: with none the stock firmware hides the picture widget every
+  100 ms. A stored picture comes back with `08` (show), as before.
+- Its state is 36 bytes of RAM at `0x2000F000`. The firmware's stack starts at `0x2000B418` and grows
+  down; in the emulator nothing touches the RAM above it.
+
+What was needed to know for it, all seen in the emulator:
+
+- **The main loop is `for (;;) lv_task_handler();`** (`0x109A8`). Everything else, the screen logic
+  included, is an LVGL task: the screen selector and the image screen's logic both run from the screen's
+  timer, every 100 ms. A frame handed over there would wait up to 100 ms, so the patch sits in the loop.
+- **The heap** (`lv_mem_alloc`, `0x5C3C8`) is 8 MiB at the start of the SDRAM, `0x80000000`; the frame
+  buffers come from it too (`0x800061A0` and `0x8009C1C0`). After an upload about 4 MiB of it had ever
+  been in use, 2 MiB of that the upload's staging buffer.
+- **The reply routine** (`0x34D84`) writes command and status only for the commands it knows; for any
+  other it sends zeros, which is why the stock firmware "answers" unknown commands with command byte 0
+  and status 0. It ends in `usb_send(endpoint, data, length)` at `0x3488C`.
+- **A packet that starts `AA 2E` is always taken for a command**, during a stock upload too (`0x34C54`):
+  the dispatcher rejects it for its missing `HIDC` and the 64 bytes never reach the staging buffer. One
+  packet in 65 536 on average, so about one upload in 140 for a 30 KB picture would stall until the
+  upload loop gives up. Not seen happening; read off the code.
+
+What the emulator run shows (`tests/test_direct_draw.py`): three frames in a row are on the emulated LCD,
+decoded alternately from the two buffers, with still one file on the card; a wrong sum and a stalled
+frame are handled as described; an upload and `08` work afterwards; the stock image refuses nothing and
+is sent nothing.
+
+What it cannot show:
+
+- **Whether the bootloader takes the image.** The update file is a bare image: vector table first, the
+  compressed data section last, no header and no trailer, and neither a CRC-32 nor a byte or word sum of
+  the file is anywhere at its end. So there is no room in the file for a signature, and a check, if there
+  is one, can only be a sanity check or a sum kept inside the image. That is encouraging and proves
+  nothing. The patched file is also 472 bytes longer, and what the bootloader does with length is
+  unknown. (The vendor app's update code is compiled bytecode, `out/main/index.jsc`, and was not read.)
+- **Whether the flash after the image is free.** The code goes to `0x7C218`, right behind the image.
+  The firmware was not seen writing to its own flash, but only the paths that ran were looked at.
+- **Speed.** Emulated time is not real time. On the cooler a frame costs its USB transfer (full speed:
+  at most about 1 MB/s) plus one decode.
+- **The decoder itself.** The model decodes the file with Pillow (#18); the real one has only ever been
+  given what the stock loader hands it, and the patch hands it the same thing from another address.
+
 ## Emulator
 
 `tools/emu/boot.py` runs the stock image in Unicorn (nothing touches the cooler; the image is read from
@@ -356,15 +434,17 @@ whether a flashed image is accepted. The emulator makes patches testable; it can
 
 ## Open questions
 
-- Boot-time firmware-update applier: signature/CRC gate? (decides route 1)
-- JPEG decoder: RAM source supported? (decides patch size)
-- LCD flush entry point: exact signature, for a direct-draw command to target
+- Boot-time firmware-update applier: signature/CRC gate? (decides route 1; see "The patch" for what the
+  update file itself says)
+- Is SWD locked? (the recovery path, to be known before anything is flashed)
+- Does the firmware ever write to its own flash behind the image?
 - Sensor fields at offset 27+ and the clock command (`0A`) live in the second-endpoint handler, not
   yet read
 - The SD-type chip's real erase-cycle budget (it holds the `SD:` files; the serial flash holds the UI)
 - The kind (label, image, level image) of each widget id on the dashboard and recorder screens, and
   the label's and level image's own fields
 - Whether the real cooler also decodes a still picture ten times a second (seen in the emulator only)
-- Why the emulated firmware answers command `10` with command byte 0 (not tried on the real cooler)
+- Why the emulated firmware answers command `10` with command byte 0 (not tried on the real cooler; the
+  reply routine has a second path that sends on endpoint 2, not followed)
 - What `13` (factory reset) and `14` (delete all) do after their flags are set, and why `12` returns
   junk until a power cycle after a reset
