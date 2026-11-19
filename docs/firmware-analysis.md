@@ -7,17 +7,43 @@ like direct drawing.
 
 Confidence is marked per item. "Confirmed in code" means traced in the decompile; "inferred" means
 deduced from surrounding code and not fully followed; "unverified" means a reasonable guess only.
+"Seen in the emulator" means the stock image did it when run in `tools/emu/boot.py`.
 Addresses and function names are from one particular decompile and are not stable identifiers.
+
+**The decompile's addresses are file offsets.** It was made with the image loaded at 0, but the image
+runs at `0xE000`: add `0xE000` to a `FUN_` address to get the real one. Its `Reset_Handler` /
+`..._Handler` labels are wrong for the same reason (they mark where the vector table would point if the
+base were 0), and so are its jump tables: some functions decompile as an empty endless loop. String
+references are unaffected, because the code reaches its strings relative to the program counter.
 
 ## Platform
 
-- **MCU:** Synwit (ARM Cortex-M). The config system reads a `SynwitManifest.cfg`; the display driver
-  is selected by name (`jlt35002a_v3` / `jlt35002a_v3_spi`). *Confirmed in code.*
+- **MCU:** Synwit **SWM341** (ARM Cortex-M33 class with FPU). The config system reads a
+  `SynwitManifest.cfg`; the display driver is selected by name (`jlt35002a_v3` / `jlt35002a_v3_spi`).
+  *Confirmed in code; the chip by its register layout, seen in the emulator:* the clock setup polls the
+  PLL lock flag at `0x400AA04C`, and every register the firmware touches during start-up has a name in
+  the SWM341's register description (LCD at `0x40002000`, JPEG decoder at `0x4000B000`, USB at
+  `0x40005000`, serial flash controller at `0x4004A800`, SDIO at `0x40001800`, SDRAM controller at
+  `0x88000000`).
+- **Image layout:** a plain binary linked at **`0xE000`**; a 56 KiB bootloader that is not in the update
+  file sits below it. Word 0 is the initial stack pointer (`0x2000B418`), word 1 the reset handler
+  (`0xE33D`, startup code at file offset `0x33C`), then about a hundred interrupt vectors. With base
+  `0xE000`, eleven words in the image point exactly at the start of a string; with base 0, none.
+  *Confirmed.*
+- **Mask ROM:** the start-up code calls `0x11000430` twice (Synwit's flash timing helper). The ROM is
+  not in the image. *Seen in the emulator.*
+- **Memory:** SDRAM at `0x80000000`. The LCD controller's layer 0 is 480 x 640 with its frame buffer at
+  `0x80000000`, 16 bits per pixel. *Seen in the emulator (the values written to the LCD registers).*
 - **UI stack:** LVGL. The firmware instantiates `lv_arc`, `lv_btn`, `lv_chart`, `lv_label`, `lv_line`
   etc. and loads its screens from a `ui.bin` resource table. The dashboard labels/units are baked
   into these resources, which is why only the numbers are host-controllable. *Confirmed in code.*
 - **Display:** 480x640, configured via `peripheral.display.hres` / `.vres` (0x1e0 x 0x280). *Confirmed.*
-- **Storage:** external **SPI flash** (not a removable SD card), exposed through a filesystem with an
+- **Storage:** *two* devices, seen in the emulator: a **serial (QSPI) flash**, identified with JEDEC
+  `9F`, switched to quad mode and read through a memory window at `0x70000000` with command `EB`; and an
+  **SD-type device on SDIO**, which gets SD commands right after. Which one holds the `SD:` files and
+  which the UI resources is not traced yet (the name suggests the SDIO one holds the files, and the
+  erase-cycle worry then applies to an SD NAND / eMMC rather than a NOR flash). Earlier reading: external
+  SPI flash exposed through a filesystem with an
   `S:SD:` path prefix. A `test_Spiflash_OK` string and SPI init confirm the medium. This is the part
   with the unknown, finite erase-cycle budget that the host driver rate-limits writes to spare.
   *Confirmed medium; endurance unknown.*
@@ -121,6 +147,33 @@ Target flow: `USB → staging buffer → decode → panel` (drop the two flash s
 Flashing a rejected or malformed image with SWD locked can brick the unit with no recovery. Order of
 operations: confirm SWD access → dump → understand update verification → only then flash anything.
 
+## Emulator
+
+`tools/emu/boot.py` runs the stock image in Unicorn (nothing touches the cooler; the image is read from
+the installed DeepCool app). Hardware registers are plain memory unless modelled, every access is logged
+with its SWM341 register name, and a run stops when the firmware spins on a register that never changes,
+which names the next thing to model. `tools/emu/disasm.py <address>` disassembles at a real address.
+
+How far the stock firmware gets (v2.70), and what each step needed:
+
+| step | needed |
+| --- | --- |
+| reset, FPU on, clocks | the image at `0xE000`; mask ROM routines stubbed; PLL lock flag reads 1 |
+| pins, SDRAM | the SDRAM controller's power-on bit clears at once |
+| debug UART, serial flash | a flash command completes at once; a blank (all `FF`) flash at `0x70000000` |
+| GPIO, backlight PWM, delays | SysTick interrupts (the delay loop counts ticks at `0x200071DC`) |
+| LCD controller, JPEG decoder set up | nothing more |
+| SD card bring-up | the SD clock's "stable" bit. **Stops here:** it sends SD commands and waits for an answer |
+
+Next, in order: an SD card model (enough of the command set for the firmware's FAT layer, backed by an
+image file), which should let the firmware mount or format its file store; then the USB device
+controller, to feed it the `AA 2E` command frames and uploads the real driver sends; then the JPEG
+decoder (hardware on this chip), without which no stored picture reaches the frame buffer. The frame
+buffer itself can already be saved as a picture (`captures/emu_screen.png`); it is still black.
+
+Not covered, ever: the bootloader below `0xE000` (not in the update file), which is what decides
+whether a flashed image is accepted. The emulator makes patches testable; it cannot make flashing safe.
+
 ## Open questions
 
 - Boot-time firmware-update applier: signature/CRC gate? (decides route 1)
@@ -128,6 +181,7 @@ operations: confirm SWD access → dump → understand update verification → o
 - LCD flush entry point: exact signature, for a direct-draw command to target
 - Sensor fields at offset 27+ and the clock command (`0A`) live in the second-endpoint handler, not
   yet read
-- Whether `SD:` SPI flash is NOR or NAND, and its real erase-cycle budget
+- Which storage device holds the `SD:` files (the SDIO device or the QSPI flash), and its real
+  erase-cycle budget
 - What `13` (factory reset) and `14` (delete all) do after their flags are set, and why `12` returns
   junk until a power cycle after a reset

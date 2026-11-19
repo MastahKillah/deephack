@@ -26,6 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+emu = ["unicorn>=2.1", "capstone>=5"]     # for tools/emu: running the stock firmware in an emulator
 
 [project.gui-scripts]
 deephack = "deephack.app:main"

@@ -195,9 +195,10 @@ Confirmed on the device, switching both ways.
 
 Uploading with an id that already exists replaces that image in place.
 
-The cooler keeps only **nine or ten stills**. With nine on it, a tenth upload was dropped without any
-error (earlier a tenth did show once, so the limit may be by size rather than count), and `08` with an
-index that does not exist does nothing: the screen stays as it was.
+The cooler keeps **nine stills** (and nine animations). A tenth upload gets no error, but according to the
+firmware it is written to storage without being added to the index, so it can never be shown (and stays
+there as dead weight). `08` with an index that does not exist does nothing: the screen stays as it was.
+Seen with the webcam and in the firmware ([docs/firmware-analysis.md](docs/firmware-analysis.md)).
 
 **How fast the screen can change without a flash write** (measured with a webcam at 30 fps):
 
