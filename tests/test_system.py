@@ -190,3 +190,101 @@ def test_first_start_redraws_early(monkeypatch):
         return await m.frame()
 
     assert asyncio.run(run()) is not None                 # ...is redrawn after two minutes, not thirty
+
+
+# ------------------------------------------------------------------ live: the direct drawing firmware
+class FakeFeed:
+    """The once-a-second readings, handed out by the test."""
+
+    def __init__(self):
+        self.kept = []
+
+    def latest(self):
+        return self.kept[-1] if self.kept else None
+
+    def recent(self):
+        return list(self.kept)
+
+    def push(self, **values):
+        t = 70_000.0 + len(self.kept)
+        self.kept.append((t, system.Reading(t, **values)))
+
+
+def _live_mode(monkeypatch, values):
+    monkeypatch.setattr(system, "_Job", SyncJob)
+    monkeypatch.setattr(system, "take_reading", lambda windows: system.Reading(system.time.time(), cpu_load=30.0))
+    drawn = []
+    real = system.render_system
+    monkeypatch.setattr(system, "render_system", lambda *a: drawn.append(a) or real(*a))
+    m = system.SystemMonitor(values, history=system.History(None), feed=FakeFeed())
+    return m, drawn
+
+
+def test_drawn_pictures_follow_every_reading(monkeypatch):
+    m, drawn = _live_mode(monkeypatch, {"window": "5"})
+    m.direct = True
+    assert asyncio.run(m.frame()) is None                             # no reading yet
+    m.feed.push(cpu_temp=61.0, cpu_load=20.0)
+    first = asyncio.run(m.frame())
+    assert first.size == (device.WIDTH, device.HEIGHT) and m.status == "CPU 61° 20%"
+    assert asyncio.run(m.frame()) is None                             # the same reading: nothing new to show
+    m.feed.push(cpu_temp=64.0, cpu_load=80.0)
+    second = asyncio.run(m.frame())
+    assert second is not None and second.tobytes() != first.tobytes() and m.status == "CPU 64° 80%"
+    readings, now, span, live = drawn[-1]
+    assert [r.cpu_temp for r in readings] == [61.0, 64.0] and (now, span, live) == (70_001.0, 300, True)
+
+
+def test_a_long_graph_is_the_trend_with_the_line_drawn_up_to_this_second(monkeypatch):
+    m, drawn = _live_mode(monkeypatch, {"window": "60"})
+    m.direct = True
+    for i in range(3):
+        m.history.add(system.Reading(70_000.0 - 30 + 10 * i, cpu_temp=50.0 + i))
+    m.history.add(system.Reading(70_000.0 - 2 * 3600, cpu_temp=10.0))  # older than the graph
+    m.feed.push(cpu_temp=61.0)
+    assert asyncio.run(m.frame()) is not None
+    readings, now, span, live = drawn[-1]
+    assert [r.cpu_temp for r in readings][-4:] == [50.0, 51.0, 52.0, 61.0] and 10.0 not in [r.cpu_temp for r in readings]
+    assert (span, live) == (3600, True)
+
+
+def test_stored_pictures_keep_their_interval_and_show_half_an_hour_at_least(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(system.time, "monotonic", lambda: clock[0])
+    m, drawn = _live_mode(monkeypatch, {"window": "1", "refresh": "5"})
+    m.feed.push(cpu_temp=61.0)                                        # not looked at: pictures are stored here
+
+    async def run():
+        await m.frame()
+        first = await m.frame()
+        clock[0] += 60
+        return first, await m.frame()
+
+    first, second = asyncio.run(run())
+    assert first is not None and second is None
+    assert drawn[-1][2] == 30 * 60 and len(drawn[-1]) == 3            # not live: no seconds on the clock
+
+
+def test_the_live_page_shows_seconds():
+    now = 50_000.0
+    readings = [system.Reading(now - 60 + i, cpu_temp=50.0, cpu_load=10.0) for i in range(60)]
+    assert system.render_system(readings, now, 60, True).tobytes() != system.render_system(readings, now, 60).tobytes()
+
+
+def test_feed_keeps_the_newest_readings_and_stops_when_unused(monkeypatch):
+    import time
+    monkeypatch.setattr(system, "FEED_IDLE", 0.3)
+    count = iter(range(1000))
+    feed = system.Feed(None, read=lambda: (next(count),), keep=2)
+    nap = time.sleep
+    monkeypatch.setattr(system.time, "sleep", lambda seconds: nap(0.01))   # a reading every moment, not every second
+    assert feed.latest() is None and feed.recent() == []
+    deadline = time.monotonic() + 3
+    while len(feed.recent()) < 2 and time.monotonic() < deadline:
+        feed.latest()
+        nap(0.02)
+    recent = feed.recent()
+    assert len(recent) == 2 and recent[1][1] == recent[0][1] + 1 and feed.latest()[1] >= recent[1][1]
+    thread = feed._thread
+    thread.join(3)
+    assert not thread.is_alive()

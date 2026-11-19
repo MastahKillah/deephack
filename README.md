@@ -25,8 +25,8 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **Photo Frame** | Pictures from a folder you pick, changing every 15 minutes to once a day, shuffled or by file name. Portrait photos fill the screen, wider ones are shown whole. |
 | **Game Cover** | The cover art of the game you are playing, for games started through Steam (Steam notes the running game in the registry; covers come from its image server). |
 | **Ticker** | Up to five stocks, indices, currency pairs or coins with price, change and a sparkline for today, five days or a month. From Yahoo Finance's public chart feed (no account or key). |
-| **System** | CPU and GPU temperature, load and power, memory, and pump and fan speeds, with graphs of the last half hour to three hours. Readings are taken every 10 seconds; the screen is redrawn every few minutes, since each redraw is a flash write. Temperatures and fans come from DeepCool's own sensor service (see [Protocol](#protocol)); without it only CPU load and memory are shown. |
-| **Live** | The cooler's own built-in screens (a big CPU temperature, frequency, fan and pump speed, a clock, or a 7 minute graph of frequency and temperature) fed with real readings every second. The cooler draws these itself and stores nothing, so this is the one mode that updates every second without wearing the flash. A good fallback for Auto. |
+| **System** | CPU and GPU temperature, load and power, memory, and pump and fan speeds, with graphs of the last half hour to three hours. Readings are taken every 10 seconds; the screen is redrawn every few minutes, since each redraw is a flash write. With the [direct drawing firmware](#protocol) the page is live instead: a reading and a redraw every second, a clock with seconds, and graphs that can show the last minute or the last five. Temperatures and fans come from DeepCool's own sensor service (see [Protocol](#protocol)); without it only CPU load and memory are shown. |
+| **Live** | The cooler's own built-in screens (a big CPU temperature, frequency, fan and pump speed, a clock, or a 7 minute graph of frequency and temperature) fed with real readings every second. The cooler draws these itself and stores nothing, so on DeepCool's own firmware this is the one mode that updates every second without wearing the flash. A good fallback for Auto. |
 | **GitHub** | Your contribution heatmap for the last four months, then the CI status and open pull requests of a repository you pick (or your own open pull requests anywhere). One GraphQL request per refresh, redrawn only when something changed. The token is borrowed from the [GitHub CLI](https://cli.github.com) (`gh auth login` once); deephack stores none. In Auto it can take the screen while the repository's build runs or fails. |
 
 Clicking a mode opens its page with a live preview and leaves the cooler alone; **Show on cooler** (or a
@@ -250,7 +250,8 @@ from RAM, and the driver has `can_draw()` and `draw_jpeg()` for it. It runs in t
 was off the bus for 12 seconds and came back drawing. Measured there, from the host: a 41 KB frame 16
 times a second, a 72 KB one 10 times, an 8 KB one 20 times. The engine uses it for every picture a
 mode returns (one frame of 27 to 68 KB, on screen 36 to 88 ms after it was ready; nothing is stored and
-there is no wait between two), for animations (Scene and Claude Pet: a frame of 18 KB every 300 or 250
+there is no wait between two; the System page is redrawn every second that way, 39 to 44 KB a frame,
+for 2 % of one CPU core), for animations (Scene and Claude Pet: a frame of 18 KB every 300 or 250
 ms, under 2 % of one CPU core) and for the Visualizer, which gets a frame every 50 ms (12 to 30 KB each).
 A picture over the firmware's 128 KiB is sent at a lower JPEG quality.
 

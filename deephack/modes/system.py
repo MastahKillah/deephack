@@ -5,9 +5,14 @@ app as a Windows service). It reads the hardware through HWiNFO and answers on a
 programs without admin rights: framed JSON requests, the same ones the DeepCool app's bundled
 tools/fan-sensor-observer.mjs makes. Without the service only CPU load and memory (from Windows) are shown.
 
-Every redraw is a write to the cooler's flash, so this is a trend view redrawn every few minutes, not a
-live readout. Readings are taken every 10 seconds in between, on a short-lived thread so a stuck service
-cannot stall the engine, and kept for three hours, also across restarts.
+On DeepCool's own firmware every redraw is a write to the cooler's flash, so there this is a trend view
+redrawn every few minutes, not a live readout. Readings are taken every 10 seconds in between, on a
+short-lived thread so a stuck service cannot stall the engine, and kept for three hours, also across restarts.
+
+With the direct drawing firmware (`direct`, set by the engine) a picture costs nothing, and the page is
+live: a reading and a redraw every second, the clock with seconds, and graphs that can show the last
+minute or the last five, one step per reading. Unlike the Live mode, which fills in the cooler's own
+screens, this is our layout, with the GPU on it.
 """
 from __future__ import annotations
 
@@ -22,6 +27,7 @@ import zlib
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -35,6 +41,10 @@ PIPE = r"\\.\pipe\jzfs_sensor_bridge_v2"
 MAX_FRAME = 1 << 20
 SAMPLE_SECONDS = 10
 KEEP_SECONDS = 3 * 3600
+FEED_IDLE = 10.0                      # a once-a-second feed's thread ends this long after the last request
+LIVE_SECONDS = 5 * 60                 # graphs up to this long are drawn from the once-a-second readings
+SAVE_SECONDS = 5 * 60                 # the history file is written this often while the page is live
+STORED_MINUTES = 30                   # the shortest graph worth storing a picture of
 HISTORY_NAME = "system-history.json"
 BUSY_SECONDS, BUSY_LOAD = 120, 75     # Auto: CPU or GPU averaging this load (%) over this long
 MIN_POINTS = 6                        # fewer readings in a graph: say it is still collecting, redraw soon
@@ -210,14 +220,70 @@ class WindowsCounters:
         return float(status.load), (status.total - status.avail) / mb, status.total / mb
 
 
-def take_reading(windows: WindowsCounters) -> Reading:
+def reading_from(body: dict | None, windows: WindowsCounters) -> Reading:
+    """A reading from a sensor snapshot, or from Windows alone when the service gave none."""
     now = time.time()
-    body = read_bridge()
     load = windows.cpu_load()                   # always, so the next fallback reading has a baseline
     if body is not None:
         return parse_snapshot(body, now)
     memory = windows.memory()
     return Reading(now, cpu_load=load, **(dict(zip(("mem_load", "mem_used", "mem_total"), memory)) if memory else {}))
+
+
+def take_reading(windows: WindowsCounters) -> Reading:
+    return reading_from(read_bridge(), windows)
+
+
+class Feed:
+    """Something read from the sensor service once a second on a daemon thread, shared by every mode that
+    wants it (the one on the cooler and a preview).
+
+    `convert(snapshot or None, WindowsCounters)` makes a tuple of it; `latest()` gives the newest one with
+    its time in front. The thread starts on the first request and ends `idle()` seconds after the last
+    one, so a mode that is switched away (the engine does not close modes) leaves nothing running. With
+    `keep`, that many of the newest are kept for `recent()`."""
+
+    def __init__(self, convert, read=None, keep: int = 0):
+        self._convert = convert
+        self._read = read
+        self._lock = threading.Lock()
+        self._latest: tuple | None = None
+        self._recent: deque[tuple] = deque(maxlen=keep)
+        self._thread: threading.Thread | None = None
+        self._asked = 0.0
+
+    def idle(self) -> float:
+        return FEED_IDLE
+
+    def latest(self) -> tuple | None:
+        """(time, *what convert made) of the newest reading, None before the first."""
+        with self._lock:
+            self._asked = time.monotonic()
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, daemon=True, name="deephack-live")
+                self._thread.start()
+            return self._latest
+
+    def recent(self) -> list[tuple]:
+        with self._lock:
+            return list(self._recent)
+
+    def _run(self) -> None:
+        client, windows = BridgeClient(), WindowsCounters()
+        read = self._read or (lambda: self._convert(client.snapshot(), windows))
+        try:
+            while time.monotonic() - self._asked < self.idle():
+                started = time.monotonic()
+                got = (time.time(), *read())
+                with self._lock:
+                    self._latest = got
+                    self._recent.append(got)
+                time.sleep(max(0.05, 1.0 - (time.monotonic() - started)))
+        finally:
+            client.close()
+
+
+READINGS = Feed(lambda body, windows: (reading_from(body, windows),), keep=LIVE_SECONDS + 30)
 
 
 # ------------------------------------------------------------------ history
@@ -384,11 +450,21 @@ def _temp_colour(value: float, warm: float, hot: float):
     return RED if value >= hot else AMBER if value >= warm else TEXT
 
 
-def _card(img: Image.Image, box) -> ImageDraw.ImageDraw:
+CARD_TOPS, CARD_H, FANS_TOP = (64, 226, 388), 150, 550
+
+
+@lru_cache(maxsize=1)
+def _page() -> Image.Image:
+    """The page without its content: the background and the four cards. It is the same every time and a
+    third of the drawing, which matters when the page is drawn every second."""
+    img = render.vertical_gradient(BG_TOP, BG_BOTTOM).convert("RGBA")
     layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    ImageDraw.Draw(layer).rounded_rectangle(box, radius=16, fill=CARD)
+    d = ImageDraw.Draw(layer)
+    for top in CARD_TOPS:
+        d.rounded_rectangle([20, top, W - 20, top + CARD_H], radius=16, fill=CARD)
+    d.rounded_rectangle([20, FANS_TOP, W - 20, H - 18], radius=16, fill=CARD)
     img.alpha_composite(layer)
-    return ImageDraw.Draw(img)
+    return img
 
 
 def _fmt(value: float | None, unit: str, digits: int = 0) -> str:
@@ -404,22 +480,23 @@ def _fan_name(name: str) -> str:
     return name.replace("_", " ").title() if name.isupper() else name.replace("_", " ")
 
 
-def render_system(readings: list[Reading], now: float, span: float) -> Image.Image:
-    img = render.vertical_gradient(BG_TOP, BG_BOTTOM).convert("RGBA")
-    d = ImageDraw.Draw(img)
+def render_system(readings: list[Reading], now: float, span: float, live: bool = False) -> Image.Image:
+    """`live`: the page is redrawn every second, so the clock shows seconds."""
+    img = _page().copy()
+    d = dd = ImageDraw.Draw(img)
     small, label_font, sub_font = render.font(render.BOLD, 17), render.font(render.SEMIBOLD, 23), render.font(render.REGULAR, 19)
     big, peak_font = render.font(render.BOLD, 46), render.font(render.REGULAR, 17)
-    window = "last hour" if span == 3600 else f"last {span / 3600:g} hours" if span > 3600 else f"last {span / 60:g} minutes"
+    window = ("last hour" if span == 3600 else f"last {span / 3600:g} hours" if span > 3600 else "last minute" if span == 60
+              else f"last {span / 60:g} minutes")
     d.text((28, 34), f"SYSTEM  ·  {window.upper()}", font=small, fill=MUTED, anchor="lm")
-    d.text((W - 28, 34), datetime.fromtimestamp(now).strftime("%H:%M"), font=small, fill=MUTED, anchor="rm")
+    d.text((W - 28, 34), datetime.fromtimestamp(now).strftime("%H:%M:%S" if live else "%H:%M"), font=small, fill=MUTED, anchor="rm")
 
     latest = readings[-1] if readings else Reading(now)
     t0 = now - span
     shown = [r for r in readings if r.t >= t0]
 
     def card(y, title, colour, value, value_colour, sub, peak, line, area, warm_hot=None):
-        x0, x1, h = 20, W - 20, 150
-        dd = _card(img, [x0, y, x1, y + h])
+        x0, x1, h = 20, W - 20, CARD_H
         dd.text((x0 + 18, y + 14), title, font=label_font, fill=colour)
         dd.text((x0 + 18, y + 48), sub, font=sub_font, fill=MUTED)
         dd.text((x1 - 18, y + 6), value, font=big, fill=value_colour, anchor="ra")
@@ -440,15 +517,14 @@ def render_system(readings: list[Reading], now: float, span: float) -> Image.Ima
             value, value_colour = _fmt(load, "%"), TEXT
             sub = "load" if load is not None else "no readings"
         peak = f"peak {max(temps):.0f}°" if len(temps) > 1 else ""
-        card(64 + i * 162, name, colour, value, value_colour, sub, peak, temp_key if temps else None, load_key)
+        card(CARD_TOPS[i], name, colour, value, value_colour, sub, peak, temp_key if temps else None, load_key)
 
     used, total = latest.mem_used, latest.mem_total
     sub = f"{used / 1024:.1f} of {total / 1024:.0f} GB used" if used is not None and total else "no readings"
-    card(64 + 2 * 162, "Memory", MEM_C, _fmt(latest.mem_load, "%"), TEXT, sub, "", None, "mem_load")
+    card(CARD_TOPS[2], "Memory", MEM_C, _fmt(latest.mem_load, "%"), TEXT, sub, "", None, "mem_load")
 
     # fans and pump: just the numbers, they barely move
-    y = 64 + 3 * 162
-    dd = _card(img, [20, y, W - 20, H - 18])
+    y = FANS_TOP
     fans = sorted(latest.fans, key=lambda f: (0 if "pump" in f[0].lower() else 1 if f[0].lower() == "cpu" else 2))[:3]
     if fans:
         col = (W - 40) / len(fans)
@@ -487,25 +563,52 @@ class SystemMonitor(Mode):
     claims = "PC working hard"
     settings = (
         Setting("refresh", "Redraw every", "choice", "10", (("5", "5 minutes"), ("10", "10 minutes"), ("15", "15 minutes"), ("30", "30 minutes")),
-                hint="Readings are taken every 10 seconds. The graphs are redrawn less often because every redraw "
-                     "is a write to the cooler's flash."),
-        Setting("window", "Graphs show", "choice", "60", (("30", "Last 30 minutes"), ("60", "Last hour"), ("180", "Last 3 hours")),
-                hint="Temperatures and fans come from DeepCool's sensor service, which the DeepCool app installs. "
-                     "Without it only CPU load and memory are shown."),
+                hint="On DeepCool's own firmware: readings are taken every 10 seconds, and the graphs are redrawn "
+                     "less often because every redraw is a write to the cooler's flash. With the direct drawing "
+                     "firmware the page is redrawn every second and this is not used."),
+        Setting("window", "Graphs show", "choice", "60",
+                (("1", "Last minute"), ("5", "Last 5 minutes"), ("30", "Last 30 minutes"), ("60", "Last hour"), ("180", "Last 3 hours")),
+                hint="The two shortest are for the direct drawing firmware, where the graphs move every second; "
+                     "without it they show 30 minutes. Temperatures and fans come from DeepCool's sensor service, "
+                     "which the DeepCool app installs. Without it only CPU load and memory are shown."),
     )
 
-    def __init__(self, values=None, history: History | None = None):
+    def __init__(self, values=None, history: History | None = None, feed: Feed | None = None):
         super().__init__(values)
         self.history = history or shared_history()
+        self.feed = feed or READINGS
         self._next_draw = 0.0
         self._started = time.time()
+        self._live_at: float | None = None             # time of the reading the live page was last drawn from
+        self._next_save = 0.0
         self.placeholder = ("System", "Taking the first readings…")
+
+    async def _live(self, minutes: int):
+        """The page as it is right now, once per reading of the once-a-second feed."""
+        got = self.feed.latest()
+        if got is None or got[0] == self._live_at:
+            return None
+        self._live_at, reading = got
+        self.status = status_line(reading) + ("" if reading.sensors else " · no sensor service")
+        span = minutes * 60
+        if span <= LIVE_SECONDS:
+            readings = [r for _, r in self.feed.recent()]
+        else:                                          # the trend, and the line drawn up to this second
+            readings = self.history.since(reading.t - span) + [reading]
+        if time.monotonic() >= self._next_save:
+            self._next_save = time.monotonic() + SAVE_SECONDS
+            await asyncio.to_thread(self.history.save)
+        return await asyncio.to_thread(render_system, readings, reading.t, span, True)
 
     async def frame(self):
         self.history.tick()
         now = time.time()
         latest = self.history.latest()
-        span = int(self.values["window"]) * 60
+        minutes = int(self.values["window"])
+        if self.direct:
+            self.active = working_hard(self.history.since(now - BUSY_SECONDS), now)
+            return await self._live(minutes)
+        span = max(minutes, STORED_MINUTES) * 60
         readings = self.history.since(now - max(span, BUSY_SECONDS))
         self.active = working_hard(readings, now)
         if latest is None or latest.t < self._started - SAMPLE_SECONDS:

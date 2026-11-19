@@ -12,8 +12,6 @@ approximation of the screen; the cooler draws its own labels and layout.
 from __future__ import annotations
 
 import asyncio
-import threading
-import time
 from collections import deque
 from datetime import datetime
 from functools import lru_cache
@@ -23,7 +21,7 @@ from PIL import Image, ImageDraw
 from .. import device, render
 from ..render import H, W
 from .base import Dashboard, Mode, Setting
-from .system import BridgeClient, WindowsCounters, _number
+from .system import Feed, WindowsCounters, _number
 
 SCREENS = {   # setting value -> (screen, main layout or recorder graphs, style)
     "temperature": ("dashboard", device.DASH_TEMPERATURE, 0),
@@ -78,40 +76,16 @@ def dashboard_values(body: dict | None, windows: WindowsCounters) -> tuple[dict[
     return {k: min(max(v or 0.0, 0.0), 65535.0) for k, v in raw.items()}, True
 
 
-class LiveFeed:
-    """Readings once a second on a daemon thread, shared by every Live mode (the live one and a preview).
-
-    The thread starts on the first request and ends FEED_IDLE seconds after the last one, so a mode that
-    is switched away (the engine does not close modes) leaves nothing running."""
+class LiveFeed(Feed):
+    """The cooler's sensor fields once a second (see system.Feed), shared by every Live mode: `latest()` is
+    (time, values, from the sensor service) of the newest reading, None before the first. The thread ends
+    FEED_IDLE seconds after the last request."""
 
     def __init__(self, read=None):
-        self._read = read
-        self._lock = threading.Lock()
-        self._latest: tuple[float, dict[str, float], bool] | None = None
-        self._thread: threading.Thread | None = None
-        self._asked = 0.0
+        super().__init__(dashboard_values, read)
 
-    def latest(self) -> tuple[float, dict[str, float], bool] | None:
-        """(time, values, from the sensor service) of the newest reading, None before the first."""
-        with self._lock:
-            self._asked = time.monotonic()
-            if self._thread is None or not self._thread.is_alive():
-                self._thread = threading.Thread(target=self._run, daemon=True, name="deephack-live")
-                self._thread.start()
-            return self._latest
-
-    def _run(self) -> None:
-        client, windows = BridgeClient(), WindowsCounters()
-        read = self._read or (lambda: dashboard_values(client.snapshot(), windows))
-        try:
-            while time.monotonic() - self._asked < FEED_IDLE:
-                started = time.monotonic()
-                values, sensors = read()
-                with self._lock:
-                    self._latest = (time.time(), values, sensors)
-                time.sleep(max(0.05, 1.0 - (time.monotonic() - started)))
-        finally:
-            client.close()
+    def idle(self) -> float:
+        return FEED_IDLE
 
 
 FEED = LiveFeed()

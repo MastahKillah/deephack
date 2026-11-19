@@ -337,6 +337,9 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   one every 299 ms at the median (258 to 322; the loop has 300 ms a frame), and Claude Pet, 97 frames,
   one every 250 ms (235 to 251). Neither stored anything. Sending a frame took 23 to 26 ms, and the
   engine used 0.2 % and 1.4 % of one CPU core. How the cooler takes hours of this is not known yet.
+- **A page redrawn every second** (System, live): 44 frames in 44 s, 39 to 44 KB, 50 ms to send, none
+  stored. The engine took 1.95 % of one CPU core for it, half of that drawing the page (before the
+  page's fixed parts were cached; 6 ms a frame instead of 11 since).
 - **With real music** (Spotify playing, 19 Nov 2026): the Visualizer sent 255 frames in 15 s, 17 a
   second, using 22 of its 24 loudness steps. The webcam's picture followed the frames sent best 125 ms
   later (correlation 0.86 between the step drawn and the screen's brightness). That figure has the
