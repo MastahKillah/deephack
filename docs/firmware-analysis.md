@@ -318,6 +318,16 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   to about two asks in three, so 50 ms is its own pace. Before the first frame the engine leaves the
   image screen and comes back, then shows its own still, because of the item above.
 
+- **The side light follows drawn frames.** With the light's source set to the screen (`02`, fourth
+  byte 2), plain red, green and blue frames were drawn and the webcam read the RAM sticks next to the
+  pump head, where the light falls; the control was the same frames with the source set to the fixed
+  colour (fourth byte 1), then the first setting again. Mean R G B there, 0 to 255: red frame 8.5 0.2
+  0.0 against 2.0 0.1 0.4 in the control; green 0.2 14.6 1.1 against 0.0 9.8 2.0; blue 1.3 1.3 44.8
+  against 1.4 1.3 44.5. Two readings each, equal to a few tenths, and the same again after the control.
+  So for red and green the light takes its colour from the frame on screen, wherever that came from,
+  and not from the stored file when it is shown. Blue shows no difference: not explained, the screen's
+  own blue on the sticks may simply drown it.
+
 Not looked at on the cooler: a frame with a wrong sum, a frame the host abandons half way, how far a
 drawn frame is behind its command (the webcam's own delay is not known), and how the patched firmware
 behaves over hours.

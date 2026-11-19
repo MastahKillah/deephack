@@ -11,8 +11,8 @@ Flipbook. What the engine does with it depends on the cooler's firmware:
   many of the frames as the cooler has room for (it keeps nine or so stills in all), once, and flips
   between those. That way the orb trails the music by 0.2 to 0.3 seconds, which is late for a beat.
 
-The frames' edges glow in their colour. The cooler's own light picks its colour from the edges of a
-stored picture when it is shown, so it follows the beat with stored frames and not with drawn ones.
+The frames' edges glow in their colour, and the cooler's own light, when set to follow the screen,
+takes its colour from them: it pulses along, with drawn frames as with stored ones (seen on the cooler).
 
 The sound comes from what the PC is playing (see audio.py); nothing is recorded or sent anywhere.
 """

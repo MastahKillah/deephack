@@ -141,7 +141,7 @@ AA 2E <cmd> <payload, zero padded to 39 bytes> 'H' 'I' 'D' 'C' <sum16 LE of byte
 | cmd | meaning | payload |
 | --- | --- | --- |
 | `01` | sensor values (ep 2, once a second) | 3-byte fields, see below |
-| `02` | device options | five bytes, the official app sends `01 01 00 01 46`. The fourth picks the side light's source: `0` the motherboard's ARGB signal, `1` a fixed warning colour (the app switches to it at 90 °C), `2` the colours at the edges of the picture shown, picked by the firmware when an image is shown. The fifth is the backlight brightness in percent (0 turns the screen off). The first three showed no visible effect (the app's names: noLoadScreen, gyroStatus, screenRotate) |
+| `02` | device options | five bytes, the official app sends `01 01 00 01 46`. The fourth picks the side light's source: `0` the motherboard's ARGB signal, `1` a fixed warning colour (the app switches to it at 90 °C), `2` the colours at the edges of the picture shown, picked by the firmware when an image is shown (it follows frames drawn with command `20` as well, see [docs/firmware-analysis.md](docs/firmware-analysis.md)). The fifth is the backlight brightness in percent (0 turns the screen off). The first three showed no visible effect (the app's names: noLoadScreen, gyroStatus, screenRotate) |
 | `03` | display mode | `mode` (1 = sensor dashboard, 2 = stored images, 3 = recorder) |
 | `05` | recorder layout | `0` frequency + temperature graphs, `1` frequency graph only |
 | `07` | slideshow | `duration` `animation` (0 none, 1 slide, 2 fade) |
