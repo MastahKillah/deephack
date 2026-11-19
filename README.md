@@ -20,6 +20,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **Claude Code** | Plan limits (5-hour and weekly) and today's tokens, requests, hourly activity and model split. All from local files, see below. |
 | **Claude Pet** | An animated pixel pet with your plan limit percentages. It works along while Claude Code is busy, dances while music plays, sleeps at night and celebrates or sulks after your NBA team's games; you pick which of these count and which wins. Otherwise its mood follows the fullest limit: happy, fine, stressed, exhausted. |
 | **Scene** | A little pixel-art city under your real sky: dawn, day, dusk and night follow the sunrise and sunset, and clouds, fog, rain, snow or a thunderstorm follow the current weather in the Weather page's city. Windows light up in the evening, street lamps glow, a car drives by. An 8-frame animation, rewritten only when the time of day or the kind of weather changes. Also a fallback for Auto. |
+| **Visualizer** | An orb that pulses with whatever the PC is playing, ten times a second, and the cooler's light pulses with it. It is a flipbook: eight frames from silence to full blast are stored on the cooler once, and after that the mode only says which one to show, which wears nothing. The sound is read from the PC's output (nothing is recorded or sent anywhere). |
 | **Countdown** | Days until a date you set, with a title. On the last day it counts hours, then minutes. |
 | **Photo Frame** | Pictures from a folder you pick, changing every 15 minutes to once a day, shuffled or by file name. Portrait photos fill the screen, wider ones are shown whole. |
 | **Game Cover** | The cover art of the game you are playing, for games started through Steam (Steam notes the running game in the registry; covers come from its image server). |
@@ -60,13 +61,15 @@ autostart entry.
   want deephack to own the display after a reboot. Fan control is a separate Windows service and keeps
   working, and so does the sensor service the System and Live modes read.
 - **Every update is a write to the cooler's flash**, except in Live, which uses the cooler's own sensor
-  screens. There is no known way to draw our own pictures without storing them first. deephack rate-limits
+  screens, and in Visualizer, which flips between pictures stored once. There is no known way to draw
+  our own pictures without storing them first. deephack rate-limits
   writes (at most one every 8 seconds, tracks have to settle before they are drawn), but the flash
   endurance of the device is unknown. "Cover only" writes once per album instead
   of once per track. Showing an image the cooler already holds again (Auto switching back to it) costs
   no write.
-- **deephack adds files the DeepCool app does not know about:** one image, and one animation once you use
-  Claude Pet or Scene. They are stored after the JPGs / GIFs you uploaded with the official app. If you later add
+- **deephack adds files the DeepCool app does not know about:** one image, one animation once you use
+  Claude Pet or Scene, and up to eight more images once you use Visualizer. The cooler keeps ten images in
+  all, so Visualizer takes whatever room your own pictures leave. They are stored after the JPGs / GIFs you uploaded with the official app. If you later add
   files there, its numbering will be off by one. `python -m deephack.device delete <index>` (add `--gif`
   for the animation) removes them; the indexes are `slot_index` and `gif_slot_index` in
   `%APPDATA%\deephack\config.json`.
@@ -171,7 +174,8 @@ the fraction byte is printed as-is after the decimal point.
 | 27 and up | unknown | not shown on any layout seen so far |
 
 Command `04` picks the dashboard layout with four bytes: `main` (0 frequency, 1 time, 2 pump, 3 CPU fan,
-4 CPU fan + pump, 5 temperature), `style` (frequency only), one byte with no visible effect, and `strip`
+4 CPU fan + pump, 5 temperature), `style` (frequency only: 0 plain, 1 a ring around the number, 2 a gauge
+whose arc fills with the value, full at about 6 GHz), one byte with no visible effect, and `strip`
 for the row at the bottom (0 voltage rails, 1 frequency / CPU load / RAM, 2 frequency / RAM). The labels
 and units on every layout are fixed in the firmware; only the numbers are yours.
 
@@ -194,6 +198,16 @@ Confirmed on the device, switching both ways.
 
 Uploading with an id that already exists replaces that image in place.
 
+The cooler keeps **ten stills** (indexes 0 to 9). An eleventh upload is dropped without any error, and
+`08` with an index that does not exist does nothing.
+
+**How fast the screen can change without a flash write** (measured with a webcam at 30 fps):
+
+- `08` (show a stored still) is answered in 0.3 ms and the picture is on screen about 0.1 s later, all at
+  once, whatever the JPEG's size (5 to 42 KB tried). Ten switches a second all show; from about twelve a
+  second the firmware starts dropping them. This is what the Visualizer mode and `Flipbook` frames use.
+- The sensor screens redraw about twice a second: values sent faster than that are skipped.
+
 The image is only displayed once it is committed: after the data without `dcldfinish` the screen shows
 "Loading…" until the marker arrives. There is no preview of uncommitted data, and experimenting with
 unfinished uploads hung the firmware once (no endpoint accepted data until the PC was powered off).
@@ -204,7 +218,9 @@ stills and shown with type 1. One `0F` command, then a header + JPEG for every f
 loop duration in milliseconds, and the frame's index.
 
 A mode returns an `Animation(frames, duration_ms)` instead of an image to use this (see `tamagotchi.py`).
-Every frame is written to flash, so keep them few.
+Every frame is written to flash, so keep them few. For real-time changes a mode returns a
+`Flipbook(key, frames, index)` and sets `tick = 0.1`: the frames are stored once as stills, then only
+`index` decides which one shows (see `visualizer.py`).
 
 `python -m deephack.device --help` exposes the driver on the command line.
 

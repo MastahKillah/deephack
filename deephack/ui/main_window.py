@@ -404,6 +404,12 @@ class MainWindow(QMainWindow):
             text = "Preview only · not connected to the cooler"
         elif self._placeholder:
             text = "Waiting for something to show"
+        elif s.get("no_room"):
+            text = "No room on the cooler: it keeps 10 pictures. Delete some in the DeepCool app."
+        elif s.get("storing"):
+            text = "Storing frames on the cooler, once · {} of {}".format(*s["storing"])
+        elif s.get("live") and s.get("mode_live") == "flipbook":
+            text = "Live · flipping stored frames, no flash writes"
         elif s.get("live"):
             text = "Live · the cooler draws this itself, no flash writes"
         elif s.get("pending"):

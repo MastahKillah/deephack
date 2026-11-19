@@ -21,9 +21,9 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
 from . import device, render
-from .config import GIF_SLOT_ID, SLOT_ID, Config
+from .config import GIF_SLOT_ID, SLOT_ID, Config, book_id
 from .modes import BY_ID, MODES, Mode
-from .modes.base import Animation, Dashboard
+from .modes.base import Animation, Dashboard, Flipbook
 
 LIGHTS = {"screen": device.LIGHT_SCREEN, "motherboard": device.LIGHT_MOTHERBOARD, "warning": device.LIGHT_WARNING}
 RESHOW_DELAY = 1.5           # the firmware picks up the edges of an image shown a moment after a light change
@@ -73,9 +73,11 @@ def to_qimage(img: Image.Image) -> QImage:
     return QImage(rgba.tobytes(), rgba.width, rgba.height, QImage.Format.Format_RGBA8888).copy()
 
 
-def _qt_frames(img: Image.Image | Animation | Dashboard) -> tuple[list[QImage], int]:
+def _qt_frames(img: Image.Image | Animation | Dashboard | Flipbook) -> tuple[list[QImage], int]:
     if isinstance(img, Dashboard):
         return [to_qimage(img.preview)], 0
+    if isinstance(img, Flipbook):
+        return [to_qimage(img.frames[img.index])], 0
     if isinstance(img, Animation):
         return [to_qimage(f) for f in img.frames], img.duration_ms
     return [to_qimage(img)], 0
@@ -115,6 +117,8 @@ class Engine(QThread):
         self._slideshow_applied: bool | None = None
         self._options_applied: tuple | None = None
         self._reshow_at: float | None = None     # after a light change: show the picture again then
+        self._book_storing: list | None = None   # [key, index of frame 0, frames stored so far, frames to store]
+        self._book_room = True                   # False: the cooler is too full for a flipbook
         self._last_state: dict | None = None
         self._placeholder_shown = None
         self._preview: Mode | None = None
@@ -218,9 +222,10 @@ class Engine(QThread):
             if self.use_device:
                 self._device_step(enabled)
             self._emit_state(enabled)
-            deadline = time.monotonic() + TICK
+            tick = min(m.tick or TICK for m in (self._mode, self._preview) if m is not None)
+            deadline = time.monotonic() + tick
             while time.monotonic() < deadline and not self._stop and self._commands.empty():
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
         self._shutdown()
 
     def _device_step(self, enabled: bool) -> None:
@@ -258,7 +263,7 @@ class Engine(QThread):
                 self._options_applied = options
             if self._reshow_at is not None and now >= self._reshow_at:
                 self._reshow_at = None
-                if self._on_screen == "ours":
+                if self._on_screen == "ours" or (isinstance(self._on_screen, tuple) and self._on_screen[0] == "book"):
                     self._on_screen = None        # show it again, so the light picks up its edges
             if not enabled:
                 if self._on_screen != "restore":
@@ -269,6 +274,9 @@ class Engine(QThread):
                 return
             if isinstance(self._frame, Dashboard):
                 self._dashboard_step(self._frame, now)
+                return
+            if isinstance(self._frame, Flipbook):
+                self._flipbook_step(self._frame)
                 return
             if self._frame_seq != self._uploaded_seq:
                 animated = isinstance(self._frame, Animation)
@@ -313,6 +321,44 @@ class Engine(QThread):
             self._slideshow_applied = slideshow
         self._dev.show_slot(index, slot)
 
+    def _flipbook_step(self, book: Flipbook) -> None:
+        """Store the book's frames once (one per step, each a flash write), then just show the wanted one.
+
+        The cooler keeps device.MAX_STILLS stills in all. The book goes after the user's own and ours, so
+        with little room left only some of its frames are stored, picked evenly from first to last."""
+        stored = self.config.get("book") or {}
+        main = self.config.get("slot_index")
+        first = stored.get("first")               # frames of an earlier book are replaced in place
+        if first is None:
+            first = max(main or 0, _stored_count("jpg")) + 1     # after the official app's stills and our own
+        count = min(len(book.frames), device.MAX_STILLS - first)
+        self._book_room = count >= 2
+        if not self._book_room:
+            return
+        if stored.get("key") != book.key or stored.get("count") != count:
+            if self._book_storing is None or self._book_storing[0] != book.key:
+                if main is None:                  # our own still comes first in the cooler's list: make sure it exists
+                    main = _stored_count("jpg")
+                    self._dev.upload_jpeg(SLOT_ID, device.encode_jpeg(render.message("deephack")))
+                    self.config.set("slot_index", main)
+                    self._slot_digest.pop(device.TYPE_JPG, None)
+                self._book_storing = [book.key, first, 0, count]
+            done = self._book_storing[2]
+            source = round(done * (len(book.frames) - 1) / (count - 1))
+            self._dev.upload_jpeg(book_id(done), device.encode_jpeg(book.frames[source]))
+            self._last_upload = time.monotonic()
+            self._book_storing[2] = done + 1
+            if done + 1 == count:
+                self.config.set("book", {"key": book.key, "first": first, "count": count})
+                self._book_storing = None
+            return
+        step = round(book.index * (count - 1) / max(1, len(book.frames) - 1))
+        target = ("book", book.key, step)
+        if self._on_screen != target:
+            self._show_stored(first + step, device.TYPE_JPG)
+            self._on_screen = target
+        self._uploaded_seq = self._frame_seq
+
     def _dashboard_step(self, dash: Dashboard, now: float) -> None:
         """Bring up the firmware's sensor screen and feed it. None of this is stored: no flash writes."""
         target = (dash.screen, tuple(dash.layout))
@@ -352,8 +398,12 @@ class Engine(QThread):
             "preview": self._preview.id if self._preview else None,
             "preview_status": self._preview.status if self._preview else "",
             "last_upload": self._last_upload_wall,
-            "live": isinstance(self._frame, Dashboard),
-            "pending": enabled and self._frame is not None and not isinstance(self._frame, Dashboard)
+            "live": isinstance(self._frame, (Dashboard, Flipbook)) and self._book_storing is None,
+            "mode_live": "flipbook" if isinstance(self._frame, Flipbook) else "dashboard",
+            "storing": (self._book_storing[2], self._book_storing[3])
+                       if self._book_storing and isinstance(self._frame, Flipbook) else None,
+            "no_room": isinstance(self._frame, Flipbook) and not self._book_room,
+            "pending": enabled and self._frame is not None and not isinstance(self._frame, (Dashboard, Flipbook))
                        and self._frame_seq != self._uploaded_seq,
         }
         if state != self._last_state:

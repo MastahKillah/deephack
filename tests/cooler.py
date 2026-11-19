@@ -212,5 +212,8 @@ class CoolerModel:
                 slots[i] = entry
                 self.log.append(("stored", kind, i))
                 return
+        if kind == "jpg" and len(slots) >= device.MAX_STILLS:
+            self._violate(f"an eleventh still: the cooler keeps {device.MAX_STILLS} and drops the rest without a word")
+            return
         slots.append(entry)
         self.log.append(("stored", kind, len(slots) - 1))

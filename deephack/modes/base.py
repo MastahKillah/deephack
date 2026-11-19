@@ -31,6 +31,16 @@ class Dashboard:
     preview: Image.Image           # deephack's approximation of the screen, for the window
 
 
+@dataclass
+class Flipbook:
+    """A set of stills stored on the cooler once and then flipped through. Showing a stored image writes
+    nothing, and the firmware keeps up with about ten a second, so this is how a mode moves in real time.
+    Return one whenever `index` changes; the frames are only stored again when `key` changes."""
+    key: str                       # names the set of frames
+    frames: list[Image.Image]
+    index: int                     # the frame to show now
+
+
 @dataclass(frozen=True)
 class Setting:
     key: str
@@ -66,6 +76,7 @@ class Mode:
     glyph: str = ""                # character from the "Segoe Fluent Icons" font
     claims: str = ""               # when the mode wants the screen in Auto ("music plays"); empty: never
     reads: tuple[str, ...] = ()    # other modes whose settings `build()` reads, reloaded when those change
+    tick: float | None = None      # seconds between frame() calls when the mode needs them faster than usual
     settings: tuple[Setting, ...] = ()
 
     def __init__(self, values: dict | None = None):
@@ -80,7 +91,7 @@ class Mode:
         """Create the mode with its saved settings; `settings(mode_id)` returns any mode's saved values."""
         return cls(settings(cls.id))
 
-    async def frame(self) -> Image.Image | Animation | Dashboard | None:
+    async def frame(self) -> Image.Image | Animation | Dashboard | Flipbook | None:
         raise NotImplementedError
 
     async def close(self) -> None:

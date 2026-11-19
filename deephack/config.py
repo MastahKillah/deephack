@@ -12,6 +12,13 @@ from . import APP_NAME
 SLOT_ID = "0de3b4c4" + "0" * 23 + "1"
 GIF_SLOT_ID = "0de3b4c4" + "0" * 23 + "2"     # same idea for animations, which the device stores separately
 
+
+
+def book_id(i: int) -> str:
+    """File id of frame i of the flipbook (a set of stills a mode flips through, see modes.base.Flipbook)."""
+    return "0de3b4c4" + "0" * 20 + f"b{i:03x}"
+
+
 DEFAULTS = {
     "enabled": True,
     "mode": "now_playing",
@@ -22,6 +29,7 @@ DEFAULTS = {
     "slot_index": None,        # index of our image among the JPGs stored on the device
     "gif_slot_index": None,    # index of our animation among the GIFs stored on the device
     "restore_index": 0,        # JPG shown when deephack is paused or quits
+    "book": None,              # the flipbook stored on the device: {"key", "first" (index of frame 0), "count"}
     "modes": {},               # per-mode settings, keyed by mode id
 }
 

@@ -29,6 +29,7 @@ SCREENS = {   # setting value -> (screen, main layout or recorder graphs, style)
     "temperature": ("dashboard", device.DASH_TEMPERATURE, 0),
     "frequency": ("dashboard", device.DASH_FREQUENCY, 0),
     "frequency_ring": ("dashboard", device.DASH_FREQUENCY, 1),
+    "frequency_gauge": ("dashboard", device.DASH_FREQUENCY, 2),
     "fan_pump": ("dashboard", device.DASH_FAN_PUMP, 0),
     "pump": ("dashboard", device.DASH_PUMP, 0),
     "fan": ("dashboard", device.DASH_FAN, 0),
@@ -187,11 +188,14 @@ def render_preview(screen: str, strip: str, values: dict[str, float], recent: li
         _gauge(d, 250, "CPU TEMPERATURE", f"{v.get('cpu_temp', 0):.0f}", "°C", 150)
     elif main == device.DASH_FREQUENCY:
         freq = v.get("cpu_freq", 0)
-        if style == 1:                       # ring around the number
-            box = [W / 2 - 165, 250 - 165, W / 2 + 165, 250 + 165]
-            d.arc(box, 135, 405, fill=GRID, width=14)
-            d.arc(box, 135, 135 + 270 * min(freq / 6, 1), fill=CYAN, width=14)
-        _gauge(d, 250, "CPU FREQUENCY", f"{freq:.2f}", "GHz", 116 if style == 1 else 140)
+        box = [W / 2 - 165, 250 - 165, W / 2 + 165, 250 + 165]
+        if style == 1:                       # a plain ring around the number
+            d.ellipse(box, outline=CYAN, width=10)
+        elif style == 2:                     # a gauge: the arc fills with the value
+            d.ellipse([box[0] + 26, box[1] + 26, box[2] - 26, box[3] - 26], outline=GRID, width=8)
+            d.arc(box, 150, 390, fill=GRID, width=14)
+            d.arc(box, 150, 150 + 240 * min(freq / 6, 1), fill=CYAN, width=14)
+        _gauge(d, 250, "CPU FREQUENCY", f"{freq:.2f}", "GHz", 116 if style else 140)
     elif main == device.DASH_PUMP:
         _gauge(d, 250, "PUMP SPEED", f"{v.get('pump_rpm', 0):.0f}", "RPM", 130)
     elif main == device.DASH_FAN:
@@ -226,6 +230,7 @@ class Live(Mode):
     settings = (
         Setting("screen", "Screen", "choice", "temperature", (
             ("temperature", "CPU temperature"), ("frequency", "CPU frequency"), ("frequency_ring", "CPU frequency, ring"),
+            ("frequency_gauge", "CPU frequency, gauge"),
             ("fan_pump", "CPU fan and pump"), ("pump", "Pump speed"), ("fan", "CPU fan speed"), ("time", "Clock"),
             ("recorder", "Graphs: frequency and temperature"), ("recorder_frequency", "Graph: frequency")),
                 hint="The cooler draws these screens itself from numbers deephack sends every second, so nothing is "
