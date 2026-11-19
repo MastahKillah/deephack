@@ -16,6 +16,25 @@ runs at `0xE000`: add `0xE000` to a `FUN_` address to get the real one. Its `Res
 base were 0), and so are its jump tables: some functions decompile as an empty endless loop. String
 references are unaffected, because the code reaches its strings relative to the program counter.
 
+## Which firmware
+
+**Everything below is about v2.70, and the one cooler this was tried on runs v2.71.** The image the
+DeepCool app ships is `MYSTIQUE_2.70.bin`; run in the emulator it reports USB `bcdDevice` `0x0246`, and
+the two bytes come straight from its data section, nothing changes them. The low byte is the minor
+version as a number: 0x46 = 70. The cooler reports `0x0247`: 2.71, a build that is not in the app
+(v1.2.15), newer than the one it carries. The app reads `bcdDevice` and compares a `deviceVersion` with
+the version in the file's name, so it has no reason to offer this cooler its 2.70.
+
+What that means:
+
+- The protocol notes agree with the cooler wherever they were tried, so the two builds are close. The
+  addresses are another matter: none of them can be assumed for 2.71.
+- The patch (below) is for 2.70. Putting it on this cooler is also a **downgrade** to a build that has
+  never run on it, next to a `ui.bin` on the serial flash that came with 2.71. The firmware uses its
+  widgets unchecked: a screen whose widget ids differ between the two would end in a call through a null
+  pointer, and a cooler that does that on its boot screen has no USB to be flashed back through.
+- There is no 2.71 image to go back to. No USB command reads the firmware out.
+
 ## Platform
 
 - **MCU:** Synwit **SWM341** (ARM Cortex-M33 class with FPU). The config system reads a
@@ -89,8 +108,12 @@ sum, then writes it to the filesystem in 4 KiB chunks. This is true for every fi
 *Confirmed in code.*
 
 - **Header type 0 is a firmware update**, not an image: the data is written to `SD:FW_update.bin` and
-  the device reboots into a bootloader that applies it. The host driver should refuse type 0.
-  *Confirmed that type 0 routes to the update file; the boot-time applier was not read.*
+  the device reboots into a bootloader that applies it. The host driver refuses type 0.
+  *Confirmed that type 0 routes to the update file; the boot-time applier was not read.* Of the header
+  only the type, the size (under 2 MiB) and the sum are used; the file id is not. As soon as the last
+  byte is in and the sum matches, without waiting for `dcldfinish`, the firmware writes the file
+  (`FUN_0001cda0`, 4 KiB at a time), turns interrupts off, resets its peripherals (`SYS.PRSTR0/1`) and
+  restarts the chip (`FUN_00027380`).
 - **Accepted file types:** 0 (firmware), 1 (still), 2 (animation). *Confirmed.*
 - **Size cap:** file must be under 2 MiB (staging buffer size). *Confirmed.*
 - **Slot cap:** 9 stills and 9 animations. Beyond that the file is written but not added to the index.
@@ -235,6 +258,8 @@ is sent nothing.
 
 What it cannot show:
 
+- **Whether v2.70 runs on a cooler that came with v2.71** (see "Which firmware"). This is the first
+  thing in the way of flashing anything.
 - **Whether the bootloader takes the image.** The update file is a bare image: vector table first, the
   compressed data section last, no header and no trailer, and neither a CRC-32 nor a byte or word sum of
   the file is anywhere at its end. So there is no room in the file for a signature, and a check, if there

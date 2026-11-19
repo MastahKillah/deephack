@@ -121,7 +121,8 @@ To let Auto pick the mode, set `claims` to a few words saying when it has someth
 ## Protocol
 
 Reverse engineered from the official app (v1.2.15, Electron) by attaching to its debug port and logging
-its USB transfers; the tooling is in [`tools/`](tools). Tested against one device (USB `bcdDevice` 2.47).
+its USB transfers; the tooling is in [`tools/`](tools). Tested against one device, firmware 2.71 (USB
+`bcdDevice` `0x0247`: the low byte is the minor version as a number, 0x47 = 71).
 
 The cooler is a full-speed vendor-class device with two bulk endpoint pairs (`0x01/0x81` for commands and
 uploads, `0x02/0x82` for the periodic sensor feed).
