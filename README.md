@@ -31,13 +31,9 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 Clicking a mode opens its page with a live preview and leaves the cooler alone; **Show on cooler** (or a
 double-click on the mode) puts it on the display. A green dot marks the mode that is on it.
 
-**RGB lights follow the screen** colours your PC's RGB lighting (the cooler's light, the board's
-headers, anything else) with the vivid colours along the edges of whatever deephack shows, ambilight
-style, fading over a second. It goes through [OpenRGB](https://openrgb.org), which has to run with its SDK
-server on (OpenRGB settings: start at login, start the server). Addressable headers cannot tell how many
-LEDs hang on them: set the count once in OpenRGB (the device, the header's zone, Resize), or nothing lights
-up. Nothing is written to the lighting controller's memory; the colours last until the next effect is
-picked or the PC is switched off.
+**Cooler light** picks what drives the light strip on the side of the pump head: the colours at the edges
+of the picture on screen (picked by the cooler itself, ambilight style), the motherboard's ARGB effects
+(needs the cooler's ARGB cable on a motherboard header) or the cooler's fixed warning colour.
 
 **Keep on screen** decides whether the cooler stays on deephack's image or cycles through every image
 stored on it (the cooler's own slideshow).
@@ -136,7 +132,7 @@ AA 2E <cmd> <payload, zero padded to 39 bytes> 'H' 'I' 'D' 'C' <sum16 LE of byte
 | cmd | meaning | payload |
 | --- | --- | --- |
 | `01` | sensor values (ep 2, once a second) | 3-byte fields, see below |
-| `02` | device options | five bytes, the official app sends `01 01 00 01 46`. The fifth is the backlight brightness in percent (0 turns the screen off); the others showed no visible effect |
+| `02` | device options | five bytes, the official app sends `01 01 00 01 46`. The fourth picks the side light's source: `0` the motherboard's ARGB signal, `1` a fixed warning colour (the app switches to it at 90 °C), `2` the colours at the edges of the picture shown, picked by the firmware when an image is shown. The fifth is the backlight brightness in percent (0 turns the screen off). The first three showed no visible effect (the app's names: noLoadScreen, gyroStatus, screenRotate) |
 | `03` | display mode | `mode` (1 = sensor dashboard, 2 = stored images, 3 = recorder) |
 | `05` | recorder layout | `0` frequency + temperature graphs, `1` frequency graph only |
 | `07` | slideshow | `duration` `animation` (0 none, 1 slide, 2 fade) |

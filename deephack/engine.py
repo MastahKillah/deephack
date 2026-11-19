@@ -21,11 +21,12 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
 from . import device, render
-from .ambient import Ambient
 from .config import GIF_SLOT_ID, SLOT_ID, Config
 from .modes import BY_ID, MODES, Mode
 from .modes.base import Animation, Dashboard
 
+LIGHTS = {"screen": device.LIGHT_SCREEN, "motherboard": device.LIGHT_MOTHERBOARD, "warning": device.LIGHT_WARNING}
+RESHOW_DELAY = 1.5           # the firmware picks up the edges of an image shown a moment after a light change
 MIN_UPLOAD_INTERVAL = 8.0     # seconds between flash writes, whatever the mode asks for
 REOPEN_INTERVAL = 3.0
 TICK = 0.5
@@ -112,12 +113,13 @@ class Engine(QThread):
         self._display = None              # the device's display mode, device.MODE_*
         self._clock_set = 0.0
         self._slideshow_applied: bool | None = None
+        self._options_applied: tuple | None = None
+        self._reshow_at: float | None = None     # after a light change: show the picture again then
         self._last_state: dict | None = None
         self._placeholder_shown = None
         self._preview: Mode | None = None
         self._preview_frame: Image.Image | Animation | None = None
         self._preview_shown = None        # placeholder of the preview last emitted
-        self.ambient = Ambient(config)    # the PC's RGB lights follow what is shown (its own thread)
 
     # ---- thread-safe API for the UI ------------------------------------
     def reload_mode(self) -> None:
@@ -137,7 +139,6 @@ class Engine(QThread):
 
     def stop(self) -> None:
         self._stop = True
-        self.ambient.stop()
 
     # ---- internals -----------------------------------------------------
     def run(self) -> None:
@@ -147,7 +148,6 @@ class Engine(QThread):
             init_apartment(ApartmentType.MULTI_THREADED)
         except Exception:
             pass
-        self.ambient.start()
         asyncio.run(self._main())
 
     def _make_mode(self) -> None:
@@ -165,7 +165,6 @@ class Engine(QThread):
 
     def _set_frame(self, img: Image.Image | Animation) -> None:
         self._frame = img
-        self.ambient.show(img)
         self._frame_seq += 1
         self.frameChanged.emit(*_qt_frames(img), False)
 
@@ -243,6 +242,7 @@ class Engine(QThread):
             self._dev_state = "connected"
             self._on_screen = None
             self._slideshow_applied = None
+            self._options_applied = None
             self._uploaded_seq = -1
             self._slot_digest = {}            # unknown what the slots hold after a reconnect
         try:
@@ -250,6 +250,16 @@ class Engine(QThread):
             if slideshow != self._slideshow_applied and self._display == device.MODE_MOTION:
                 self._dev.set_slideshow(slideshow)
                 self._slideshow_applied = slideshow
+            options = (int(self.config.get("brightness")), LIGHTS.get(self.config.get("light"), device.LIGHT_SCREEN))
+            if options != self._options_applied:
+                self._dev.set_options(*options)
+                if self._options_applied is not None:
+                    self._reshow_at = now + RESHOW_DELAY
+                self._options_applied = options
+            if self._reshow_at is not None and now >= self._reshow_at:
+                self._reshow_at = None
+                if self._on_screen == "ours":
+                    self._on_screen = None        # show it again, so the light picks up its edges
             if not enabled:
                 if self._on_screen != "restore":
                     self._show_stored(self.config.get("restore_index"), device.TYPE_JPG)
@@ -343,7 +353,6 @@ class Engine(QThread):
             "preview_status": self._preview.status if self._preview else "",
             "last_upload": self._last_upload_wall,
             "live": isinstance(self._frame, Dashboard),
-            "ambient": self.ambient.status,
             "pending": enabled and self._frame is not None and not isinstance(self._frame, Dashboard)
                        and self._frame_seq != self._uploaded_seq,
         }

@@ -131,3 +131,45 @@ def test_engine_drives_the_sensor_screen_without_writing_flash(tmp_path, monkeyp
     dev.calls.clear()
     eng._shutdown()
     assert ("set_mode", (device.MODE_MOTION,)) in dev.calls and ("show_slot", (0, device.TYPE_JPG)) in dev.calls
+
+
+def test_engine_sets_the_cooler_light_and_shows_the_picture_again(tmp_path, monkeypatch):
+    dev = RecordingDevice()
+    monkeypatch.setattr(device, "Mystique", lambda: dev)
+    config = Config(tmp_path / "config.json")
+    config.set("slot_index", 3)
+    eng = engine.Engine(config)
+    clock = [1000.0]
+    monkeypatch.setattr(engine.time, "monotonic", lambda: clock[0])
+    eng._set_frame(Image.new("RGB", (480, 640), "red"))
+
+    def step(wait=1.0):
+        clock[0] += wait
+        dev.calls.clear()
+        eng._device_step(True)
+        return dev.calls
+
+    calls = step(engine.MIN_UPLOAD_INTERVAL + 1)
+    assert ("set_options", (70, device.LIGHT_SCREEN)) in calls and ("show_slot", (3, device.TYPE_JPG)) in calls
+    assert step() == []                                              # nothing changed
+    config.set("light", "motherboard")
+    config.set("brightness", 50)
+    assert step(0.5) == [("set_options", (50, device.LIGHT_MOTHERBOARD))]
+    assert step(0.5) == []
+    assert step(1.0) == [("show_slot", (3, device.TYPE_JPG))]       # a moment later: the edges are picked again
+
+
+def test_options_payload():
+    sent = []
+
+    class Probe(device.Mystique):
+        def __init__(self):
+            pass
+
+        def command(self, cmd, payload=b"", ep=1, reply=True):
+            sent.append(device.frame(cmd, payload))
+
+    Probe().set_options(85, device.LIGHT_SCREEN)
+    Probe().set_brightness(70)
+    assert sent[0][2:8] == bytes([device.CMD_OPTIONS, 1, 1, 0, 2, 85])
+    assert sent[1][2:8] == bytes([device.CMD_OPTIONS, 1, 1, 0, 1, 70])   # as the official app sends it

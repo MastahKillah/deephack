@@ -35,7 +35,7 @@ VID, PID = 0x3633, 0x0009
 WIDTH, HEIGHT = 480, 640
 
 CMD_SENSORS = 0x01          # periodic sensor values (ep 2)
-CMD_OPTIONS = 0x02          # device options (brightness etc.)
+CMD_OPTIONS = 0x02          # device options: <?> <?> <?> <light source> <brightness>
 CMD_MODE = 0x03             # display mode
 CMD_SITUATION_MODE = 0x04
 CMD_RECORDER_MODE = 0x05
@@ -67,6 +67,11 @@ SENSOR_FIELDS = {"cpu_temp": 0, "cpu_load": 3, "ram_usage": 6, "v3_3": 9, "v5": 
 DASH_FREQUENCY, DASH_TIME, DASH_PUMP, DASH_FAN, DASH_FAN_PUMP, DASH_TEMPERATURE = range(6)
 STRIP_VOLTAGE, STRIP_SYSTEM, STRIP_CORE = 0, 1, 2   # bottom strip of the dashboard
 ANIMATION_NONE, ANIMATION_SLIDE, ANIMATION_FADE = 0, 1, 2
+# What drives the light strip on the side of the pump head (fourth byte of CMD_OPTIONS; the app calls it
+# rgbOptical): the motherboard's ARGB signal through the cooler's own ARGB cable, the cooler's fixed
+# temperature warning colour, or the colours at the edges of the picture on screen, picked by the
+# firmware whenever a stored image or animation is shown.
+LIGHT_MOTHERBOARD, LIGHT_WARNING, LIGHT_SCREEN = 0, 1, 2
 
 
 def sum16(data: bytes) -> int:
@@ -157,9 +162,14 @@ class Mystique:
     def uuid(self) -> str:
         return self.command(CMD_GET_UUID)[1:33].decode("ascii", "replace").rstrip("\0")
 
+    def set_options(self, brightness: int = 70, light: int = LIGHT_WARNING) -> None:
+        """Backlight brightness, 0 (off) to 100, and the light strip's source (LIGHT_*). The first three bytes
+        are sent as the official app sends them (its names: noLoadScreen, gyroStatus, screenRotate); they
+        showed no visible effect."""
+        self.command(CMD_OPTIONS, bytes([1, 1, 0, light, max(0, min(100, brightness))]))
+
     def set_brightness(self, percent: int) -> None:
-        """Backlight brightness, 0 (off) to 100. The other option bytes are sent as the official app sends them."""
-        self.command(CMD_OPTIONS, bytes([1, 1, 0, 1, max(0, min(100, percent))]))
+        self.set_options(percent)
 
     def set_mode(self, mode: int) -> None:
         self.command(CMD_MODE, bytes([mode]))
