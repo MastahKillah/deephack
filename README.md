@@ -117,7 +117,7 @@ AA 2E <cmd> <payload, zero padded to 39 bytes> 'H' 'I' 'D' 'C' <sum16 LE of byte
 | `0A` | set clock (ep 2) | `year:u16` `month` `day` `hour` `minute` `second` |
 | `0F` | start upload | none |
 | `12` | get UUID | reply: status byte + 32 ASCII characters |
-| `13` | **factory reset** | none. Reboots and erases every stored image and the UUID |
+| `13` | **factory reset** | none. Reboots and erases every stored image. `12` returns junk until the next power cycle |
 | `14` | **delete all stored images** | none |
 
 Commands `0B`, `0C`, `0D`, `0E` and `11` are acknowledged but did nothing visible with an empty payload.
@@ -160,6 +160,10 @@ through layouts.
 5. command `08` to show it
 
 Uploading with an id that already exists replaces that image in place.
+
+The image is only displayed once it is committed: after the data without `dcldfinish` the screen shows
+"Loading…" until the marker arrives. There is no preview of uncommitted data, and experimenting with
+unfinished uploads hung the firmware once (no endpoint accepted data until the PC was powered off).
 
 **Animations** (what the official app calls GIFs) are a sequence of JPEG frames, stored separately from the
 stills and shown with type 1. One `0F` command, then a header + JPEG for every frame, then one
