@@ -65,14 +65,17 @@ class SdCard:
             if chunk.count(0) != BLOCK:
                 self.blocks[lba] = chunk
 
-    def save(self) -> None:
-        if self.image is None or not self.dirty:
-            return
+    def raw(self) -> bytes:
+        """The card as one image, up to the last block that holds something."""
         top = max(self.blocks) + 1 if self.blocks else 0
         raw = bytearray(top * BLOCK)
         for lba, chunk in self.blocks.items():
             raw[lba * BLOCK:(lba + 1) * BLOCK] = chunk
-        self.image.write_bytes(raw)
+        return bytes(raw)
+
+    def save(self) -> None:
+        if self.image is not None and self.dirty:
+            self.image.write_bytes(self.raw())
 
     def command(self, index: int, arg: int):
         """Run a command. Returns (response words or None for "no answer", data to read or None,

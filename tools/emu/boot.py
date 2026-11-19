@@ -19,8 +19,9 @@ What is known about the image and the chip:
 
 With the models here the stock firmware boots into its main loop: it mounts the SD card (and makes
 its IMG and GIF folders on a fresh one), loads its screens from `ui.bin` on the serial flash, sets up
-USB and polls the tilt sensor. The real ui.bin lives only on the cooler's serial flash; uibin.py writes
-a stand-in the firmware accepts (one empty screen). `--flash blank` shows what the firmware does
+USB and polls the tilt sensor, and it answers USB commands (usbdev.py; bench.py puts deephack's own
+driver in front of it). The real ui.bin lives only on the cooler's serial flash; uibin.py writes a
+stand-in the firmware accepts (blank screens). `--flash blank` shows what the firmware does
 without one: an error page, "Couldn't open 'S:spi:///ui.bin'".
 
 Hardware registers are plain memory here (they read back what was written, 0 at first) unless MODELS
@@ -39,12 +40,13 @@ from pathlib import Path
 
 from unicorn import (UC_ARCH_ARM, UC_HOOK_BLOCK, UC_HOOK_MEM_READ, UC_HOOK_MEM_UNMAPPED, UC_HOOK_MEM_WRITE, UC_MODE_MCLASS,
                      UC_MODE_THUMB, Uc, UcError)
-from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_SP
+from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_PRIMASK, UC_ARM_REG_R0, UC_ARM_REG_SP, UC_ARM_REG_XPSR
 
 sys.path.insert(0, str(Path(__file__).parent))
 import fat  # noqa: E402
 import uibin  # noqa: E402
 from sdcard import SdCard, SdHost  # noqa: E402
+from usbdev import IRQ as USB_IRQ, UsbDevice  # noqa: E402
 
 DEFAULT_IMAGE = Path("C:/DeepCool/resources/app.asar.unpacked/resources/fw/MYSTIQUE_2.70.bin")
 APP = 0xE000                                              # where the image sits in flash
@@ -60,6 +62,7 @@ SDRAMC = (0x8800_0000, 0x0000_1000)
 CORE = (0xE000_0000, 0x0010_0000)                         # SysTick, NVIC, SCB
 SPIN_LIMIT = 20_000                                       # a tiny loop run this often: the firmware is waiting
 IRQ_RETURN = ROM[0] + 0xF00                               # interrupt handlers return here (see Machine.run)
+IT_BITS = 0x0600_FC00                                     # XPSR: the state of a Thumb IT block
 BLOCKS_PER_TICK = 400                                     # a SysTick interrupt every so many code blocks
 
 _MAP = json.loads(Path(__file__).with_name("swm341_registers.json").read_text())
@@ -90,6 +93,7 @@ MODELS = {
     "SFC.GO": lambda m, v: 0,                   # a serial flash command is done as soon as it is started
     "RTC.CFGABLE": lambda m, v: 1,              # the real-time clock can always be configured
     "I2C0.MCR": lambda m, v: 0,                 # an I2C start / read / write / stop is over at once (nothing answers)
+    "LCD.CR": lambda m, v: v & ~0x8000,         # a new frame buffer address is taken over at once (bit 15: reload at vblank)
     # the hardware divider: the UI loader divides with it and hangs on purpose when the answer is wrong
     "DIV.QUO": lambda m, v: m.register("DIV.DIVIDEND") // (m.register("DIV.DIVISOR") or 1),
     "DIV.REMAIN": lambda m, v: m.register("DIV.DIVIDEND") % (m.register("DIV.DIVISOR") or 1),
@@ -101,7 +105,8 @@ class Machine:
                  flash: bytes | None = None):
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         self.sd = SdCard(image=sd_image)
-        self.devices = [SdHost(_MAP["peripherals"]["SDIO"], self.sd, self._memory)]     # modelled peripherals
+        self.usb = UsbDevice(_MAP["peripherals"]["USBD"])
+        self.devices = [SdHost(_MAP["peripherals"]["SDIO"], self.sd, self._memory), self.usb]    # modelled peripherals
         for base, size in (FLASH, SRAM, EXT_RAM, ROM, PERIPHERALS, SDRAMC, CORE):
             self.uc.mem_map(base, size)
         self.uc.mem_write(APP, image)
@@ -123,6 +128,10 @@ class Machine:
         self._spin = 0
         self._spin_state: tuple = ()
         self.stuck: int | None = None
+        self.crashed: tuple[int, int] | None = None     # (address jumped to, return address) of a wild jump
+        self.trail: collections.deque = collections.deque(maxlen=12)     # the last code blocks run
+        self.failed = ""                        # why the emulator gave up (an access to unmapped memory, a bad instruction)
+        self._pc: int | None = None             # where to carry on (None: not started)
         self._interrupted = None                # the saved CPU state while an interrupt handler runs
         self._fire: int | None = None           # exception number to take at the next stop
         self._until_tick = BLOCKS_PER_TICK
@@ -203,6 +212,12 @@ class Machine:
 
     def _on_block(self, uc, address, size, data):
         self.blocks[address] += 1
+        self.trail.append(address)
+        if address < APP:                            # below the image: a call through a null or broken pointer
+            self.crashed = (address, uc.reg_read(UC_ARM_REG_LR) & ~1)
+            self.stuck = address
+            uc.emu_stop()
+            return
         if self._interrupted is not None:            # inside an interrupt handler
             if address == IRQ_RETURN:
                 uc.emu_stop()
@@ -221,6 +236,9 @@ class Machine:
             self._until_tick = BLOCKS_PER_TICK
             self._fire = 15                          # SysTick
             uc.emu_stop()
+        elif not self._until_tick & 7 and self.usb.interrupt() and not uc.reg_read(UC_ARM_REG_PRIMASK):
+            self._fire = 16 + USB_IRQ
+            uc.emu_stop()
 
     def register(self, name: str) -> int:
         """What a hardware register holds now (the last value written, unless a model says otherwise)."""
@@ -234,35 +252,51 @@ class Machine:
         return struct.unpack("<I", self.uc.mem_read(0xE000E010, 4))[0] & 3 == 3
 
     # ---- running
-    def run(self, steps: int) -> str:
-        """Run from reset. Interrupts are delivered between blocks: the whole CPU state is saved, the
-        handler runs and returns to a marker address, and the state is put back (the firmware has no
-        RTOS, so no handler looks at what was interrupted)."""
-        self.uc.reg_write(UC_ARM_REG_SP, self.sp)
-        self.uc.reg_write(UC_ARM_REG_LR, 0xFFFFFFFF)
-        pc = self.reset
+    def run(self, steps: int = 400_000_000, blocks: int | None = None) -> str:
+        """Run from reset, or carry on where the last call stopped (`blocks`: for that many more code
+        blocks). Interrupts are delivered between blocks: the whole CPU state is saved, the handler
+        runs and returns to a marker address, and the state is put back (the firmware has no RTOS, so
+        no handler looks at what was interrupted)."""
+        if blocks is not None:
+            self.block_budget = sum(self.blocks.values()) + blocks
+        if self.failed:
+            return self.failed
+        if self._pc is None:
+            self.uc.reg_write(UC_ARM_REG_SP, self.sp)
+            self.uc.reg_write(UC_ARM_REG_LR, 0xFFFFFFFF)
+            self._pc = self.reset
+        pc = self._pc
         try:
             while self.stuck is None:
                 self._fire = None
                 self.uc.emu_start(pc | 1, 0xFFFFFFF0, count=steps)
-                pc = self.uc.reg_read(UC_ARM_REG_PC)
+                pc = self._pc = self.uc.reg_read(UC_ARM_REG_PC)
                 if self._fire is not None:           # stopped at a block boundary to take an interrupt
                     self._interrupted = self.uc.context_save()
-                    self.ticks += 1
+                    self.ticks += self._fire == 15
                     handler = struct.unpack("<I", self.uc.mem_read(APP + 4 * self._fire, 4))[0]
                     self.uc.reg_write(UC_ARM_REG_SP, (self.uc.reg_read(UC_ARM_REG_SP) - 0x40) & ~7)
                     self.uc.reg_write(UC_ARM_REG_LR, IRQ_RETURN | 1)
-                    pc = handler
+                    # not in an IT block any more: without this the handler's first instructions stay
+                    # conditional on the interrupted code's flags (its "push" was skipped now and then)
+                    self.uc.reg_write(UC_ARM_REG_XPSR, self.uc.reg_read(UC_ARM_REG_XPSR) & ~IT_BITS)
+                    pc = self._pc = handler
                 elif self._interrupted is not None and pc == IRQ_RETURN:
                     self.uc.context_restore(self._interrupted)
                     self._interrupted = None
-                    pc = self.uc.reg_read(UC_ARM_REG_PC)
+                    pc = self._pc = self.uc.reg_read(UC_ARM_REG_PC)
                 else:
                     break
                 if sum(self.blocks.values()) >= self.block_budget:
                     return f"ran {self.block_budget} blocks ({self.ticks} timer ticks)"
         except UcError as e:
-            return f"stopped by the emulator ({e})"
+            pc = self.uc.reg_read(UC_ARM_REG_PC)
+            self.failed = (f"stopped by the emulator ({e}) at {pc:#x} ({self.where(pc)}); the way there: "
+                           + " > ".join(self.where(a) for a in self.trail))
+            self.stuck = pc
+            return self.failed
+        if self.crashed:
+            return f"jumped to {self.crashed[0]:#x}, called from {self.where(self.crashed[1])}"
         return "waiting in a loop" if self.stuck is not None else f"ran all {steps} instructions"
 
 
@@ -328,7 +362,7 @@ def main() -> int:
     ap.add_argument("--sd", default="", help="image file for the SD card, made if missing and written back at the end; "
                     "'blank' for an unformatted card (default: a formatted card that is not kept)")
     ap.add_argument("--flash", default="", help="image file for the serial flash; 'blank' for an erased chip "
-                    "(default: a FAT volume with a ui.bin of one empty screen, see fat.py and uibin.py)")
+                    "(default: a FAT volume with a ui.bin of empty screens, see fat.py and uibin.py)")
     ap.add_argument("--functions", default=str(Path.home() / "Desktop" / "m_fmw_decompiled" / "functions_index.txt"),
                     help="Ghidra's function list, to name code addresses (optional)")
     a = ap.parse_args()
@@ -338,7 +372,7 @@ def main() -> int:
     elif a.flash:
         flash = Path(a.flash).read_bytes()
     else:
-        flash = fat.build({"ui.bin": uibin.build({1: uibin.Widget("screen")})})
+        flash = fat.build({"ui.bin": uibin.stock()})
     sd_file = Path(a.sd) if a.sd not in ("", "blank") else None
     m = Machine(image, Path(a.functions), sd_file, flash)
     if a.sd != "blank" and not (sd_file and sd_file.exists()):

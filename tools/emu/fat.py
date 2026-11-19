@@ -48,6 +48,55 @@ def _entries(name: str, taken: set[bytes], attr: int, cluster: int, size: int) -
     return out
 
 
+def read(image: bytes) -> dict[str, bytes]:
+    """The files on a FAT16 volume, as {path: content} (the reverse of build; long names are used
+    where a file has one)."""
+    sector, cluster_sectors, reserved, fats, root_entries = struct.unpack_from("<HBHBH", image, 11)
+    fat_sectors = struct.unpack_from("<H", image, 22)[0]
+    root_start = (reserved + fats * fat_sectors) * sector
+    data_start = root_start + root_entries * 32
+    cluster_bytes = cluster_sectors * sector
+    table = reserved * sector
+
+    def chain(cluster: int) -> bytes:
+        out = bytearray()
+        while 2 <= cluster < 0xFFF8 and len(out) < len(image):
+            start = data_start + (cluster - 2) * cluster_bytes
+            out += image[start:start + cluster_bytes].ljust(cluster_bytes, b"\0")
+            cluster = struct.unpack_from("<H", image, table + 2 * cluster)[0]
+        return bytes(out)
+
+    files: dict[str, bytes] = {}
+
+    def walk(raw: bytes, prefix: str) -> None:
+        long_parts: list[bytes] = []
+        for i in range(0, len(raw) - 31, 32):
+            e = raw[i:i + 32]
+            if e[0] == 0:
+                break
+            if e[0] == 0xE5:
+                long_parts = []
+                continue
+            if e[11] == 0x0F:
+                long_parts.insert(0, e[1:11] + e[14:26] + e[28:32])
+                continue
+            name = b"".join(long_parts).decode("utf-16-le", "replace").split("\0")[0] if long_parts else ""
+            long_parts = []
+            if not name:
+                stem, ext = e[0:8].decode("latin1").rstrip(), e[8:11].decode("latin1").rstrip()
+                name = f"{stem}.{ext}" if ext else stem
+            if e[11] & 0x08 or name in (".", ".."):
+                continue
+            cluster, size = struct.unpack_from("<HI", e, 26)
+            if e[11] & 0x10:
+                walk(chain(cluster), f"{prefix}{name}/")
+            else:
+                files[prefix + name] = chain(cluster)[:size]
+
+    walk(image[root_start:data_start], "")
+    return files
+
+
 def build(files: dict[str, bytes], megabytes: int = 16, cluster_sectors: int = 4, label: str = "DEEPHACK") -> bytes:
     total = megabytes * 1024 * 1024 // SECTOR
     reserved, root_entries = 1, 512

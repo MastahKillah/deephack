@@ -173,14 +173,27 @@ How far the stock firmware gets (v2.70), and what each step needed:
 | serial flash contents | a FAT volume with `ui.bin` on it (`tools/emu/fat.py`, `tools/emu/uibin.py`) |
 | UI data | the hardware divider (`DIV`): the loader divides with it and checks the answer |
 | SD card contents | a FAT volume (`fat.py`); the firmware makes its `IMG` and `GIF` folders itself |
+| the boot screen ending | the LCD controller taking a new frame buffer address at once (`LCD.CR` bit 15) |
+| USB commands | a model of the USB device controller (`tools/emu/usbdev.py`) |
+| an upload | the upload screen and the image screen in `ui.bin`, with the widgets their code uses |
 
-It then runs its **main loop**: USB endpoints set up, the tilt sensor polled over I2C, the screen from
-`ui.bin` on the LCD. The frame buffer is saved as a picture after every run (`captures/emu_screen.png`).
-With `--flash blank` the firmware shows what it does without its UI data: a red cross and "Couldn't
-open 'S:spi:///ui.bin'".
+It then runs its **main loop**: the logo screen for 4 s, then the screen for its mode, USB commands
+answered, the tilt sensor polled over I2C. The frame buffer is saved as a picture after every run
+(`captures/emu_screen.png`). With `--flash blank` the firmware shows what it does without its UI data:
+a red cross and "Couldn't open 'S:spi:///ui.bin'".
 
-Still to model: the USB device controller, to feed the firmware the `AA 2E` command frames and uploads
-the real driver sends, and the JPEG decoder, without which no stored picture reaches the frame buffer.
+`tools/emu/bench.py` puts deephack's own driver (`deephack.device.Mystique`) in front of the emulated
+firmware. What works that way: the device descriptor (3633:0009), commands and their replies (`12`
+answers an empty id on a fresh card), and **an upload**: the driver's `upload_jpeg` ends with
+`IMG/000_<id>/angle_0.jpg` on the emulated SD card, byte for byte what was sent.
+
+Still to do: the JPEG decoder (hardware on this chip), without which no stored picture reaches the
+frame buffer, and the widgets of the other screens (see below): the dashboard and the recorder end in
+a call through a null pointer, because the firmware uses its widgets unchecked.
+
+One emulator bug worth remembering: an interrupt can arrive inside a Thumb IT block. The handler must
+start with the IT state cleared, or its first instructions stay conditional on the interrupted code's
+flags (here the handler's `push` was skipped once in a few million ticks, and it returned to garbage).
 
 ### The serial flash and `ui.bin`
 
@@ -195,7 +208,7 @@ a file back, so the real one is out of reach without hardware access. Its format
 | header, `0x34` bytes | `"SynwitUI\0"`; `0x10` format major (0); `0x14` format minor (7); `0x18` a flag byte; `0x1C` offset of the screen table; `0x20` of the widgets; `0x24` of the resource table; `0x28`, `0x2C`, `0x30` of three resource data sections |
 | screen table | u32 count, then that many u32 screen ids |
 | widgets | 12 bytes (u16 at `+0x0A`: the screen to start with), u32 count, then {u32 screen id, u32 offset of the screen's widget} each |
-| a widget | a blob: u32 size, u8 type, the rest is the widget's own structure; then u32 string count, u32 (unknown), the strings as {u32 length, bytes}; then u32 child count and that many u32 offsets of child widgets |
+| a widget | a blob: u32 size, u8 type, 3 unused bytes, u32 id, the rest is the widget's own structure (a name of up to 32 characters at `+0x10`; `+0x30` to `+0x40` and `+0x50` are filled in at run time); then u32 string count, u32 (unknown), the strings as {u32 length, bytes}; then u32 child count and that many u32 offsets of child widgets |
 | resource table | `"RESLD\0"`, u32 0, u32 1, u32 count (not 0), then 12 bytes {screen id, offset, ?} each; at the offset three lists of u32 (count first), one per resource data section |
 
 A wrong magic gives "Invalid UI data file", a wrong version "Incompatible UI data(fmt:%d.%d)! Current
@@ -212,9 +225,86 @@ The loader guards itself: before and after loading a screen it divides a running
 chip's hardware divider and spins forever if quotient and remainder are not what software division
 gives. An emulator without the divider hangs there, which is presumably the point.
 
-`uibin.py` writes a file with empty screens. That is enough to boot; the fields inside a widget's
-structure (position, size, text, picture) are not worked out, so the stock screens cannot be rebuilt
-yet.
+`uibin.py` writes a file with every screen the firmware knows, blank except for the few widgets the
+upload and image screens need. The fields inside a widget's structure (position, size, text, picture)
+are not worked out, so the stock screens cannot be rebuilt yet. A label that is filled in the way the
+firmware's own defaults routine does it (`0x10E40`) is accepted.
+
+### Screens
+
+The firmware's code is tied to `ui.bin` by ids. A screen's widget carries the screen id; at start
+(`FUN_0002e340`) the firmware registers three handlers per screen id: **on entering** (it looks up its
+widgets by id here and keeps the pointers), **on leaving**, and **on the screen's timer**. The table
+is in the compressed data section, so the handlers have no visible reference in the image (and Ghidra
+did not find most of them).
+
+| screen | what it is |
+| --- | --- |
+| `01` | boot logo. Its timer handler runs twice: it starts a 4 s timer, then sets the "ready" byte (`0x200051A8`) and goes to `2D`. The screen selector (`FUN_00020628`) does nothing before that byte is set |
+| `02` to `10`, `17` to `1F` | dashboards, 10 to 24 widgets each (mode 1; which one by layout and rotation) |
+| `29` `2A` `2B` | recorder (mode 3): made in code from line objects and a chart, on top of 8 to 13 widgets |
+| `2C` | upload. Entered when command `0F` sets its flag. **The file is received by this screen's "leaving" handler** (`0x69A88`): a loop around the upload state machine (`FUN_000200ec`) that ends on success, on a flag, or after about 15.7 million rounds without a packet; then the next screen loads |
+| `2D` | where the firmware goes after the logo and when it has nothing to show; timer every tick |
+| `90E` | stored pictures and animations (mode 2); widgets `90F`, `915` (150 x 200), `916` (325 x 28) |
+| `917` | command `A1` |
+
+So an upload never happens "in the background": the firmware sits in a loop inside a screen change,
+and nothing else on screen is serviced until the file is in.
+
+Widget ids each screen looks up when entered (hex; the first is the screen itself):
+
+| screen | widget ids |
+| --- | --- |
+| `01` | 4A4, 912, 913, 914, 918, 919 |
+| `02` | 30 to 34, 36 to 3D |
+| `03` | 41 to 44, 46, 47, 4A, 4B, 4C, 50 to 53 |
+| `04` | 54 to 59, 61 to 64 |
+| `05` | B7 to BD, C0 to C4, E4 |
+| `06` | C5, C7 to D2 |
+| `07` | D3 to D9, DB, DC, DD |
+| `08` | DF to E2, E5 to E9, 1B7, 1BA, 1BB, 1BC |
+| `09` | EA to F2, 1B8, 1BD, 1BF, 1C1 |
+| `0A` | F3 to F8, 1B9, 1BE, 1C0, 1C2 |
+| `0B` | F9 to 105 |
+| `0C` | 1A0, 1A2, 1A4, 1A6, 1A8 to 1B0 |
+| `0D` | 1A1, 1A3, 1A5, 1A7, 1B1 to 1B6 |
+| `0E` | 1C4, 1C8 to 1D2 |
+| `0F` | 1C5, 1D3, 1D5, 1D7 to 1DF |
+| `10` | 1C6, 1D4, 1D6, 1E0 to 1E5 |
+| `17` | 22B, 22D, 386 to 38E, 3CE, 3CF, 3D0, 709, 70B |
+| `18` | 22E, 3A1 to 3A9, 3D1, 3D3, 3D5, 70E, 8D8, 8E2 |
+| `19` | 22F, 234, 3BC to 3C1, 3D2, 3D4, 3D6, 8D9, 8DB |
+| `1A` | 23F, 241, 377, 379, 38F to 397, 3E0 to 3E5, 8E3 to 8E6 |
+| `1B` | 3AA to 3B2, 8E7 to 8F4 |
+| `1C` | 3C2 to 3C7, 8F5 to 902 |
+| `1D` | 235, 23C, 398 to 3A0, 3D7, 3DA, 3DD, 8DC, 8DF |
+| `1E` | 236, 23D, 3B3 to 3BB, 3D8, 3DB, 3DE, 8DD, 8E0 |
+| `1F` | 237, 23E, 3C8 to 3CD, 3D9, 3DC, 3DF, 8DE, 8E1 |
+| `29` | 482 to 489 |
+| `2A` | 48A, 48C, 48E to 493 |
+| `2B` | 48B, 48D, 494 to 49A, 49C, 49E, 49F, 4A0 |
+| `2C` | 4A2 |
+| `2D` | 706, 90B, 90C, 90D |
+| `90E` | 90F, 915, 916 |
+
+### The USB device controller
+
+No public description of the SWM341's controller turned up; this is read off the firmware's interrupt
+handler (IRQ 77, `0x34AEC`), with the register names of the swm341-pac crate. Base `0x40005000`.
+
+- The handler deals with one cause per call, in this order: `DEVIF` reset (bit 3), set-configuration
+  (bit 0), SETUP (bit 6), then `EPIF` IN 0, OUT 0, IN 1, OUT 1, IN 2, OUT 2. It never writes `EPIF`
+  and clears SETUP only through `SETUPSR`: both are views of the status registers.
+- A received packet is plain memory at `RXBUF` (`0x40009000`); `RXSR` has its length (bits 22 up) and
+  endpoint (bits 16 to 19). The handler writes 2 to `RXSR`, checks bit 0 and copies up to 64 bytes.
+- Endpoint 1 OUT: the packet goes to `0x200006F0` (length at `0x200006D5`). If it starts `AA 2E` the
+  command dispatcher (`FUN_00020f58`) runs right there, in the interrupt, and the endpoint is armed
+  again (`RXCR` = 4, then 8). Anything else (upload data) is left in the buffer for the upload loop,
+  and the endpoint stays unarmed until the loop has taken it: the host is held off with NAKs.
+- Endpoint 2 OUT: buffer `0x200014E0`, handler `0x2F268` (sensor values, clock).
+- To send, the firmware fills `TXBUFn` (`0x400` apart), writes the length to `TXTRSZ` and 8 to `TXCR`;
+  afterwards it clears `TXSR` with `0xA`.
+- Set-configuration arms OUT endpoints 1 and 2.
 
 Not covered, ever: the bootloader below `0xE000` (not in the update file), which is what decides
 whether a flashed image is accepted. The emulator makes patches testable; it cannot make flashing safe.
@@ -227,6 +317,7 @@ whether a flashed image is accepted. The emulator makes patches testable; it can
 - Sensor fields at offset 27+ and the clock command (`0A`) live in the second-endpoint handler, not
   yet read
 - The SD-type chip's real erase-cycle budget (it holds the `SD:` files; the serial flash holds the UI)
-- The fields inside a `ui.bin` widget, and which widget ids the firmware's own code looks up
+- The fields inside a `ui.bin` widget, and the kind (label, image, level image) of each widget id
+- Why the emulated firmware answers command `10` with command byte 0 (not tried on the real cooler)
 - What `13` (factory reset) and `14` (delete all) do after their flags are set, and why `12` returns
   junk until a power cycle after a reset
