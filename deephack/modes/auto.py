@@ -25,13 +25,14 @@ from .github import GitHub
 from .nba import Nba
 from .now_playing import NowPlaying
 from .photo_frame import PhotoFrame
+from .scene import Scene
 from .system import SystemMonitor
 from .tamagotchi import Tamagotchi
 from .ticker import Ticker
 from .weather import Weather
 
 CANDIDATES: tuple[type[Mode], ...] = (Calendar, GameCover, NowPlaying, Tamagotchi, Nba, Countdown, ClaudeUsage, SystemMonitor, GitHub)
-FALLBACKS: tuple[type[Mode], ...] = (Weather, Live, PhotoFrame, Ticker, SystemMonitor, Countdown, ClaudeUsage, Tamagotchi, Nba, NowPlaying, GameCover, GitHub, Calendar)
+FALLBACKS: tuple[type[Mode], ...] = (Weather, Scene, Live, PhotoFrame, Ticker, SystemMonitor, Countdown, ClaudeUsage, Tamagotchi, Nba, NowPlaying, GameCover, GitHub, Calendar)
 DEFAULT_ORDER = "calendar,game_cover,now_playing,tamagotchi,nba,countdown,-claude_usage,-system,-github"
 LINGER = 120.0
 

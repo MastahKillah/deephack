@@ -54,6 +54,14 @@ def _get_json(url: str, params: dict) -> dict:
         return json.load(r)
 
 
+def locate(city: str) -> tuple[str, float, float]:
+    """(name, latitude, longitude) of a city, raises LookupError when there is none."""
+    hits = _get_json(GEOCODE_URL, {"name": city.strip(), "count": 1, "language": "en", "format": "json"}).get("results")
+    if not hits:
+        raise LookupError(f"No place called “{city.strip()}” found")
+    return hits[0]["name"], hits[0]["latitude"], hits[0]["longitude"]
+
+
 # ------------------------------------------------------------------ icons
 def _cloud(d: ImageDraw.ImageDraw, x: float, y: float, w: float, fill) -> None:
     """Cloud with bounding box of roughly (x, y, x + w, y + 0.62 w)."""
@@ -182,10 +190,7 @@ class Weather(Mode):
 
     def _fetch(self) -> tuple[str, dict]:
         if self._place is None:
-            hits = _get_json(GEOCODE_URL, {"name": self.values["city"].strip(), "count": 1, "language": "en", "format": "json"}).get("results")
-            if not hits:
-                raise LookupError(f"No place called “{self.values['city'].strip()}” found")
-            self._place = (hits[0]["name"], hits[0]["latitude"], hits[0]["longitude"])
+            self._place = locate(self.values["city"])
         name, lat, lon = self._place
         data = _get_json(FORECAST_URL, {
             "latitude": lat, "longitude": lon, "timezone": "auto", "forecast_days": 4,

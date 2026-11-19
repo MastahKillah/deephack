@@ -19,6 +19,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **NBA** | The last two results and the next two games, with team logos, for one team or the whole league. From ESPN's public feed; tip-off times in your local time zone. While your team plays, a big scoreboard with points per quarter takes over, updated every few minutes. |
 | **Claude Code** | Plan limits (5-hour and weekly) and today's tokens, requests, hourly activity and model split. All from local files, see below. |
 | **Claude Pet** | An animated pixel pet with your plan limit percentages. It works along while Claude Code is busy, dances while music plays, sleeps at night and celebrates or sulks after your NBA team's games; you pick which of these count and which wins. Otherwise its mood follows the fullest limit: happy, fine, stressed, exhausted. |
+| **Scene** | A little pixel-art city under your real sky: dawn, day, dusk and night follow the sunrise and sunset, and clouds, fog, rain, snow or a thunderstorm follow the current weather in the Weather page's city. Windows light up in the evening, street lamps glow, a car drives by. An 8-frame animation, rewritten only when the time of day or the kind of weather changes. Also a fallback for Auto. |
 | **Countdown** | Days until a date you set, with a title. On the last day it counts hours, then minutes. |
 | **Photo Frame** | Pictures from a folder you pick, changing every 15 minutes to once a day, shuffled or by file name. Portrait photos fill the screen, wider ones are shown whole. |
 | **Game Cover** | The cover art of the game you are playing, for games started through Steam (Steam notes the running game in the registry; covers come from its image server). |
@@ -61,7 +62,7 @@ autostart entry.
   of once per track. Showing an image the cooler already holds again (Auto switching back to it) costs
   no write.
 - **deephack adds files the DeepCool app does not know about:** one image, and one animation once you use
-  Claude Pet. They are stored after the JPGs / GIFs you uploaded with the official app. If you later add
+  Claude Pet or Scene. They are stored after the JPGs / GIFs you uploaded with the official app. If you later add
   files there, its numbering will be off by one. `python -m deephack.device delete <index>` (add `--gif`
   for the animation) removes them; the indexes are `slot_index` and `gif_slot_index` in
   `%APPDATA%\deephack\config.json`.

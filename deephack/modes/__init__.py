@@ -10,12 +10,13 @@ from .github import GitHub
 from .nba import Nba
 from .now_playing import NowPlaying
 from .photo_frame import PhotoFrame
+from .scene import Scene
 from .system import SystemMonitor
 from .tamagotchi import Tamagotchi
 from .ticker import Ticker
 from .weather import Weather
 
-MODES: tuple[type[Mode], ...] = (Auto, NowPlaying, Weather, Calendar, Nba, ClaudeUsage, Tamagotchi, Countdown, PhotoFrame, GameCover, Ticker, SystemMonitor, Live, GitHub)
+MODES: tuple[type[Mode], ...] = (Auto, NowPlaying, Weather, Calendar, Nba, ClaudeUsage, Tamagotchi, Countdown, PhotoFrame, GameCover, Ticker, SystemMonitor, Live, GitHub, Scene)
 BY_ID = {m.id: m for m in MODES}
 
 __all__ = ["Animation", "Mode", "Setting", "MODES", "BY_ID"]
