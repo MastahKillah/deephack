@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 
 OUT = Path(__file__).resolve().parent.parent / "captures" / "cam"
-CROP = (125, 512, 362, 672)   # y0, y1, x0, x1 of the LCD in the 1280x960 frame; depends on where the camera sits
+CROP = (118, 540, 355, 680)   # y0, y1, x0, x1 of the LCD in the 1280x960 frame; depends on where the camera sits
 
 
 class Cam:

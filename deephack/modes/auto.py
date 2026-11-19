@@ -77,6 +77,7 @@ class Auto(Mode):
     async def frame(self):
         now = time.monotonic()
         for mode_id, child in self.children.items():
+            child.direct = self.direct
             try:
                 img = await child.frame()
             except Exception:
@@ -87,6 +88,8 @@ class Auto(Mode):
             if child.active and mode_id in self.order:
                 self._seen[mode_id] = now
         self.chosen = self.pick(now)
+        self.tick = self.children[self.chosen].tick if self.chosen else None   # the mode on screen may want
+                                                                               # its frames faster for a while
         if self.chosen is None:
             fallback = self.children[self.fallback]
             self.status = f"{fallback.title}: {fallback.status}" if fallback.status else "Looking for something to show"

@@ -214,6 +214,7 @@ class Engine(QThread):
 
     async def _preview_step(self) -> None:
         mode = self._preview
+        mode.direct = self._drawing
         try:
             img = await mode.frame()
         except Exception:
@@ -237,6 +238,7 @@ class Engine(QThread):
                     break
             enabled = self.config.get("enabled")
             if enabled:
+                self._mode.direct = self._drawing
                 try:
                     img = await self._mode.frame()
                 except Exception:

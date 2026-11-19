@@ -333,8 +333,16 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   88 ms to send, and no upload at all. They go over a plain black still stored once in deephack's slot.
   An animation (Scene) in between is stored as before, and the pictures after it are drawn again.
 
+- **With real music** (Spotify playing, 19 Nov 2026): the Visualizer sent 255 frames in 15 s, 17 a
+  second, using 22 of its 24 loudness steps. The webcam's picture followed the frames sent best 125 ms
+  later (correlation 0.86 between the step drawn and the screen's brightness). That figure has the
+  camera's own delay in it, and the camera gave only 7.5 pictures a second in the dark, so it is an
+  upper bound and a rough one. Now Playing drew a frame a second (59 to 78 KB) for the progress bar; a
+  skipped track was announced by Spotify 0.7 s after the command and was on screen 0.45 s after that,
+  faded in over five frames about 90 ms apart.
+
 Not looked at on the cooler: a frame with a wrong sum, a frame the host abandons half way, how far a
-drawn frame is behind its command (the webcam's own delay is not known), and how the patched firmware
+drawn frame is behind its command with the camera's delay taken out, and how the patched firmware
 behaves over hours.
 
 What the emulator cannot show:

@@ -13,7 +13,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | Mode | What it shows |
 | --- | --- |
 | **Auto** | Whatever has something to show right now, by a priority order you set: the game you are playing, the music that is on, Claude Pet while Claude Code works, your NBA team around its games, a countdown on its last day. Otherwise a fallback mode such as Weather. A mode keeps the screen for two minutes after it goes quiet, so a paused song does not flip the display. |
-| **Now Playing** | Cover, title and artist of the current track. Uses Windows' system media controls, so it works with Spotify, anything playing in a browser, foobar2000 and so on. |
+| **Now Playing** | Cover, title and artist of the current track. Uses Windows' system media controls, so it works with Spotify, anything playing in a browser, foobar2000 and so on. With the [direct drawing firmware](#protocol) on the cooler it also shows how far into the track the player is, every second, and a new track fades in the moment the player announces it. |
 | **Weather** | Current conditions and a three day outlook for a city you pick, from [Open-Meteo](https://open-meteo.com) (no account or key). |
 | **Calendar** | The next event with a countdown, and the four after it, from one or more .ics calendar links (Google Calendar's "secret address in iCal format", Outlook.com's published ICS link, iCloud) or an exported .ics file. Recurring events and time zones included. The countdown moves in coarse steps (days, hours, half hours, ten minutes), about ten writes per event. In Auto it takes the screen from 15 minutes before an event until it ends. |
 | **NBA** | The last two results and the next two games, with team logos, for one team or the whole league. From ESPN's public feed; tip-off times in your local time zone. While your team plays, a big scoreboard with points per quarter takes over, updated every few minutes. |
@@ -227,6 +227,11 @@ unfinished uploads hung the firmware once (no endpoint accepted data until the P
 stills and shown with type 1. One `0F` command, then a header + JPEG for every frame, then one
 `dcldfinish`. The frame headers use type 2 and fill three `u16` fields at offset 13: frame count, total
 loop duration in milliseconds, and the frame's index.
+
+A mode can see whether its pictures cost anything: the engine sets `direct` on it while they are drawn
+straight from USB (the direct drawing firmware, below). Then a picture may come every tick, and a mode
+may set its own `tick` for a moment to animate (see `now_playing.py`: the progress bar, and the fade to
+a new track).
 
 A mode returns an `Animation(frames, duration_ms)` instead of an image to use this (see `tamagotchi.py`).
 Every frame is written to flash, so keep them few. For real-time changes a mode returns a

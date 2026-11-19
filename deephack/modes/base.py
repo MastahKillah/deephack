@@ -2,7 +2,8 @@
 
 A mode produces 480x640 images. The engine calls `frame()` about once a second; return a new PIL image
 when the display should change and None otherwise. Every image a mode returns ends up as a write to the
-cooler's flash, so only return one when the content really changed.
+cooler's flash, so only return one when the content really changed. The exception is a cooler with the
+direct drawing firmware: the engine sets `direct` on the mode then, and pictures cost nothing.
 
 Modes that sometimes have something worth showing (music playing, a game running) set `claims` to a short
 description and keep `active` up to date in `frame()`; the Auto mode gives them the screen while it is set.
@@ -85,6 +86,8 @@ class Mode:
         self.status = ""                                  # one-line state shown in the UI
         self.placeholder: tuple[str, str] | None = None   # (title, subtitle) for the preview when there is no frame
         self.active = False                               # has something worth showing right now (see `claims`)
+        self.direct = False                               # set by the engine: its pictures are drawn from USB, not
+                                                          # stored, so a new one costs nothing and may come every tick
 
     @classmethod
     def build(cls, settings) -> Mode:
