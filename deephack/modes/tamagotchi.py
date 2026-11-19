@@ -166,7 +166,7 @@ class Tamagotchi(Mode):
     id = "tamagotchi"
     title = "Claude Pet"
     description = "A pixel pet that feels your limits"
-    glyph = ""
+    glyph = ""
     settings = (
         Setting("refresh", "Check limits every", "choice", "15", (("5", "5 minutes"), ("15", "15 minutes"), ("30", "30 minutes"), ("60", "1 hour")),
                 hint="The pet is an 8-frame animation stored on the cooler. It is rewritten only when a percentage "
