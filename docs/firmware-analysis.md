@@ -22,8 +22,9 @@ references are unaffected, because the code reaches its strings relative to the 
 DeepCool app ships is `MYSTIQUE_2.70.bin`; run in the emulator it reports USB `bcdDevice` `0x0246`, and
 the two bytes come straight from its data section, nothing changes them. The low byte is the minor
 version as a number: 0x46 = 70. The cooler reports `0x0247`: 2.71, a build that is not in the app
-(v1.2.15), newer than the one it carries. The app reads `bcdDevice` and compares a `deviceVersion` with
-the version in the file's name, so it has no reason to offer this cooler its 2.70.
+(v1.2.15), newer than the one it carries. The app's compiled code holds the strings `bcdDevice` and
+`deviceVersion` and a pattern for the version in a firmware file's name, which fits an app that compares
+the two and would not offer this cooler its 2.70. *Inferred from the strings; the code was not read.*
 
 What that means:
 
