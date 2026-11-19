@@ -22,6 +22,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **Photo Frame** | Pictures from a folder you pick, changing every 15 minutes to once a day, shuffled or by file name. Portrait photos fill the screen, wider ones are shown whole. |
 | **Game Cover** | The cover art of the game you are playing, for games started through Steam (Steam notes the running game in the registry; covers come from its image server). |
 | **Ticker** | Up to five stocks, indices, currency pairs or coins with price, change and a sparkline for today, five days or a month. From Yahoo Finance's public chart feed (no account or key). |
+| **System** | CPU and GPU temperature, load and power, memory, and pump and fan speeds, with graphs of the last half hour to three hours. Readings are taken every 10 seconds; the screen is redrawn every few minutes, since each redraw is a flash write. Temperatures and fans come from DeepCool's own sensor service (see [Protocol](#protocol)); without it only CPU load and memory are shown. |
 
 Clicking a mode opens its page with a live preview and leaves the cooler alone; **Show on cooler** (or a
 double-click on the mode) puts it on the display. A green dot marks the mode that is on it.
@@ -187,6 +188,15 @@ A mode returns an `Animation(frames, duration_ms)` instead of an image to use th
 Every frame is written to flash, so keep them few.
 
 `python -m deephack.device --help` exposes the driver on the command line.
+
+**DeepCool's sensor service.** The DeepCool app installs a Windows service, "JZFS Sensor Bridge Service",
+that reads the hardware through HWiNFO and answers on the named pipe `\\.\pipe\jzfs_sensor_bridge_v2`,
+also to programs without admin rights. It keeps running when the app is closed. Every message is a 20 byte
+header, `"DCS2"`, version `2`, kind (`1` request, `2` response, `3` pushed event), two zero bytes, the body
+length `u32`, a sequence number `u32` (a response repeats its request's) and the CRC-32 of the body `u32`,
+followed by a JSON body `{"op": "...", "body": {}}`. `HELLO` and then `GET_SENSOR_SNAPSHOT` return the
+readings by name (`"CPU Temperature"`, `"Gpu usage"`, `"Memory Load"`, `"Fan list"`, ...). The app ships a
+read-only client for it, `tools/fan-sensor-observer.mjs` inside `resources/app.asar`.
 
 ## Disclaimer
 

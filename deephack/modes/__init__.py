@@ -7,11 +7,12 @@ from .game_cover import GameCover
 from .nba import Nba
 from .now_playing import NowPlaying
 from .photo_frame import PhotoFrame
+from .system import SystemMonitor
 from .tamagotchi import Tamagotchi
 from .ticker import Ticker
 from .weather import Weather
 
-MODES: tuple[type[Mode], ...] = (Auto, NowPlaying, Weather, Nba, ClaudeUsage, Tamagotchi, Countdown, PhotoFrame, GameCover, Ticker)
+MODES: tuple[type[Mode], ...] = (Auto, NowPlaying, Weather, Nba, ClaudeUsage, Tamagotchi, Countdown, PhotoFrame, GameCover, Ticker, SystemMonitor)
 BY_ID = {m.id: m for m in MODES}
 
 __all__ = ["Animation", "Mode", "Setting", "MODES", "BY_ID"]

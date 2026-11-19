@@ -22,13 +22,14 @@ from .game_cover import GameCover
 from .nba import Nba
 from .now_playing import NowPlaying
 from .photo_frame import PhotoFrame
+from .system import SystemMonitor
 from .tamagotchi import Tamagotchi
 from .ticker import Ticker
 from .weather import Weather
 
-CANDIDATES: tuple[type[Mode], ...] = (GameCover, NowPlaying, Tamagotchi, Nba, Countdown, ClaudeUsage)
-FALLBACKS: tuple[type[Mode], ...] = (Weather, PhotoFrame, Ticker, Countdown, ClaudeUsage, Tamagotchi, Nba, NowPlaying, GameCover)
-DEFAULT_ORDER = "game_cover,now_playing,tamagotchi,nba,countdown,-claude_usage"
+CANDIDATES: tuple[type[Mode], ...] = (GameCover, NowPlaying, Tamagotchi, Nba, Countdown, ClaudeUsage, SystemMonitor)
+FALLBACKS: tuple[type[Mode], ...] = (Weather, PhotoFrame, Ticker, SystemMonitor, Countdown, ClaudeUsage, Tamagotchi, Nba, NowPlaying, GameCover)
+DEFAULT_ORDER = "game_cover,now_playing,tamagotchi,nba,countdown,-claude_usage,-system"
 LINGER = 120.0
 
 
