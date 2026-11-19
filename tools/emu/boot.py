@@ -17,8 +17,11 @@ What is known about the image and the chip:
 - 0x11000000 is the chip's mask ROM (flash timing helpers). It is not in the image either: every
   routine there is stubbed to return at once, and the calls are logged.
 
+With the models here the stock firmware starts its graphics library and draws its first screen: an
+error page, "Couldn't open 'S:spi:///ui.bin'". The UI data lives only on the cooler's serial flash.
+
 Hardware registers are plain memory here (they read back what was written, 0 at first) unless MODELS
-says otherwise. Every access is logged, and when the firmware spins on a register that never changes,
+or a device (the SD card and its host controller, sdcard.py) says otherwise. Every access is logged, and when the firmware spins on a register that never changes,
 the run stops and names it. That register is the next thing to model.
 """
 from __future__ import annotations
@@ -34,6 +37,9 @@ from pathlib import Path
 from unicorn import (UC_ARCH_ARM, UC_HOOK_BLOCK, UC_HOOK_MEM_READ, UC_HOOK_MEM_UNMAPPED, UC_HOOK_MEM_WRITE, UC_MODE_MCLASS,
                      UC_MODE_THUMB, Uc, UcError)
 from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_SP
+
+sys.path.insert(0, str(Path(__file__).parent))
+from sdcard import SdCard, SdHost  # noqa: E402
 
 DEFAULT_IMAGE = Path("C:/DeepCool/resources/app.asar.unpacked/resources/fw/MYSTIQUE_2.70.bin")
 APP = 0xE000                                              # where the image sits in flash
@@ -77,13 +83,16 @@ MODELS = {
     "SYS.PLLLOCK": lambda m, v: 1,              # the PLL is always locked
     "SDRAMC.CR": lambda m, v: v & ~2,           # the SDRAM's power-on sequence (bit 1) finishes at once
     "SFC.GO": lambda m, v: 0,                   # a serial flash command is done as soon as it is started
-    "SDIO.CR2": lambda m, v: v | 2 if v & 1 else v,   # the SD clock is stable as soon as it is switched on
+    "RTC.CFGABLE": lambda m, v: 1,              # the real-time clock can always be configured
+    "I2C0.MCR": lambda m, v: 0,                 # an I2C start / read / write / stop is over at once (nothing answers)
 }
 
 
 class Machine:
-    def __init__(self, image: bytes, functions: Path | None = None):
+    def __init__(self, image: bytes, functions: Path | None = None, sd_image: Path | None = None):
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
+        self.sd = SdCard(image=sd_image)
+        self.devices = [SdHost(_MAP["peripherals"]["SDIO"], self.sd, self._memory)]     # modelled peripherals
         for base, size in (FLASH, SRAM, EXT_RAM, ROM, PERIPHERALS, SDRAMC, CORE):
             self.uc.mem_map(base, size)
         self.uc.mem_write(APP, image)
@@ -134,10 +143,28 @@ class Machine:
         base, name = self.names[i]
         return f"{name}+{offset - base:#x}"
 
+    def _memory(self, address: int, data):
+        """For devices that move data themselves (DMA): write bytes, or read that many."""
+        if isinstance(data, int):
+            return bytes(self.uc.mem_read(address, data))
+        self.uc.mem_write(address, bytes(data))
+        return None
+
+    def _device(self, address: int):
+        for device in self.devices:
+            if device.base <= address < device.base + device.size:
+                return device
+        return None
+
     # ---- hooks
     def _on_read(self, uc, access, address, size, value, data):
         self.reads[address] += 1
         self.readers[address].add(uc.reg_read(UC_ARM_REG_PC))
+        device = self._device(address)
+        if device is not None:                  # put the register's current value where the read will find it
+            word = address & ~3
+            uc.mem_write(word, struct.pack("<I", device.read(word - device.base) & 0xFFFFFFFF))
+            return
         model = self.models.get(address & ~3)
         if model is not None:
             last = struct.unpack("<I", uc.mem_read(address & ~3, 4))[0]
@@ -149,6 +176,9 @@ class Machine:
         log = self.writes[address]
         log.append(value & 0xFFFFFFFF)
         del log[:-4]
+        device = self._device(address)
+        if device is not None:
+            device.write(address - device.base, value & 0xFFFFFFFF, size)
 
     def _on_unmapped(self, uc, access, address, size, value, data):
         self.unmapped.append((address, uc.reg_read(UC_ARM_REG_PC)))
@@ -229,6 +259,13 @@ def report(m: Machine, outcome: str) -> None:
         print("  debug port output:")
         for line in m.console.decode("latin1").splitlines():
             print("    | " + line)
+    if m.sd.log:
+        counts = collections.Counter(name for name, _ in m.sd.log)
+        print("  SD card commands:", " ".join(f"{name}x{n}" if n > 1 else name for name, n in counts.items()))
+        reads = [t for t in m.devices[0].transfers if t[0] == "read"]
+        writes = [t for t in m.devices[0].transfers if t[0] == "write"]
+        print(f"  SD card: {len(reads)} reads (blocks {sorted({t[1] for t in reads})[:12]}...), {len(writes)} writes, "
+              f"{len(m.sd.blocks)} blocks hold data")
     for (address, caller), n in sorted(m.rom_calls.items()):
         print(f"  ROM routine {address:#010x} called {n}x from {m.where(caller)}")
     pages: collections.Counter = collections.Counter()
@@ -236,6 +273,7 @@ def report(m: Machine, outcome: str) -> None:
         pages[address & ~0x7FF] += n
     for address, values in m.writes.items():
         pages[address & ~0x7FF] += len(values)
+    print("  most read registers:", ", ".join(f"{register_name(a)} x{n}" for a, n in m.reads.most_common(4)))
     print("  hardware touched (accesses, then the registers):")
     for page, n in sorted(pages.items()):
         registers = sorted({a for a in list(m.reads) + list(m.writes) if a & ~0x7FF == page})
@@ -264,17 +302,19 @@ def main() -> int:
     ap.add_argument("image", nargs="?", default=str(DEFAULT_IMAGE))
     ap.add_argument("--steps", type=int, default=200_000_000)
     ap.add_argument("--blocks", type=int, default=3_000_000, help="stop after this many code blocks")
+    ap.add_argument("--sd", default="", help="raw image file for the SD card (read at start, written back at the end)")
     ap.add_argument("--functions", default=str(Path.home() / "Desktop" / "m_fmw_decompiled" / "functions_index.txt"),
                     help="Ghidra's function list, to name code addresses (optional)")
     a = ap.parse_args()
     image = Path(a.image).read_bytes()
-    m = Machine(image, Path(a.functions))
+    m = Machine(image, Path(a.functions), Path(a.sd) if a.sd else None)
     m.block_budget = a.blocks
     print(f"image {len(image)} bytes, stack {m.sp:#x}, reset handler {m.reset:#x}")
     report(m, m.run(a.steps))
     out = Path(__file__).resolve().parents[2] / "captures"
     out.mkdir(exist_ok=True)
     print("  screen:", screenshot(m, out / "emu_screen.png"))
+    m.sd.save()
     return 0
 
 

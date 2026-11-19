@@ -38,11 +38,14 @@ references are unaffected, because the code reaches its strings relative to the 
   etc. and loads its screens from a `ui.bin` resource table. The dashboard labels/units are baked
   into these resources, which is why only the numbers are host-controllable. *Confirmed in code.*
 - **Display:** 480x640, configured via `peripheral.display.hres` / `.vres` (0x1e0 x 0x280). *Confirmed.*
-- **Storage:** *two* devices, seen in the emulator: a **serial (QSPI) flash**, identified with JEDEC
-  `9F`, switched to quad mode and read through a memory window at `0x70000000` with command `EB`; and an
-  **SD-type device on SDIO**, which gets SD commands right after. Which one holds the `SD:` files and
-  which the UI resources is not traced yet (the name suggests the SDIO one holds the files, and the
-  erase-cycle worry then applies to an SD NAND / eMMC rather than a NOR flash). Earlier reading: external
+- **Storage:** *two* devices, seen in the emulator. A **serial (QSPI) flash**, identified with JEDEC
+  `9F`, switched to quad mode and read through a memory window at `0x70000000` with command `EB`: it
+  holds the UI resources (the firmware asks for `S:spi:///ui.bin`). And an **SD card or SD NAND on SDIO**,
+  brought up with the standard SD handshake (CMD0, CMD8, ACMD41, CMD2, CMD3, CMD9, CMD7, ACMD6 for the
+  4-bit bus, CMD16) and read with CMD17 through the data port: by elimination and by name it holds the
+  `SD:` files, the stills and animations. So the erase-cycle worry applies to an SD-type chip, which
+  does its own wear levelling, rather than to a bare NOR flash. The firmware reads block 0 of an empty
+  card six times before giving up on mounting it. Earlier reading of this item: one external
   SPI flash exposed through a filesystem with an
   `S:SD:` path prefix. A `test_Spiflash_OK` string and SPI init confirm the medium. This is the part
   with the unknown, finite erase-cycle budget that the host driver rate-limits writes to spare.
@@ -163,13 +166,26 @@ How far the stock firmware gets (v2.70), and what each step needed:
 | debug UART, serial flash | a flash command completes at once; a blank (all `FF`) flash at `0x70000000` |
 | GPIO, backlight PWM, delays | SysTick interrupts (the delay loop counts ticks at `0x200071DC`) |
 | LCD controller, JPEG decoder set up | nothing more |
-| SD card bring-up | the SD clock's "stable" bit. **Stops here:** it sends SD commands and waits for an answer |
+| SD card | an SD card and host controller model (`tools/emu/sdcard.py`): the handshake completes and block 0 is read |
+| real-time clock | its "configurable" flag |
+| I2C (the tilt sensor) | transfers end at once; nothing answers |
+| graphics | nothing more: LVGL starts and draws |
 
-Next, in order: an SD card model (enough of the command set for the firmware's FAT layer, backed by an
-image file), which should let the firmware mount or format its file store; then the USB device
-controller, to feed it the `AA 2E` command frames and uploads the real driver sends; then the JPEG
-decoder (hardware on this chip), without which no stored picture reaches the frame buffer. The frame
-buffer itself can already be saved as a picture (`captures/emu_screen.png`); it is still black.
+It then **draws its first screen**: a red cross and "Couldn't open 'S:spi:///ui.bin'", and idles in a
+loop behind it. The frame buffer is saved as a picture after every run (`captures/emu_screen.png`).
+
+That is the wall for booting the *whole* firmware: `ui.bin` (the screens, built with Synwit's UI tool)
+and `SynwitManifest.cfg` exist only on the cooler's serial flash. They are not in the update file or
+in the DeepCool app, and no USB command reads a file back. Ways on:
+
+1. Read the cooler's serial flash (hardware access: the flash chip or the debug port).
+2. Work out the `ui.bin` format from its loader and write a minimal one that satisfies it.
+3. Leave the UI out: run only the parts a direct-draw patch touches (USB receive, JPEG decode, LCD
+   flush) as functions in the emulator, with the hardware JPEG decoder and the USB controller modelled.
+
+Still to model for any of them: the USB device controller, to feed the firmware the `AA 2E` command
+frames and uploads the real driver sends, and the JPEG decoder, without which no stored picture
+reaches the frame buffer.
 
 Not covered, ever: the bootloader below `0xE000` (not in the update file), which is what decides
 whether a flashed image is accepted. The emulator makes patches testable; it cannot make flashing safe.
