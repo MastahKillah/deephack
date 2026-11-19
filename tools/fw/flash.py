@@ -10,6 +10,9 @@ here has seen, then writes the file over the firmware. Nothing can be done from 
 and nothing from USB afterwards if the new firmware does not start: there is no way back short of a
 debug probe on the board. Do not unplug or switch off while it runs.
 
+Done once for real: "patched" on 19 Nov 2026, to a cooler that ran DeepCool's v2.70. It was off the bus
+for 12 seconds and came back drawing (docs/firmware-analysis.md, "On the cooler").
+
 "stock" is also the way back from "patched", for as long as the firmware on the cooler still takes
 uploads. There is no image of v2.71, which some coolers come with (docs/firmware-analysis.md, "Which
 firmware"): for those, flashing either image is a downgrade that cannot be undone.

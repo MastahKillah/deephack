@@ -18,7 +18,11 @@ references are unaffected, because the code reaches its strings relative to the 
 
 ## Which firmware
 
-**Everything below is about v2.70, and the one cooler this was tried on runs v2.71.** The image the
+**Everything below is about v2.70. The one cooler this was tried on came with v2.71 and now runs v2.70:**
+it was downgraded to DeepCool's image, and on 19 Nov 2026 it reported `0x0246` before the patched image
+(below) was flashed to it. So v2.70 does run on a unit that shipped with v2.71, with the `ui.bin` that
+unit came with: the stored pictures, the upload screen and the boot logo all show. The rest of this
+section is what was known before that, and still holds for any other cooler that reports 2.71. The image the
 DeepCool app ships is `MYSTIQUE_2.70.bin`; run in the emulator it reports USB `bcdDevice` `0x0246`, and
 the two bytes come straight from its data section, nothing changes them. The low byte is the minor
 version as a number: 0x46 = 70. The cooler reports `0x0247`: 2.71, a build that is not in the app
@@ -207,7 +211,8 @@ operations: confirm SWD access → dump → understand update verification → o
 ### The patch
 
 `tools/fw/patch.py` builds the patched image from the stock v2.70 one (checked by hash; the result goes
-to `captures/`, which is not in the repository). **It runs in the emulator. It has not been flashed.**
+to `captures/`, which is not in the repository). **It runs in the emulator, and since 19 Nov 2026 on the
+cooler** (see "On the cooler" below).
 
 It appends 472 bytes of code after the image and changes sixteen bytes of it: four 4-byte jumps.
 
@@ -242,7 +247,8 @@ How it works:
   given up, so a host that dies half way cannot leave the cooler taking commands for picture data.
 - It only acts on the image screen (`90E`, mode 2); a frame that arrives on another screen is dropped.
   The screen needs one stored picture: with none the stock firmware hides the picture widget every
-  100 ms. A stored picture comes back with `08` (show), as before.
+  100 ms. A stored picture comes back with `08` (show), but on the cooler only for a slot other than
+  the one already selected (see "On the cooler").
 - Its state is 36 bytes of RAM at `0x2000F000`. The firmware's stack starts at `0x2000B418` and grows
   down; in the emulator nothing touches the RAM above it.
 
@@ -267,11 +273,38 @@ decoded alternately from the two buffers, with still one file on the card; a wro
 frame are handled as described; an upload and `08` work afterwards; the stock image refuses nothing and
 is sent nothing.
 
-What it cannot show:
+#### On the cooler
 
-- **Whether v2.70 runs on a cooler that came with v2.71** (see "Which firmware"). This is the first
-  thing in the way of flashing anything.
-- **Whether the bootloader takes the image.** The update file is a bare image: vector table first, the
+Flashed on 19 Nov 2026 with `python tools/fw/flash.py patched --i-accept-the-risk`, to the one cooler,
+which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every two seconds.
+
+- **The bootloader takes a changed, longer image.** The screen showed "Loading..." while the firmware
+  stored the file, the cooler left the bus one second after the last packet and was back 12 seconds
+  later, with the screen dark in between and the DeepCool logo after. It reports `0x0246` as before
+  (the version bytes are not touched by the patch), the same id to `12`, and answers `20` as the patch
+  does. So whatever the bootloader checks, it is not a sum or signature over the image that the patch
+  breaks, and it writes at least to the end of the file (the patch's code is the file's last 472
+  bytes, in the same 4 KiB of flash as the stock image's end). The stored pictures were still there.
+- **Frames from USB are shown.** Three test cards five seconds apart were each on screen in the next
+  camera frame; `draw_jpeg` returned after 10 to 13 ms for cards of 7 to 9 KB.
+- **Speed, as the host sees it** (frames sent back to back, each as soon as the cooler said "go ahead";
+  none had to be given up): 8.6 KB frames 19.6 a second, 41 KB (a real picture at quality 75) 16.2 a
+  second, 72 KB (quality 92) 10.2 a second. The camera is too slow to count them: it confirmed that the
+  last frame of each run was the one left on screen.
+- **Getting the stored picture back is not as described above.** `08` for the slot that is already
+  selected leaves the drawn frame on screen, and so does sending mode 2 again. `08` for another slot
+  shows that slot's picture, and from there `08` for the first one works. Drawing works again after.
+- deephack was started again afterwards and its Scene, a stored animation, came back on screen. Whether
+  that took an upload was not looked at, so an upload to the patched firmware on the cooler is not
+  proven yet.
+
+Not looked at on the cooler: a frame with a wrong sum, a frame the host abandons half way, a frame sent
+on another screen, and how the patched firmware behaves over hours.
+
+What the emulator cannot show:
+
+- **Whether v2.70 runs on a cooler that came with v2.71** (see "Which firmware"). *It does, on this one.*
+- **Whether the bootloader takes the image.** *It did, see above.* The update file is a bare image: vector table first, the
   compressed data section last, no header and no trailer, and neither a CRC-32 nor a byte or word sum of
   the file is anywhere at its end. So there is no room in the file for a signature, and a check, if there
   is one, can only be a sanity check or a sum kept inside the image. That is encouraging and proves
@@ -280,7 +313,7 @@ What it cannot show:
 - **Whether the flash after the image is free.** The code goes to `0x7C218`, right behind the image.
   The firmware was not seen writing to its own flash, but only the paths that ran were looked at.
 - **Speed.** Emulated time is not real time. On the cooler a frame costs its USB transfer (full speed:
-  at most about 1 MB/s) plus one decode.
+  at most about 1 MB/s) plus one decode. *Measured since, see above.*
 - **The decoder itself.** The model decodes the file with Pillow (#18); the real one has only ever been
   given what the stock loader hands it, and the patch hands it the same thing from another address.
 
@@ -470,9 +503,12 @@ whether a flashed image is accepted. The emulator makes patches testable; it can
 
 ## Open questions
 
-- Boot-time firmware-update applier: signature/CRC gate? (decides route 1; see "The patch" for what the
-  update file itself says)
-- Is SWD locked? (the recovery path, to be known before anything is flashed)
+- Boot-time firmware-update applier: it took the patched image (see "On the cooler"), so no signature
+  and no sum the patch breaks. What it does check, if anything, is still unknown: a broken image may
+  well be written as readily
+- Is SWD locked? (the only recovery path if a flashed image does not start)
+- Why `08` for the slot already on show does not bring the stored picture back after a drawn frame
+  (seen on the cooler; in the emulator test `08` after a new upload does, which is not the same case)
 - Does the firmware ever write to its own flash behind the image?
 - Sensor fields at offset 27+ and the clock command (`0A`) live in the second-endpoint handler, not
   yet read

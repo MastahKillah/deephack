@@ -121,8 +121,9 @@ To let Auto pick the mode, set `claims` to a few words saying when it has someth
 ## Protocol
 
 Reverse engineered from the official app (v1.2.15, Electron) by attaching to its debug port and logging
-its USB transfers; the tooling is in [`tools/`](tools). Tested against one device, firmware 2.71 (USB
-`bcdDevice` `0x0247`: the low byte is the minor version as a number, 0x47 = 71).
+its USB transfers; the tooling is in [`tools/`](tools). Tested against one device. It came with firmware
+2.71 (USB `bcdDevice` `0x0247`: the low byte is the minor version as a number, 0x47 = 71) and has since
+been downgraded to 2.70, the only version DeepCool gives out; the protocol is the same on both.
 
 The cooler is a full-speed vendor-class device with two bulk endpoint pairs (`0x01/0x81` for commands and
 uploads, `0x02/0x82` for the periodic sensor feed).
@@ -226,13 +227,19 @@ Every frame is written to flash, so keep them few. For real-time changes a mode 
 
 **Drawing without storing** is not something the stock firmware can do. `tools/fw/patch.py` builds a
 firmware that can: one new command (`20`, size and sum16, then the JPEG) puts a frame on screen straight
-from RAM, and the driver has `can_draw()` and `draw_jpeg()` for it. So far it runs **only in the
-emulator** (`python tools/emu/bench.py --firmware ...`, and `tests/test_direct_draw.py`). It has not
-been flashed to a cooler. `tools/fw/flash.py` can send it (or DeepCool's own v2.70) through the
-cooler's update channel, and has only ever done so to the emulated firmware: **a flash that goes wrong
-cannot be undone from USB.** Read "Which firmware" and "Direct drawing" in
-[docs/firmware-analysis.md](docs/firmware-analysis.md) first; the cooler this was written on runs a
-newer firmware than the only image there is.
+from RAM, and the driver has `can_draw()` and `draw_jpeg()` for it. It runs in the emulator
+(`python tools/emu/bench.py --firmware ...`, and `tests/test_direct_draw.py`) and, since 19 Nov 2026,
+**on one cooler**: `tools/fw/flash.py patched` sent it through the cooler's update channel, the cooler
+was off the bus for 12 seconds and came back drawing. Measured there, from the host: a 41 KB frame 16
+times a second, a 72 KB one 10 times, an 8 KB one 20 times. The modes do not use it yet.
+
+To get a stored picture back after drawing, show a **different** slot (`08`): showing the slot that is
+already selected, or sending the mode again, leaves the drawn frame on screen.
+
+**A flash that goes wrong cannot be undone from USB.** That it worked once, on a cooler that already ran
+DeepCool's v2.70, says nothing certain about another unit: read "Which firmware" and "Direct drawing" in
+[docs/firmware-analysis.md](docs/firmware-analysis.md) first. A cooler that reports 2.71 would be
+downgraded by it, and there is no 2.71 image to go back to.
 
 `python -m deephack.device --help` exposes the driver on the command line.
 
