@@ -28,6 +28,7 @@ API = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/"
 LOGO_HOST_SUFFIX = ".espncdn.com"
 RETRY_SECONDS = 120
 SEARCH_DAYS = 5          # league view: how far to look back / ahead for two games each
+GAME_HOURS = 2.5         # roughly how long a game lasts, tip-off to final
 
 TEAMS = (
     ("ATL", "Atlanta Hawks"), ("BOS", "Boston Celtics"), ("BKN", "Brooklyn Nets"), ("CHA", "Charlotte Hornets"),
@@ -323,6 +324,7 @@ class Nba(Mode):
     title = "NBA"
     description = "Last 2 results, next 2 games"
     glyph = ""
+    claims = "team playing"
     settings = (
         Setting("team", "Team", "choice", "all", (("all", "All teams"),) + tuple((abbr, name) for abbr, name in TEAMS)),
         Setting("refresh", "Refresh every", "choice", "30", (("15", "15 minutes"), ("30", "30 minutes"), ("60", "1 hour")),
@@ -338,6 +340,7 @@ class Nba(Mode):
         super().__init__(values)
         self._next = 0.0
         self._shown = None
+        self._games: tuple[list[Game], list[Game], Game | None] | None = None
         self.placeholder = ("NBA", "Fetching games…")
 
     @property
@@ -368,7 +371,18 @@ class Nba(Mode):
             soon = [s for s in starts if 0 < s < refresh]
             self._next = now + (min(soon) + 30 if soon else refresh)
 
+    def claiming(self, now: datetime | None = None) -> bool:
+        """For Auto: from an hour before the picked team's tip-off until about an hour after the final."""
+        if self.values["team"] == "all" or self._games is None:
+            return False
+        past, upcoming, live = self._games
+        now = now or datetime.now().astimezone()
+        starting = any(g.when - now <= timedelta(hours=1) for g in upcoming[:1])
+        just_played = bool(past) and now - past[-1].when <= timedelta(hours=GAME_HOURS + 1)
+        return live is not None or starting or just_played
+
     async def frame(self):
+        self.active = self.claiming()
         if time.monotonic() < self._next:
             return None
         try:
@@ -378,6 +392,8 @@ class Nba(Mode):
             self._next = time.monotonic() + RETRY_SECONDS
             return None
         self._schedule(upcoming, live)
+        self._games = (past, upcoming, live)
+        self.active = self.claiming()
         if live is not None:
             self.status = f"LIVE {live.away.abbr} {live.away.score or 0} – {live.home.score or 0} {live.home.abbr} · {live_label(live)}"
             if ("live", live) == self._shown:

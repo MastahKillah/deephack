@@ -64,6 +64,13 @@ QScrollBar::handle:vertical:hover {{ background: {MUTED}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
 
+#orderList {{ background: {BG}; border: 1px solid {BORDER}; border-radius: 8px; padding: 4px; outline: none; }}
+#orderList::item {{ padding: 6px 4px; border-radius: 6px; color: {TEXT}; }}
+#orderList::item:hover {{ background: {CARD_HOVER}; }}
+#orderList::item:selected {{ background: {ACCENT_SOFT}; }}
+#orderList::indicator {{ width: 14px; height: 14px; border-radius: 4px; border: 1px solid {MUTED}; background: transparent; margin-right: 4px; }}
+#orderList::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; image: url("@CHECK@"); }}
+
 QMenu {{ background: {CARD}; border: 1px solid {BORDER}; padding: 6px; }}
 QMenu::item {{ padding: 6px 22px; border-radius: 6px; }}
 QMenu::item:selected {{ background: {ACCENT_SOFT}; }}

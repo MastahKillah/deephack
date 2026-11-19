@@ -144,6 +144,7 @@ class GameCover(Mode):
     title = "Game Cover"
     description = "Art of the Steam game you play"
     glyph = ""
+    claims = "game running"
     settings = (
         Setting("layout", "Layout", "choice", "full", (("full", "Cover with the game's name"), ("art", "Cover only")),
                 hint="Detects games started through Steam. Covers come from Steam's image server and are cached."),
@@ -170,11 +171,13 @@ class GameCover(Mode):
         app = await asyncio.to_thread(running_app)
         if not app:
             self._pending = 0
+            self.active = False
             if self._shown is None:
                 self.status = "No game running"
             return None
         if app != self._pending:
             self._pending, self._pending_since = app, now
+        self.active = now - self._pending_since >= SETTLE_SECONDS
         key = (app, self.values["layout"])
         if self._shown and self._shown[:2] == key and (self._shown[2] or now < self._failed.get(app, 0.0)):
             return None                                  # drawn already (without a cover: until the next retry)

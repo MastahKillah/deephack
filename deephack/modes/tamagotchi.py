@@ -15,7 +15,7 @@ from .. import render
 from ..config import config_dir
 from ..render import H, W
 from .base import Animation, Mode, Setting
-from .claude_usage import SNAPSHOT_NAME, read_limits
+from .claude_usage import SNAPSHOT_NAME, Activity, read_limits
 
 FRAMES = 8
 LOOP_MS = 2000
@@ -167,6 +167,7 @@ class Tamagotchi(Mode):
     title = "Claude Pet"
     description = "A pixel pet that feels your limits"
     glyph = ""
+    claims = "Claude busy"
     settings = (
         Setting("refresh", "Check limits every", "choice", "15", (("5", "5 minutes"), ("15", "15 minutes"), ("30", "30 minutes"), ("60", "1 hour")),
                 hint="The pet is an 8-frame animation stored on the cooler. It is rewritten only when a percentage "
@@ -179,8 +180,10 @@ class Tamagotchi(Mode):
         self._shown = None
         self.snapshot = config_dir() / SNAPSHOT_NAME
         self.placeholder = ("Claude Pet", "Waking up…")
+        self._activity = Activity()
 
     async def frame(self):
+        self.active = await self._activity.busy()
         if time.monotonic() < self._next:
             return None
         self._next = time.monotonic() + int(self.values["refresh"]) * 60

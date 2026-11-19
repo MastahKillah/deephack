@@ -6,6 +6,7 @@ blocking). The UI talks to it through thread-safe methods and listens to two sig
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import queue
 import subprocess
@@ -52,6 +53,17 @@ def _stored_count(kind: str) -> int:
     return sum(1 for p in base.glob(f"*/{kind}/*") if p.is_dir())
 
 
+def digest(frame: Image.Image | Animation) -> bytes:
+    """Fingerprint of what a frame looks like, to skip uploads of an image the cooler already holds."""
+    h = hashlib.sha1()
+    for img in frame.frames if isinstance(frame, Animation) else [frame]:
+        h.update(f"{img.mode}{img.size}".encode())
+        h.update(img.tobytes())
+    if isinstance(frame, Animation):
+        h.update(str(frame.duration_ms).encode())
+    return h.digest()
+
+
 def to_qimage(img: Image.Image) -> QImage:
     rgba = img.convert("RGBA")
     return QImage(rgba.tobytes(), rgba.width, rgba.height, QImage.Format.Format_RGBA8888).copy()
@@ -74,6 +86,8 @@ class Engine(QThread):
         self._uploaded_seq = -1
         self._last_upload = 0.0
         self._last_upload_wall: float | None = None
+        self._slot_digest: dict[int, bytes] = {}      # slot type -> digest of what we last stored in it
+        self._frame_digest: tuple[int, bytes] | None = None   # (frame seq, digest), computed once per frame
         self._dev: device.Mystique | None = None
         self._dev_state = "missing" if use_device else "preview"   # connected | busy | missing | preview
         self._next_open = 0.0
@@ -105,7 +119,7 @@ class Engine(QThread):
 
     def _make_mode(self) -> None:
         cls = BY_ID.get(self.config.get("mode"), MODES[0])
-        self._mode = cls(self.config.mode_settings(cls.id))
+        self._mode = cls.build(self.config)
         self._frame = None
         self._emit_placeholder()
 
@@ -166,6 +180,7 @@ class Engine(QThread):
             self._on_screen = None
             self._slideshow_applied = None
             self._uploaded_seq = -1
+            self._slot_digest = {}            # unknown what the slots hold after a reconnect
         try:
             slideshow = bool(self.config.get("slideshow"))
             if slideshow != self._slideshow_applied:
@@ -179,24 +194,30 @@ class Engine(QThread):
             if self._frame is None:
                 return
             if self._frame_seq != self._uploaded_seq:
-                if now - self._last_upload < MIN_UPLOAD_INTERVAL:
-                    return
                 animated = isinstance(self._frame, Animation)
+                slot = device.TYPE_GIF if animated else device.TYPE_JPG
+                if self._frame_digest is None or self._frame_digest[0] != self._frame_seq:
+                    self._frame_digest = (self._frame_seq, digest(self._frame))
+                stored = self._slot_digest.get(slot) == self._frame_digest[1]
+                if not stored and now - self._last_upload < MIN_UPLOAD_INTERVAL:
+                    return
                 key, kind = ("gif_slot_index", "gif") if animated else ("slot_index", "jpg")
                 index = self.config.get(key)
                 if index is None:
                     index = _stored_count(kind)
                     self.config.set(key, index)
-                if animated:
-                    frames = [device.encode_jpeg(f, quality=88) for f in self._frame.frames]
-                    self._dev.upload_gif(GIF_SLOT_ID, frames, self._frame.duration_ms)
-                    self._ours = (device.TYPE_GIF, index)
-                else:
-                    self._dev.upload_jpeg(SLOT_ID, device.encode_jpeg(self._frame))
-                    self._ours = (device.TYPE_JPG, index)
-                self._dev.show_slot(self._ours[1], self._ours[0])
+                if not stored:            # e.g. Auto switching back to an unchanged image: just show it again
+                    if animated:
+                        frames = [device.encode_jpeg(f, quality=88) for f in self._frame.frames]
+                        self._dev.upload_gif(GIF_SLOT_ID, frames, self._frame.duration_ms)
+                    else:
+                        self._dev.upload_jpeg(SLOT_ID, device.encode_jpeg(self._frame))
+                    self._slot_digest[slot] = self._frame_digest[1]
+                    self._last_upload = time.monotonic()
+                self._ours = (slot, index)
+                self._dev.show_slot(index, slot)
                 self._uploaded_seq = self._frame_seq
-                self._last_upload, self._last_upload_wall = time.monotonic(), time.time()
+                self._last_upload_wall = time.time()
                 self._on_screen = "ours"
             elif self._on_screen != "ours" and self._ours is not None:
                 self._dev.show_slot(self._ours[1], self._ours[0])

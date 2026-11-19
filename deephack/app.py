@@ -15,7 +15,7 @@ from .engine import Engine
 from .modes import MODES
 from .ui import style
 from .ui.main_window import MainWindow
-from .ui.widgets import app_icon, write_arrow
+from .ui.widgets import app_icon, write_arrow, write_check
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -36,9 +36,10 @@ def main(argv: list[str] | None = None) -> int:
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)
     app.setStyle("Fusion")
-    arrow = config_dir() / "arrow.png"
+    arrow, check = config_dir() / "arrow.png", config_dir() / "check.png"
     write_arrow(str(arrow))
-    app.setStyleSheet(style.QSS.replace("@ARROW@", arrow.as_posix()))
+    write_check(str(check))
+    app.setStyleSheet(style.QSS.replace("@ARROW@", arrow.as_posix()).replace("@CHECK@", check.as_posix()))
     icon = app_icon()
     app.setWindowIcon(icon)
 

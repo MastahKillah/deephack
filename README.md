@@ -12,6 +12,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 
 | Mode | What it shows |
 | --- | --- |
+| **Auto** | Whatever has something to show right now, by a priority order you set: the game you are playing, the music that is on, Claude Pet while Claude Code works, your NBA team around its games, a countdown on its last day. Otherwise a fallback mode such as Weather. A mode keeps the screen for two minutes after it goes quiet, so a paused song does not flip the display. |
 | **Now Playing** | Cover, title and artist of the current track. Uses Windows' system media controls, so it works with Spotify, anything playing in a browser, foobar2000 and so on. |
 | **Weather** | Current conditions and a three day outlook for a city you pick, from [Open-Meteo](https://open-meteo.com) (no account or key). |
 | **NBA** | The last two results and the next two games, with team logos, for one team or the whole league. From ESPN's public feed; tip-off times in your local time zone. While your team plays, a big scoreboard with points per quarter takes over, updated every few minutes. |
@@ -48,7 +49,8 @@ autostart entry.
 - **Every update is a write to the cooler's flash.** There is no known way to draw without storing the
   image first. deephack rate-limits writes (at most one every 8 seconds, tracks have to settle before they
   are drawn), but the flash endurance of the device is unknown. "Cover only" writes once per album instead
-  of once per track.
+  of once per track. Showing an image the cooler already holds again (Auto switching back to it) costs
+  no write.
 - **deephack adds files the DeepCool app does not know about:** one image, and one animation once you use
   Claude Pet. They are stored after the JPGs / GIFs you uploaded with the official app. If you later add
   files there, its numbering will be off by one. `python -m deephack.device delete <index>` (add `--gif`
@@ -94,6 +96,10 @@ class Hello(Mode):
 
 Add it to `MODES` in `deephack/modes/__init__.py`. Declare `settings` on the class and the UI builds the
 form for you (see `weather.py`). `python -m deephack --no-device` runs the UI without touching the cooler.
+
+To let Auto pick the mode, set `claims` to a few words saying when it has something to show
+(`claims = "music playing"`), keep `self.active` up to date in `frame()`, and add the class to
+`CANDIDATES` in `auto.py`.
 
 ## Protocol
 

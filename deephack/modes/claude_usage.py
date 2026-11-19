@@ -140,6 +140,36 @@ class Day:
         return t
 
 
+# ------------------------------------------------------------------ activity
+BUSY_SECONDS = 10 * 60       # a session counts as busy for this long after it last wrote to its log
+CHECK_SECONDS = 30
+
+
+def last_activity(root: Path | None = None) -> float:
+    """When any Claude Code session last wrote to its log (epoch seconds, 0 if never)."""
+    newest = 0.0
+    for path in (root or claude_dir() / "projects").rglob("*.jsonl"):
+        try:
+            newest = max(newest, path.stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
+class Activity:
+    """Throttled check of whether Claude Code is busy, for the modes' `active` flag."""
+
+    def __init__(self):
+        self._next = 0.0
+        self._last = 0.0
+
+    async def busy(self) -> bool:
+        if time.monotonic() >= self._next:
+            self._next = time.monotonic() + CHECK_SECONDS
+            self._last = await asyncio.to_thread(last_activity)
+        return time.time() - self._last < BUSY_SECONDS
+
+
 # ------------------------------------------------------------------ plan limits
 def read_limits(path: Path, now: float | None = None) -> dict | None:
     """{'five_hour': (percent, reset_epoch | None), 'seven_day': (...)} from the claude-hud snapshot, or None."""
@@ -284,6 +314,7 @@ class ClaudeUsage(Mode):
     title = "Claude Code"
     description = "Plan limits and today's usage"
     glyph = ""
+    claims = "Claude busy"
     settings = (
         Setting("refresh", "Refresh every", "choice", "15", (("5", "5 minutes"), ("15", "15 minutes"), ("30", "30 minutes"), ("60", "1 hour")),
                 hint="Each refresh rewrites the display. Plan limits need the claude-hud plugin writing a usage snapshot; "
@@ -297,6 +328,7 @@ class ClaudeUsage(Mode):
         self._shown = None
         self.snapshot = config_dir() / SNAPSHOT_NAME
         self.placeholder = ("Claude Code", "Reading today's session logs…")
+        self._activity = Activity()
 
     def _collect(self) -> tuple[dict | None, dict]:
         midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -307,6 +339,7 @@ class ClaudeUsage(Mode):
         return read_limits(self.snapshot), self._day.totals()
 
     async def frame(self):
+        self.active = await self._activity.busy()
         if time.monotonic() < self._next:
             return None
         self._next = time.monotonic() + int(self.values["refresh"]) * 60

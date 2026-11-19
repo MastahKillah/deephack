@@ -11,7 +11,7 @@ from ..config import Config
 from ..engine import Engine, quit_deepcool
 from ..modes import BY_ID, MODES
 from . import style
-from .widgets import ModeButton, Preview, StatusDot, Switch
+from .widgets import ComboBox, ModeButton, OrderList, Preview, StatusDot, Switch
 
 
 def _label(text: str, name: str = "", wrap: bool = False) -> QLabel:
@@ -222,8 +222,12 @@ class MainWindow(QMainWindow):
         for s in cls.settings:
             lay.addWidget(_label(s.label))
             current = values.get(s.key, s.default)
-            if s.kind == "choice":
-                box = QComboBox()
+            if s.kind == "order":
+                order = OrderList(s.choices, current)
+                order.changed.connect(lambda value, key=s.key: self._set_setting(cls.id, key, value))
+                lay.addWidget(order)
+            elif s.kind == "choice":
+                box = ComboBox()
                 box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
                 box.setMinimumContentsLength(12)      # long entries must not widen the column
                 for value, text in s.choices:
@@ -260,7 +264,7 @@ class MainWindow(QMainWindow):
         if self.config.mode_settings(mode_id).get(key, None) == value:
             return
         self.config.set_mode_setting(mode_id, key, value)
-        if self.config.get("mode") == mode_id:
+        if self.config.get("mode") in (mode_id, "auto"):    # Auto runs the other modes with their own settings
             self.engine.reload_mode()
 
     def _set_enabled(self, on: bool) -> None:

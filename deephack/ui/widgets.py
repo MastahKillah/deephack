@@ -1,10 +1,12 @@
 """Small custom widgets: toggle switch, LCD preview, status dot, mode button, app icon."""
 from __future__ import annotations
 
-from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtWidgets import QAbstractButton, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QAbstractButton, QAbstractItemView, QComboBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton,
+                               QSizePolicy, QVBoxLayout, QWidget)
 
+from ..modes.base import parse_order
 from . import style
 
 
@@ -108,6 +110,67 @@ class Preview(QWidget):
             p.fillRect(screen, QColor(8, 9, 14, 170))
 
 
+class ComboBox(QComboBox):
+    """Combo box that ignores the mouse wheel unless it has focus, so scrolling the settings past it does
+    not change the value."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event):  # noqa: N802
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()            # let the scroll area have it
+
+
+class OrderList(QListWidget):
+    """Priority list for an "order" setting: drag rows to reorder, tick to include."""
+
+    changed = Signal(str)
+
+    def __init__(self, choices: tuple[tuple[str, str], ...], value: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName("orderList")
+        self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+        labels = dict(choices)
+        for mode_id, on in parse_order(value, list(labels)):
+            item = QListWidgetItem(labels[mode_id])
+            item.setData(Qt.ItemDataRole.UserRole, mode_id)
+            item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsDragEnabled
+                          | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+            self.addItem(item)
+        self._last = self.value()
+        # a drop arrives as several model changes; report once, when it has settled
+        self._debounce = QTimer(self, singleShot=True, interval=0)
+        self._debounce.timeout.connect(self._report)
+        for sig in (self.model().rowsMoved, self.model().rowsInserted, self.model().rowsRemoved, self.itemChanged):
+            sig.connect(lambda *_: self._debounce.start())
+
+    def showEvent(self, event):  # noqa: N802 - fit the height to the rows once the style sheet has been applied
+        super().showEvent(event)
+        rows = sum(self.sizeHintForRow(i) for i in range(self.count()))
+        self.setFixedHeight(rows + 2 * self.frameWidth() + 10)
+
+    def value(self) -> str:
+        items = (self.item(i) for i in range(self.count()))
+        return ",".join(("" if it.checkState() == Qt.CheckState.Checked else "-") + it.data(Qt.ItemDataRole.UserRole) for it in items)
+
+    def _report(self) -> None:
+        value = self.value()
+        if value != self._last:
+            self._last = value
+            self.changed.emit(value)
+
+
 class StatusDot(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -177,6 +240,25 @@ def app_icon() -> QIcon:
         p.end()
         icon.addPixmap(pm)
     return icon
+
+
+def write_check(path: str) -> None:
+    """Tick for checkboxes (style sheets can only reference image files)."""
+    pm = QPixmap(24, 24)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor("white"), 3.2)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen)
+    tick = QPainterPath()
+    tick.moveTo(5.5, 12.5)
+    tick.lineTo(10, 17)
+    tick.lineTo(18.5, 7.5)
+    p.drawPath(tick)
+    p.end()
+    pm.save(path)
 
 
 def write_arrow(path: str) -> None:

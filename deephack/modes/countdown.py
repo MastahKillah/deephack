@@ -98,6 +98,7 @@ class Countdown(Mode):
     id = "countdown"
     title = "Countdown"
     description = "Days until a date you pick"
+    claims = "last day"
     glyph = ""
     settings = (
         Setting("title", "Title", "text", "", placeholder="e.g. Holidays"),
@@ -112,6 +113,7 @@ class Countdown(Mode):
 
     async def frame(self):
         parsed = parse_target(self.values["date"])
+        self.active = False
         if parsed is None:
             self.status = "No date set" if not self.values["date"].strip() else "Date not understood"
             if self.values["date"].strip():
@@ -120,6 +122,7 @@ class Countdown(Mode):
         target, has_time = parsed
         title = self.values["title"].strip()
         state, value, unit = remaining(target, datetime.now())
+        self.active = state == "today" or (state == "ahead" and not unit.startswith("day"))
         self.status = ((f"{title}: " if title else "") +
                        ("today" if state == "today" else f"{value} {unit}"))
         key = (title, target, has_time, state, value, unit)

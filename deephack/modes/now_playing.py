@@ -89,6 +89,7 @@ class NowPlaying(Mode):
     title = "Now Playing"
     description = "Album art from any player"
     glyph = ""
+    claims = "music playing"
     settings = (
         Setting("layout", "Layout", "choice", "full", (("full", "Cover with title and artist"), ("art", "Cover only")),
                 hint="“Cover only” rewrites the display only when the album changes."),
@@ -112,7 +113,14 @@ class NowPlaying(Mode):
             self._manager = await Manager.request_async()
         session = self._manager.get_current_session()
         if session is None:
+            self.active = False
             return None
+        try:
+            from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status
+
+            self.active = session.get_playback_info().playback_status == Status.PLAYING
+        except (OSError, AttributeError):
+            self.active = True
         props = await session.try_get_media_properties_async()
         if props is None or not (props.title or props.artist):
             return None
@@ -125,6 +133,7 @@ class NowPlaying(Mode):
     async def frame(self):
         track = await self._track()
         if track is None:
+            self.active = False
             if self._shown is None:
                 self.status = "Nothing is playing"
             return None

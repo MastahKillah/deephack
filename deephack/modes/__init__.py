@@ -1,4 +1,5 @@
 """Display modes. To add one: subclass Mode in a new module and append it to MODES."""
+from .auto import Auto
 from .base import Animation, Mode, Setting
 from .claude_usage import ClaudeUsage
 from .countdown import Countdown
@@ -10,7 +11,7 @@ from .tamagotchi import Tamagotchi
 from .ticker import Ticker
 from .weather import Weather
 
-MODES: tuple[type[Mode], ...] = (NowPlaying, Weather, Nba, ClaudeUsage, Tamagotchi, Countdown, PhotoFrame, GameCover, Ticker)
+MODES: tuple[type[Mode], ...] = (Auto, NowPlaying, Weather, Nba, ClaudeUsage, Tamagotchi, Countdown, PhotoFrame, GameCover, Ticker)
 BY_ID = {m.id: m for m in MODES}
 
 __all__ = ["Animation", "Mode", "Setting", "MODES", "BY_ID"]
