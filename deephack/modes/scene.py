@@ -12,9 +12,11 @@ Everything is drawn on a 120 x 160 canvas and scaled up four times for real chun
 from __future__ import annotations
 
 import asyncio
+import math
 import random
 import zlib
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from PIL import Image, ImageDraw
@@ -59,6 +61,72 @@ def phase_at(now: datetime, sunrise: datetime, sunset: datetime) -> str:
 
 def _mix(a, b, t):
     return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+
+
+# ------------------------------------------------------------------ sun and moon
+# Simple astronomy, good to a few degrees, which is a pixel or two here: the sun's declination from
+# the day of the year, its hour angle from the real sunrise and sunset, and the moon from its age:
+# it trails the sun by about 50 minutes a day (a full moon rises at sunset) and its declination is
+# roughly the sun's at new moon and the opposite at full moon.
+SYNODIC = 29.530588853                                   # days from new moon to new moon
+NEW_MOON = datetime(2000, 1, 6, 18, 14, tzinfo=timezone.utc)
+HORIZON = 118                                            # where the sun and moon go down, behind the far skyline
+MOON_R = 7
+
+
+@dataclass(frozen=True)
+class Sky:
+    sun: tuple[int, int] | None          # canvas position, None while below the horizon
+    moon: tuple[int, int] | None
+    moon_age: float                      # days since new moon
+    south: bool = False                  # southern hemisphere: sun from the right, moon lit the other way
+
+
+def moon_age(t: datetime) -> float:
+    return ((t - NEW_MOON).total_seconds() / 86400) % SYNODIC
+
+
+def declination(t: datetime) -> float:
+    return 23.44 * math.sin(math.radians(360 / 365.24 * (t.timetuple().tm_yday - 81)))
+
+
+def _altitude(lat: float, dec: float, hour_angle: float) -> float:
+    lat, dec, h = map(math.radians, (lat, dec, hour_angle))
+    return math.degrees(math.asin(math.sin(lat) * math.sin(dec) + math.cos(lat) * math.cos(dec) * math.cos(h)))
+
+
+def _half_arc(lat: float, dec: float) -> float:
+    """Hour angle (degrees) at which a body with this declination rises and sets."""
+    x = -math.tan(math.radians(lat)) * math.tan(math.radians(dec))
+    return math.degrees(math.acos(max(-1.0, min(1.0, x))))
+
+
+def _place(hour_angle: float, half: float, lat: float, dec: float, south: bool) -> tuple[int, int] | None:
+    if half <= 0 or abs(hour_angle) >= half:
+        return None
+    alt = _altitude(lat, dec, hour_angle)
+    x = 60 + 52 * hour_angle / half * (-1 if south else 1)       # rises on the left, sets on the right
+    y = HORIZON - max(alt, 0) / 50 * (HORIZON - 14)          # stretched: a 23° winter sun clears the rooftops
+    return round(x), round(max(y, 14))
+
+
+def sky_at(t: datetime, sunrise: datetime, sunset: datetime, lat: float) -> Sky:
+    noon = sunrise + (sunset - sunrise) / 2
+    south = lat < 0
+    dec = declination(t)
+    sun = _place((t - noon).total_seconds() / 240, (sunset - sunrise).total_seconds() / 480, lat, dec, south)
+    age = moon_age(t)
+    transit = noon + timedelta(days=age / SYNODIC)                 # the moon trails the sun
+    moon_angle = ((t - transit).total_seconds() / 240 + 180) % 360 - 180
+    moon_dec = dec * math.cos(2 * math.pi * age / SYNODIC)
+    moon = _place(moon_angle, _half_arc(lat, moon_dec), lat, moon_dec, south)
+    return Sky(sun, moon, age, south)
+
+
+def default_sky(phase: str) -> Sky:
+    """Where the sun and moon are drawn when nothing is known: a picture, not astronomy."""
+    return Sky({"dawn": (24, 108), "day": (84, 36), "dusk": (96, 104), "night": None}[phase],
+               (26, 28) if phase == "night" else None, 10.0)
 
 
 # ------------------------------------------------------------------ the city (the same every time)
@@ -152,7 +220,32 @@ def _cloud(d: ImageDraw.ImageDraw, x: int, y: int, w: int, colour) -> None:
     d.ellipse([x + w // 2 - 2, y - h // 3, x + w // 2 + h + 1, y + h], fill=colour)
 
 
-def render_frame(f: int, phase: str, kind: str, seed: int = 0) -> Image.Image:
+def _moon(d: ImageDraw.ImageDraw, cx: int, cy: int, age: float, south: bool, night: bool, sky_at) -> None:
+    """The moon in its phase: lit from the right while waxing, from the left while waning (the other way
+    round in the southern hemisphere). At night the dark part shows faintly, as earthshine does."""
+    theta = 2 * math.pi * age / SYNODIC
+    waxing = theta <= math.pi
+    lit_colour = (240, 234, 200) if night else _mix((226, 232, 244), sky_at(cy), 0.35)
+    r = MOON_R
+    for py in range(cy - r, cy + r + 1):
+        ny = (py - cy + 0.5) / (r + 0.5)
+        if abs(ny) > 1:
+            continue
+        w = math.sqrt(1 - ny * ny)
+        for px in range(cx - r, cx + r + 1):
+            nx = (px - cx + 0.5) / (r + 0.5)
+            if abs(nx) > w:
+                continue
+            nx = -nx if south else nx
+            lit = nx >= w * math.cos(theta) if waxing else nx <= -w * math.cos(theta)
+            if lit:
+                d.point((px, py), fill=lit_colour)
+            elif night:
+                d.point((px, py), fill=_mix(sky_at(py), (70, 74, 100), 0.35))
+
+
+def render_frame(f: int, phase: str, kind: str, seed: int = 0, sky: Sky | None = None) -> Image.Image:
+    sky = sky or default_sky(phase)
     over = OVERCAST[kind]
     top, bottom = (_mix(c, GREY[phase], over) for c in SKY[phase])
     if kind == "thunder" and f == 3:                    # the flash
@@ -168,14 +261,12 @@ def render_frame(f: int, phase: str, kind: str, seed: int = 0) -> Image.Image:
             if (f + i) % 6 == 0:
                 d.point([(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)], fill=(150, 156, 200))
             d.point((x, y), fill=(230, 232, 255) if (f + i) % 3 else (150, 156, 200))
-    if over < 0.5:
-        if night:
-            mx, my = 24, 24
-            d.ellipse([mx - 7, my - 7, mx + 7, my + 7], fill=(240, 234, 200))
-            d.ellipse([mx - 4, my - 9, mx + 10, my + 5], fill=_mix(top, bottom, (my - 2) / STREET))
-        else:
-            sx, sy, colour = {"dawn": (28, 112, (255, 168, 92)), "day": (88, 30, (255, 228, 120)),
-                              "dusk": (92, 108, (255, 132, 82))}[phase]
+    if over < 0.5:                                      # behind the clouds and the skyline, drawn first
+        if sky.moon is not None and not (0.03 > sky.moon_age / SYNODIC or sky.moon_age / SYNODIC > 0.97):
+            _moon(d, *sky.moon, sky.moon_age, sky.south, night, lambda y: _mix(top, bottom, min(y, STREET) / STREET))
+        if sky.sun is not None and not night:
+            sx, sy = sky.sun
+            colour = (255, 228, 120) if sy < HORIZON - 30 else (255, 168, 92) if phase != "dusk" else (255, 132, 82)
             d.ellipse([sx - 10, sy - 10, sx + 10, sy + 10], fill=_mix(colour, bottom, 0.55))
             d.ellipse([sx - 8, sy - 8, sx + 8, sy + 8], fill=colour)
 
@@ -277,19 +368,19 @@ def render_frame(f: int, phase: str, kind: str, seed: int = 0) -> Image.Image:
     return img.resize((W, H), Image.NEAREST)
 
 
-def render_animation(phase: str, kind: str, seed: int = 0) -> Animation:
-    return Animation([render_frame(i, phase, kind, seed) for i in range(FRAMES)], LOOP_MS)
+def render_animation(phase: str, kind: str, seed: int = 0, sky: Sky | None = None) -> Animation:
+    return Animation([render_frame(i, phase, kind, seed, sky) for i in range(FRAMES)], LOOP_MS)
 
 
 # ------------------------------------------------------------------ the mode
-def fetch_sky(city: str) -> tuple[str, int | None, datetime, datetime]:
-    """(place, current weather code, today's sunrise, today's sunset) for a city."""
+def fetch_sky(city: str) -> tuple[str, int | None, datetime, datetime, float]:
+    """(place, current weather code, today's sunrise, today's sunset, latitude) for a city."""
     name, lat, lon = weather.locate(city)
     data = weather._get_json(weather.FORECAST_URL, {"latitude": lat, "longitude": lon, "timezone": "auto", "forecast_days": 1,
                                                     "current": "weather_code", "daily": "sunrise,sunset"})
     zone = timezone(timedelta(seconds=int(data.get("utc_offset_seconds", 0))))
     sun = [datetime.fromisoformat(data["daily"][k][0]).replace(tzinfo=zone) for k in ("sunrise", "sunset")]
-    return name, data["current"].get("weather_code"), sun[0], sun[1]
+    return name, data["current"].get("weather_code"), sun[0], sun[1], lat
 
 
 class Scene(Mode):
@@ -302,8 +393,9 @@ class Scene(Mode):
         Setting("weather", "Weather", "choice", "live", (
             ("live", "Live, for the city on the Weather page"), ("clear", "Clear"), ("partly", "Partly cloudy"),
             ("cloudy", "Overcast"), ("fog", "Fog"), ("rain", "Rain"), ("snow", "Snow"), ("thunder", "Thunderstorm")),
-                hint="The scene is an 8-frame animation stored on the cooler, rewritten only when the time of day "
-                     "or the kind of weather changes, a few times a day."),
+                hint="The sun and moon follow their real paths (the moon in its real phase) in hourly steps. The "
+                     "scene is an 8-frame animation stored on the cooler, rewritten when one of them visibly moves "
+                     "or the weather changes; behind clouds they cost no redraws."),
         Setting("time", "Time of day", "choice", "live", (
             ("live", "Live, from sunrise and sunset"), ("dawn", "Dawn"), ("day", "Day"), ("dusk", "Dusk"), ("night", "Night"))),
     )
@@ -311,7 +403,7 @@ class Scene(Mode):
     def __init__(self, values=None, city: str = ""):
         super().__init__(values)
         self.city = city.strip()
-        self._sky: tuple[str, int | None, datetime, datetime] | None = None
+        self._sky: tuple[str, int | None, datetime, datetime, float] | None = None
         self._kind: str | None = None          # the weather the scene follows
         self._seen: str | None = None          # the weather in the last forecast
         self._next = 0.0
@@ -338,19 +430,29 @@ class Scene(Mode):
                 self.status = f"Weather unavailable ({type(e).__name__}), showing a clear sky"
                 self._next = time.monotonic() + RETRY_SECONDS
         now = datetime.now().astimezone()
+        if self._sky is not None:
+            shift = timedelta(days=(now.date() - self._sky[2].date()).days)      # today's, also after midnight
+            sunrise, sunset, lat = self._sky[2] + shift, self._sky[3] + shift, self._sky[4]
+        else:                                  # no city: a rough day from 7 to 18 at a middle latitude
+            sunrise = now.replace(hour=7, minute=0, second=0, microsecond=0)
+            sunset, lat = sunrise.replace(hour=18), 45.0
         if self.values["time"] in PHASES:
             phase = self.values["time"]
-        elif self._sky is not None:
-            phase = phase_at(now, self._sky[2] + timedelta(days=(now.date() - self._sky[2].date()).days),
-                             self._sky[3] + timedelta(days=(now.date() - self._sky[3].date()).days))
-        else:                                  # no city: a rough day from 7 to 18
-            phase = phase_at(now, now.replace(hour=7, minute=0, second=0, microsecond=0),
-                             now.replace(hour=18, minute=0, second=0, microsecond=0))
+            noon = sunrise + (sunset - sunrise) / 2
+            at = {"dawn": sunrise + timedelta(minutes=20), "day": noon, "dusk": sunset - timedelta(minutes=20),
+                  "night": noon + timedelta(hours=12)}[phase]
+        else:
+            phase = phase_at(now, sunrise, sunset)
+            at = now.replace(minute=30, second=0, microsecond=0)    # the sun and moon move in hourly steps
+        sky = sky_at(at, sunrise, sunset, lat)
         kind = self.values["weather"] if self.values["weather"] in KINDS else (self._kind or "clear")
         where = self._sky[0] if self._sky else (self.city or "no city on the Weather page")
         self.status = f"{phase.capitalize()} · {dict(self.settings[0].choices).get(kind, kind).lower()} · {where}"
-        if (phase, kind) == self._shown:
+        visible = OVERCAST[kind] < 0.5                 # behind clouds the sun and moon need no redraws
+        key = (phase, kind, sky.sun if visible and phase != "night" else None, sky.moon if visible else None,
+               round(sky.moon_age / SYNODIC * 28) if visible and sky.moon else None)
+        if key == self._shown:
             return None
-        self._shown = (phase, kind)
+        self._shown = key
         seed = zlib.crc32(f"{now.date()} {phase} {kind}".encode())     # other traffic every time it is redrawn
-        return await asyncio.to_thread(render_animation, phase, kind, seed)
+        return await asyncio.to_thread(render_animation, phase, kind, seed, sky)
