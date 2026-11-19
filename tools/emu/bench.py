@@ -8,11 +8,11 @@ booted and plugged in.
     driver.upload_jpeg("0" * 32, jpeg)
     print(cooler.files())                 # what the firmware stored on its SD card
 
-Screens other than the upload and the image screen have no widgets in the stand-in ui.bin (uibin.py),
+Only the logo, upload and image screens have their widgets in the stand-in ui.bin (uibin.py),
 and the firmware uses its widgets unchecked: switching to the dashboard or the recorder (mode 1 or 3)
 ends in a call through a null pointer, which the emulator reports.
 
-    python tools/emu/bench.py             # boots, asks a few things, stores a picture
+    python tools/emu/bench.py             # boots, asks a few things, stores a picture and shows it
 
 Emulated time only passes while the driver waits for something, so nothing here is fast or slow in the
 way the real cooler is: a second of firmware time is about 400 000 code blocks (see run_for).
@@ -72,11 +72,11 @@ class EmulatedCooler:
         flash = fat.build({"ui.bin": ui or uibin.stock()})
         self.machine = boot.Machine(Path(firmware).read_bytes(), functions, flash=flash)
         self.machine.sd.load(fat.build(files or {}, megabytes=64, cluster_sectors=8, label="COOLER"))
-        self.machine.block_budget = 0
+        self.machine.block_budget, outcome = 0, "still running"
         while not self.machine.uc.mem_read(READY, 1)[0]:
             if sum(self.machine.blocks.values()) >= BOOT_LIMIT or self.machine.stuck is not None:
-                raise Timeout("the firmware did not finish booting")
-            self.machine.run(blocks=250_000)
+                raise Timeout(f"the firmware did not finish booting: {outcome}")
+            outcome = self.machine.run(blocks=250_000)
         self.machine.usb.reset()
         self.machine.usb.configure()
         self.usb = EmulatedUsb(self.machine)
@@ -146,6 +146,11 @@ def _main() -> int:
     driver.upload_jpeg("0123456789abcdef0123456789abcdef", buf.getvalue())
     cooler.run_for(1.0)
     print("upload: sent")
+    driver.show_slot(0)
+    before = len(cooler.machine.jpeg.decoded)
+    cooler.run_for(1.0)
+    print(f"show: the firmware ran its JPEG decoder {len(cooler.machine.jpeg.decoded) - before} times in the next second"
+          + (f", errors: {cooler.machine.jpeg.errors}" if cooler.machine.jpeg.errors else ""))
     for name, content in cooler.files().items():
         print(f"  on the card: {name} ({len(content)} bytes{', identical to what was sent' if content == buf.getvalue() else ''})")
     if cooler.console:

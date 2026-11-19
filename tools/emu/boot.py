@@ -19,9 +19,10 @@ What is known about the image and the chip:
 
 With the models here the stock firmware boots into its main loop: it mounts the SD card (and makes
 its IMG and GIF folders on a fresh one), loads its screens from `ui.bin` on the serial flash, sets up
-USB and polls the tilt sensor, and it answers USB commands (usbdev.py; bench.py puts deephack's own
-driver in front of it). The real ui.bin lives only on the cooler's serial flash; uibin.py writes a
-stand-in the firmware accepts (blank screens). `--flash blank` shows what the firmware does
+USB and polls the tilt sensor, it answers USB commands (usbdev.py; bench.py puts deephack's own
+driver in front of it), stores an uploaded picture and shows it through its JPEG decoder (jpegdec.py).
+The real ui.bin lives only on the cooler's serial flash; uibin.py writes a stand-in the firmware
+accepts (the logo, upload and image screens; the others are blank). `--flash blank` shows what the firmware does
 without one: an error page, "Couldn't open 'S:spi:///ui.bin'".
 
 Hardware registers are plain memory here (they read back what was written, 0 at first) unless MODELS
@@ -45,6 +46,7 @@ from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_PRIMASK, 
 sys.path.insert(0, str(Path(__file__).parent))
 import fat  # noqa: E402
 import uibin  # noqa: E402
+from jpegdec import JpegDecoder  # noqa: E402
 from sdcard import SdCard, SdHost  # noqa: E402
 from usbdev import IRQ as USB_IRQ, UsbDevice  # noqa: E402
 
@@ -106,7 +108,8 @@ class Machine:
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         self.sd = SdCard(image=sd_image)
         self.usb = UsbDevice(_MAP["peripherals"]["USBD"])
-        self.devices = [SdHost(_MAP["peripherals"]["SDIO"], self.sd, self._memory), self.usb]    # modelled peripherals
+        self.jpeg = JpegDecoder(_MAP["peripherals"]["JPEG"], self._memory)
+        self.devices = [SdHost(_MAP["peripherals"]["SDIO"], self.sd, self._memory), self.usb, self.jpeg]    # modelled peripherals
         for base, size in (FLASH, SRAM, EXT_RAM, ROM, PERIPHERALS, SDRAMC, CORE):
             self.uc.mem_map(base, size)
         self.uc.mem_write(APP, image)
@@ -129,7 +132,7 @@ class Machine:
         self._spin_state: tuple = ()
         self.stuck: int | None = None
         self.crashed: tuple[int, int] | None = None     # (address jumped to, return address) of a wild jump
-        self.trail: collections.deque = collections.deque(maxlen=12)     # the last code blocks run
+        self.trail: collections.deque = collections.deque(maxlen=40)     # the last code blocks run
         self.failed = ""                        # why the emulator gave up (an access to unmapped memory, a bad instruction)
         self._pc: int | None = None             # where to carry on (None: not started)
         self._interrupted = None                # the saved CPU state while an interrupt handler runs
@@ -296,7 +299,8 @@ class Machine:
             self.stuck = pc
             return self.failed
         if self.crashed:
-            return f"jumped to {self.crashed[0]:#x}, called from {self.where(self.crashed[1])}"
+            return (f"jumped to {self.crashed[0]:#x}, called from {self.where(self.crashed[1])}; the way there: "
+                    + " > ".join(self.where(a) for a in self.trail))
         return "waiting in a loop" if self.stuck is not None else f"ran all {steps} instructions"
 
 

@@ -28,7 +28,7 @@ def test_fat_image_is_a_fat16_volume():
 
 
 def test_ui_bin_header_points_at_its_tables():
-    ui = uibin.build({1: uibin.Widget("screen"), 0x2C: uibin.Widget("screen", children=[uibin.label(0x4A2, "hi")])}, start=1)
+    ui = uibin.build({1: uibin.screen(), 0x2C: uibin.screen(children=[uibin.label(0x4A2, "hi", (5, 6, 70, 8))])}, start=1)
     assert ui[:9] == b"SynwitUI\0"
     assert struct.unpack_from("<II", ui, 0x10) == uibin.FORMAT
     screen_table, widgets, resources = struct.unpack_from("<III", ui, 0x1C)
@@ -46,6 +46,8 @@ def test_ui_bin_header_points_at_its_tables():
     child = struct.unpack_from("<I", ui, children_at + 4)[0]
     size, kind, wid = struct.unpack_from("<IB3xI", ui, child)
     assert (size, uibin.TYPES[kind], wid) == (0x130, "label", 0x4A2)
+    assert struct.unpack_from("<BB", ui, child + 0x45) == (1, 1)                # visible, enabled
+    assert struct.unpack_from("<4h", ui, child + 0x48) == (5, 6, 70, 8)         # left, top, width, height
     assert struct.unpack_from("<II", ui, child + size) == (1, 0)                # one string
     assert ui[child + size + 12:child + size + 15] == b"hi\0"
 
@@ -99,3 +101,61 @@ def test_usb_setup_packet_stands_until_its_status_is_cleared(usb):
     assert bytes(usb.mem[usbdev.SETUPD1:usbdev.SETUPD1 + 8]) == bytes([0x80, 6, 0, 1, 0, 0, 18, 0])
     usb.write(usbdev.SETUPSR, usbdev.DONE, 4)
     assert usb.read(usbdev.DEVIF) == 0 and not usb.interrupt()
+
+
+class Ram:
+    """Stands in for the machine's memory helper: memory(address, count) reads, memory(address, bytes) writes."""
+
+    def __init__(self, base: int, size: int):
+        self.base, self.data = base, bytearray(size)
+
+    def __call__(self, address: int, data):
+        at = address - self.base
+        if isinstance(data, int):
+            return bytes(self.data[at:at + data])
+        self.data[at:at + len(data)] = data
+        return None
+
+
+def _jpeg(size=(16, 8), colour=(255, 0, 0)) -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", size, colour).save(buf, "JPEG", quality=95, subsampling="4:2:0")
+    return buf.getvalue()
+
+
+def test_jpeg_decoder_puts_the_picture_where_the_firmware_asked():
+    import jpegdec
+
+    ram = Ram(0x80000000, 0x10000)
+    decoder = jpegdec.JpegDecoder(0x4000B000, ram)
+    file = _jpeg()
+    scan = file.index(b"\xff\xda")
+    scan += 2 + struct.unpack_from(">H", file, scan + 2)[0]                     # the data after the scan header
+    ram(0x80001000, file)
+    out, stride_words = 0x80008000, 10                                          # lines 40 bytes apart, 32 used
+    for offset, value in ((jpegdec.IMGSIZ, 7 << 16 | 15), (jpegdec.CSBASE, 0x80001000 + scan),
+                          (jpegdec.CODLEN, len(file) - scan - 2), (jpegdec.RGBASE, out), (jpegdec.IMGSTR, stride_words)):
+        decoder.write(offset, value, 4)
+    decoder.write(jpegdec.CR, 0x21, 4)
+    assert decoder.errors == [] and decoder.decoded == [(out, 16, 8)]
+    assert decoder.read(jpegdec.SR) == 0
+    for row in (0, 7):
+        line = ram(out + row * 40, 40)
+        red, = struct.unpack_from("<H", line, 0)
+        assert red >> 11 >= 30 and red & 0x7FF < 0x100                          # red, in RGB565
+        assert line[32:] == bytes(8)                                            # the gap between lines is left alone
+
+
+def test_jpeg_decoder_reports_a_file_it_cannot_decode():
+    import jpegdec
+
+    ram = Ram(0x80000000, 0x10000)
+    decoder = jpegdec.JpegDecoder(0x4000B000, ram)
+    decoder.write(jpegdec.CSBASE, 0x80001000, 4)
+    decoder.write(jpegdec.CODLEN, 64, 4)
+    decoder.write(jpegdec.CR, 0x21, 4)
+    assert decoder.decoded == [] and "no JPEG header" in decoder.errors[0]

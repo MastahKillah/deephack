@@ -111,6 +111,24 @@ use the same framebuffer→panel flush but render LVGL widgets instead of a deco
 **do not touch flash**, which is why live sensor/graph updates cost no erase cycles. *Confirmed in code.*
 deephack's Live mode relies on this: it feeds both screens once a second.
 
+In detail, as seen running in the emulator (v2.70):
+
+1. `FUN_00062b40` (the image screen's logic, run when the screen is entered and every 100 ms from its
+   timer) picks the slot and builds the path.
+2. `FUN_000027d8` **reads the whole file into RAM** and returns a 16-byte descriptor in front of it:
+   an LVGL image header (colour format 1, width, height: it finds them in the JPEG's SOF0 segment),
+   the size, and a pointer to the data.
+3. `FUN_0003198c` frees the previous picture, hands the descriptor to the picture widget (`90F`) with
+   LVGL's `lv_img_set_src` (`FUN_0004ad34`), and starts the slide or fade animation if one is set.
+4. When LVGL redraws, a custom image decoder (registered next to LVGL's own; its `info` callback is
+   `0x3CAA8`) programs the **hardware JPEG decoder**: where the entropy-coded data is in RAM, its
+   length, the tables, and as output address **the frame buffer itself** (RGB565, 480 x 640). No
+   intermediate copy.
+5. The screen's timer un-hides the picture widget every 100 ms, which invalidates it, so a still
+   picture is **decoded again ten times a second**, alternately into the two frame buffers.
+
+So the decoder takes its input from RAM already; the file system is only how the bytes get there.
+
 ## Direct drawing — feasibility
 
 **The hardware already supports RAM→panel drawing.** The dashboard/recorder modes flush a RAM
@@ -142,8 +160,10 @@ Target flow: `USB → staging buffer → decode → panel` (drop the two flash s
   is gone. Check physically with an SWD dongle on the debug pads.
 - **Does the bootloader verify `FW_update.bin`?** A plain CRC can be recomputed; a real signature kills
   route 1. **Answerable from the decompile** — the boot-time applier/verifier was not yet read.
-- **Can the JPEG decoder take a RAM source** or is it hardwired to file paths? Decides how small the
-  patch is. Not yet read.
+- **Can the JPEG decoder take a RAM source** or is it hardwired to file paths? **It takes RAM.** See
+  "Display path": the firmware loads the file into RAM and gives the picture widget a descriptor
+  pointing at it. A direct-draw command needs to build that descriptor around bytes that came from
+  USB and call what `FUN_0003198c` calls; the redraw and the decode follow by themselves.
 
 ### Risk
 
@@ -176,6 +196,8 @@ How far the stock firmware gets (v2.70), and what each step needed:
 | the boot screen ending | the LCD controller taking a new frame buffer address at once (`LCD.CR` bit 15) |
 | USB commands | a model of the USB device controller (`tools/emu/usbdev.py`) |
 | an upload | the upload screen and the image screen in `ui.bin`, with the widgets their code uses |
+| drawing at all | widgets marked visible in `ui.bin` (a screen that is not is made hidden, and nothing is redrawn) |
+| a stored picture on screen | a model of the JPEG decoder (`tools/emu/jpegdec.py`) |
 
 It then runs its **main loop**: the logo screen for 4 s, then the screen for its mode, USB commands
 answered, the tilt sensor polled over I2C. The frame buffer is saved as a picture after every run
@@ -185,11 +207,17 @@ a red cross and "Couldn't open 'S:spi:///ui.bin'".
 `tools/emu/bench.py` puts deephack's own driver (`deephack.device.Mystique`) in front of the emulated
 firmware. What works that way: the device descriptor (3633:0009), commands and their replies (`12`
 answers an empty id on a fresh card), and **an upload**: the driver's `upload_jpeg` ends with
-`IMG/000_<id>/angle_0.jpg` on the emulated SD card, byte for byte what was sent.
+`IMG/000_<id>/angle_0.jpg` on the emulated SD card, byte for byte what was sent, and **showing it**:
+after `show_slot(0)` the picture is in the emulated frame buffer. The whole run (boot, upload, show)
+takes about ten seconds.
 
-Still to do: the JPEG decoder (hardware on this chip), without which no stored picture reaches the
-frame buffer, and the widgets of the other screens (see below): the dashboard and the recorder end in
-a call through a null pointer, because the firmware uses its widgets unchecked.
+The JPEG decoder model does not decode from the tables the firmware writes to the decoder's registers.
+The header is in RAM right in front of the data the firmware points the decoder at, so the model finds
+it there and lets Pillow decode the file. A patch that programmed the tables wrongly would not be
+caught.
+
+Still to do: the widgets of the other screens (see below). The dashboard and the recorder end in a
+call through a null pointer, because the firmware uses its widgets unchecked.
 
 One emulator bug worth remembering: an interrupt can arrive inside a Thumb IT block. The handler must
 start with the IT state cleared, or its first instructions stay conditional on the interrupted code's
@@ -208,7 +236,7 @@ a file back, so the real one is out of reach without hardware access. Its format
 | header, `0x34` bytes | `"SynwitUI\0"`; `0x10` format major (0); `0x14` format minor (7); `0x18` a flag byte; `0x1C` offset of the screen table; `0x20` of the widgets; `0x24` of the resource table; `0x28`, `0x2C`, `0x30` of three resource data sections |
 | screen table | u32 count, then that many u32 screen ids |
 | widgets | 12 bytes (u16 at `+0x0A`: the screen to start with), u32 count, then {u32 screen id, u32 offset of the screen's widget} each |
-| a widget | a blob: u32 size, u8 type, 3 unused bytes, u32 id, the rest is the widget's own structure (a name of up to 32 characters at `+0x10`; `+0x30` to `+0x40` and `+0x50` are filled in at run time); then u32 string count, u32 (unknown), the strings as {u32 length, bytes}; then u32 child count and that many u32 offsets of child widgets |
+| a widget | a blob: u32 size, u8 type, 3 unused bytes, u32 id, the rest is the widget's own structure (see below); then u32 string count, u32 (unknown), the strings as {u32 length, bytes}; then u32 child count and that many u32 offsets of child widgets |
 | resource table | `"RESLD\0"`, u32 0, u32 1, u32 count (not 0), then 12 bytes {screen id, offset, ?} each; at the offset three lists of u32 (count first), one per resource data section |
 
 A wrong magic gives "Invalid UI data file", a wrong version "Incompatible UI data(fmt:%d.%d)! Current
@@ -225,10 +253,27 @@ The loader guards itself: before and after loading a screen it divides a running
 chip's hardware divider and spins forever if quotient and remainder are not what software division
 gives. An emulator without the divider hangs there, which is presumably the point.
 
-`uibin.py` writes a file with every screen the firmware knows, blank except for the few widgets the
-upload and image screens need. The fields inside a widget's structure (position, size, text, picture)
-are not worked out, so the stock screens cannot be rebuilt yet. A label that is filled in the way the
-firmware's own defaults routine does it (`0x10E40`) is accepted.
+Inside a widget's structure. The firmware has a setter by property name for the common part
+(`FUN_0000711c`), which gives both the names and the offsets:
+
+| offset | field |
+| --- | --- |
+| `0x10` | `name`, up to 32 characters |
+| `0x30` to `0x40`, `0x50` | filled in at run time (parent, the LVGL object, class data) |
+| `0x45` | `visual`: 0 makes the widget hidden. This goes for a screen too, and nothing on a hidden screen is ever drawn |
+| `0x46` | `enable` |
+| `0x48` `0x4A` `0x4C` `0x4E` | `left`, `top`, `width`, `height` (s16) |
+| screen `0x5C` | background colour, red in the low byte |
+| image `0x60` | opacity |
+| image `0x64` | id of its picture in the resource table (0: none) |
+| label `0xE0` and on | three style blocks of 24 bytes at `0xE8`, `0x100`, `0x118`; the defaults routine (`0x10E40`) fills them with "no font, no colour" |
+
+An image widget is an LVGL `lv_img` (made by `FUN_000078d0`); the base and screen setup routines are
+at `0x152CC` and `0x10DDC`.
+
+`uibin.py` writes a file with every screen the firmware knows. The logo, upload and image screens have
+the widgets their code uses (without pictures or fonts: the resource sections are empty); the others
+are blank, so the stock dashboards cannot be shown yet.
 
 ### Screens
 
@@ -240,12 +285,12 @@ did not find most of them).
 
 | screen | what it is |
 | --- | --- |
-| `01` | boot logo. Its timer handler runs twice: it starts a 4 s timer, then sets the "ready" byte (`0x200051A8`) and goes to `2D`. The screen selector (`FUN_00020628`) does nothing before that byte is set |
+| `01` | boot logo: four pictures, one per rotation of the panel (`4A4`, `912`, `913`, `914`), and two labels (`918`, `919`). Its timer handler runs twice: it starts a 4 s timer, then sets the "ready" byte (`0x200051A8`) and goes to `2D`. The screen selector (`FUN_00020628`) does nothing before that byte is set |
 | `02` to `10`, `17` to `1F` | dashboards, 10 to 24 widgets each (mode 1; which one by layout and rotation) |
 | `29` `2A` `2B` | recorder (mode 3): made in code from line objects and a chart, on top of 8 to 13 widgets |
 | `2C` | upload. Entered when command `0F` sets its flag. **The file is received by this screen's "leaving" handler** (`0x69A88`): a loop around the upload state machine (`FUN_000200ec`) that ends on success, on a flag, or after about 15.7 million rounds without a packet; then the next screen loads |
 | `2D` | where the firmware goes after the logo and when it has nothing to show; timer every tick |
-| `90E` | stored pictures and animations (mode 2); widgets `90F`, `915` (150 x 200), `916` (325 x 28) |
+| `90E` | stored pictures and animations (mode 2). `90F` is the picture; `915` (150 x 200) and `916` (325 x 28) are two pictures shown instead when nothing is stored, placed and turned to match the rotation. All three are images |
 | `917` | command `A1` |
 
 So an upload never happens "in the background": the firmware sits in a loop inside a screen change,
@@ -317,7 +362,9 @@ whether a flashed image is accepted. The emulator makes patches testable; it can
 - Sensor fields at offset 27+ and the clock command (`0A`) live in the second-endpoint handler, not
   yet read
 - The SD-type chip's real erase-cycle budget (it holds the `SD:` files; the serial flash holds the UI)
-- The fields inside a `ui.bin` widget, and the kind (label, image, level image) of each widget id
+- The kind (label, image, level image) of each widget id on the dashboard and recorder screens, and
+  the label's and level image's own fields
+- Whether the real cooler also decodes a still picture ten times a second (seen in the emulator only)
 - Why the emulated firmware answers command `10` with command byte 0 (not tried on the real cooler)
 - What `13` (factory reset) and `14` (delete all) do after their flags are set, and why `12` returns
   junk until a power cycle after a reset
