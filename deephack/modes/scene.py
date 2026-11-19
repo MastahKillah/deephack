@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import zlib
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -81,6 +82,69 @@ LAMPS = (14, 56, 98)
 TALLEST = min(NEAR, key=lambda b: b[1])
 
 
+# Traffic: each lane loops seamlessly because every vehicle crosses exactly once per loop, all at the
+# same speed. Lane 0 drives right in front, lane 1 comes the other way behind it. Which vehicles, in
+# which colours and how far apart is picked anew whenever the scene is redrawn (a few times a day),
+# so the street does not look the same all day.
+TRAFFIC_MARGIN = 26                          # longer than any vehicle, so the wrap happens off screen
+TRAFFIC_SPAN = LW + TRAFFIC_MARGIN - 2       # 144: divisible by the frame count
+TRAFFIC_STEP = TRAFFIC_SPAN // FRAMES
+VEHICLES = {"car": 14, "taxi": 14, "van": 18, "bus": 24}       # lengths
+LANE_BOTTOM = (158, 150)
+PAINT = ((196, 58, 58), (226, 228, 234), (62, 112, 204), (64, 150, 96), (230, 122, 52), (44, 46, 54),
+         (150, 82, 170), (120, 128, 140))
+TAXI = (238, 186, 40)
+
+
+def traffic(seed: int) -> tuple[tuple, tuple]:
+    """(near lane, far lane), each a tuple of (offset, vehicle, colour): one or two vehicles near, one far."""
+    rng = random.Random(seed)
+    lanes = []
+    for lane, count in ((0, rng.choice((1, 2, 2))), (1, 1)):
+        start = rng.randrange(TRAFFIC_SPAN)
+        offsets = [start] + ([(start + rng.randrange(60, 84)) % TRAFFIC_SPAN] if count == 2 else [])
+        vehicles = []
+        for offset in offsets:
+            vehicle = rng.choices(("car", "taxi", "van", "bus"), (6, 2, 2, 1 if lane == 1 else 0))[0]
+            vehicles.append((offset, vehicle, TAXI if vehicle == "taxi" else rng.choice(PAINT)))
+        lanes.append(tuple(vehicles))
+    return lanes[0], lanes[1]
+
+
+def _vehicle(d: ImageDraw.ImageDraw, beams: ImageDraw.ImageDraw, x: int, y: int, vehicle: str, colour,
+             facing: int, glass, lights: bool) -> None:
+    """A car, taxi, van or bus with its wheels on row y, facing right (1) or left (-1)."""
+    n = VEHICLES[vehicle]
+    roof = tuple(round(c * 0.86) for c in colour)
+    front, back = (x + n - 1, x) if facing == 1 else (x, x + n - 1)
+    if vehicle in ("car", "taxi"):
+        d.rectangle([x, y - 4, x + n - 1, y - 1], fill=colour)
+        r0 = x + 3 if facing == 1 else x + 4
+        d.rectangle([r0, y - 7, r0 + 6, y - 4], fill=roof)
+        d.rectangle([r0 + 1, y - 6, r0 + 5, y - 5], fill=glass)
+        if vehicle == "taxi":
+            d.rectangle([r0 + 2, y - 8, r0 + 4, y - 8], fill=(250, 246, 220))
+        top = y - 4
+    else:                                    # van and bus: one tall box with a row of windows
+        h = 7 if vehicle == "van" else 9
+        d.rectangle([x, y - h, x + n - 1, y - 1], fill=colour)
+        for wx in range(x + 2, x + n - 2, 3 if vehicle == "bus" else 5):
+            d.rectangle([wx, y - h + 2, wx + 1, y - h + 3], fill=glass)
+        d.rectangle([front - (1 if facing == 1 else 0), y - h + 1, front + (0 if facing == 1 else 1), y - 4], fill=glass)
+        top = y - h
+    d.point([(x + 2, y), (x + n - 3, y)], fill=(10, 10, 12))
+    if vehicle == "bus":
+        d.point((x + n // 2, y), fill=(10, 10, 12))
+    if lights:
+        hy = y - 2
+        reach = front + 16 * facing
+        beams.polygon([(front, hy), (reach, hy - 3), (reach, hy + 3)], fill=WARM + (84,))
+        d.point((front, hy), fill=WARM)
+        d.point((back, hy), fill=RED_LIGHT)
+        if top < y - 5:
+            d.point((back, top + 1), fill=RED_LIGHT)
+
+
 def _cloud(d: ImageDraw.ImageDraw, x: int, y: int, w: int, colour) -> None:
     h = max(4, w // 3)
     d.rectangle([x, y + h // 2, x + w, y + h], fill=colour)
@@ -88,7 +152,7 @@ def _cloud(d: ImageDraw.ImageDraw, x: int, y: int, w: int, colour) -> None:
     d.ellipse([x + w // 2 - 2, y - h // 3, x + w // 2 + h + 1, y + h], fill=colour)
 
 
-def render_frame(f: int, phase: str, kind: str) -> Image.Image:
+def render_frame(f: int, phase: str, kind: str, seed: int = 0) -> Image.Image:
     over = OVERCAST[kind]
     top, bottom = (_mix(c, GREY[phase], over) for c in SKY[phase])
     if kind == "thunder" and f == 3:                    # the flash
@@ -157,7 +221,7 @@ def render_frame(f: int, phase: str, kind: str) -> Image.Image:
     d.rectangle([0, STREET, LW, STREET + 3], fill=(236, 240, 250) if kind == "snow" else (70, 72, 84) if not night else (40, 41, 52))
     d.rectangle([0, STREET + 4, LW, LH], fill=(30, 31, 38) if not night else (18, 18, 24))
     for x in range(4, LW, 16):
-        d.line([(x, 153), (x + 6, 153)], fill=(120, 116, 90) if not night else (70, 68, 56))
+        d.line([(x, 152), (x + 6, 152)], fill=(120, 116, 90) if not night else (70, 68, 56))
     glow = phase in ("night", "dusk") or over >= 0.6
     layer = Image.new("RGBA", (LW, LH), (0, 0, 0, 0))
     g = ImageDraw.Draw(layer)
@@ -173,17 +237,18 @@ def render_frame(f: int, phase: str, kind: str) -> Image.Image:
     for x in LAMPS:
         d.point((x + 3, 127), fill=WARM if glow else (150, 150, 140))
 
-    # a car drives past once per loop
-    cx = -18 + f * 18
-    d.rectangle([cx, 147, cx + 14, 151], fill=(196, 58, 58))
-    d.rectangle([cx + 3, 144, cx + 10, 147], fill=(170, 46, 46))
-    d.rectangle([cx + 4, 145, cx + 9, 146], fill=(120, 170, 210) if not night else (60, 70, 90))
-    d.point([(cx + 3, 152), (cx + 11, 152)], fill=(10, 10, 12))
-    if glow:
-        beam = Image.new("RGBA", (LW, LH), (0, 0, 0, 0))
-        ImageDraw.Draw(beam).polygon([(cx + 14, 148), (cx + 30, 145), (cx + 30, 152)], fill=WARM + (70,))
-        img.paste(beam, (0, 0), beam)
-        d.point((cx + 14, 148), fill=WARM)
+    # traffic both ways: oncoming in the far lane first, the near lane in front of it
+    beams = Image.new("RGBA", (LW, LH), (0, 0, 0, 0))
+    b = ImageDraw.Draw(beams)
+    glass = (120, 170, 210) if not night else (60, 70, 90)
+    lanes = traffic(seed)
+    for lane in (1, 0):
+        for offset, vehicle, colour in lanes[lane]:
+            travelled = (offset + f * TRAFFIC_STEP) % TRAFFIC_SPAN      # once across per loop: seamless
+            length = VEHICLES[vehicle]
+            x = travelled - TRAFFIC_MARGIN if lane == 0 else LW - travelled
+            _vehicle(d, b, x, LANE_BOTTOM[lane], vehicle, colour, 1 if lane == 0 else -1, glass, glow)
+    img.paste(beams, (0, 0), beams)
 
     # weather in front of everything
     if kind in ("rain", "thunder"):
@@ -212,8 +277,8 @@ def render_frame(f: int, phase: str, kind: str) -> Image.Image:
     return img.resize((W, H), Image.NEAREST)
 
 
-def render_animation(phase: str, kind: str) -> Animation:
-    return Animation([render_frame(i, phase, kind) for i in range(FRAMES)], LOOP_MS)
+def render_animation(phase: str, kind: str, seed: int = 0) -> Animation:
+    return Animation([render_frame(i, phase, kind, seed) for i in range(FRAMES)], LOOP_MS)
 
 
 # ------------------------------------------------------------------ the mode
@@ -287,4 +352,5 @@ class Scene(Mode):
         if (phase, kind) == self._shown:
             return None
         self._shown = (phase, kind)
-        return await asyncio.to_thread(render_animation, phase, kind)
+        seed = zlib.crc32(f"{now.date()} {phase} {kind}".encode())     # other traffic every time it is redrawn
+        return await asyncio.to_thread(render_animation, phase, kind, seed)

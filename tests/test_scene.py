@@ -68,3 +68,16 @@ def test_fetch_sky_reads_sunrise_in_the_places_time_zone(monkeypatch):
 def test_scene_reads_the_weather_city_also_in_auto():
     a = auto.Auto({"order": "", "fallback": "scene"}, lambda mode_id: {"weather": {"city": "Chisinau"}}.get(mode_id, {}))
     assert a.children["scene"].city == "Chisinau"
+
+
+def test_traffic_is_light_varied_and_never_collides():
+    mixes = set()
+    for seed in range(200):
+        near, far = scene.traffic(seed)
+        assert 1 <= len(near) <= 2 and len(far) == 1
+        assert all(v != "bus" for _, v, _ in near)                   # buses only in the far lane
+        if len(near) == 2:
+            gap = (near[1][0] - near[0][0]) % scene.TRAFFIC_SPAN
+            assert min(gap, scene.TRAFFIC_SPAN - gap) >= max(scene.VEHICLES.values()) + 10
+        mixes.add(tuple(v for _, v, _ in near + far))
+    assert len(mixes) > 5
