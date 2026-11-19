@@ -31,6 +31,14 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 Clicking a mode opens its page with a live preview and leaves the cooler alone; **Show on cooler** (or a
 double-click on the mode) puts it on the display. A green dot marks the mode that is on it.
 
+**RGB lights follow the screen** colours your PC's RGB lighting (the cooler's light, the board's
+headers, anything else) with the vivid colours along the edges of whatever deephack shows, ambilight
+style, fading over a second. It goes through [OpenRGB](https://openrgb.org), which has to run with its SDK
+server on (OpenRGB settings: start at login, start the server). Addressable headers cannot tell how many
+LEDs hang on them: set the count once in OpenRGB (the device, the header's zone, Resize), or nothing lights
+up. Nothing is written to the lighting controller's memory; the colours last until the next effect is
+picked or the PC is switched off.
+
 **Keep on screen** decides whether the cooler stays on deephack's image or cycles through every image
 stored on it (the cooler's own slideshow).
 

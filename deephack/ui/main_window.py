@@ -14,6 +14,13 @@ from . import style
 from .widgets import ComboBox, ModeButton, OrderList, Preview, StatusDot, Switch
 
 
+AMBIENT_HINT = {
+    "off": "Through OpenRGB: your case lights take the colours at the screen's edges.",
+    "unreachable": "OpenRGB is not running, or its SDK server is off (OpenRGB: SDK Server tab, Start Server).",
+    "no LEDs": "OpenRGB sees no LEDs. Set the LED count of your addressable headers in OpenRGB (Resize).",
+}
+
+
 def _label(text: str, name: str = "", wrap: bool = False) -> QLabel:
     lab = QLabel(text)
     if name:
@@ -189,6 +196,9 @@ class MainWindow(QMainWindow):
                                            autostart.is_enabled(), autostart.set_enabled)
         self._tray = self._switch_row(dl, "Keep running when closed", "The window hides to the tray instead of quitting.",
                                       bool(self.config.get("close_to_tray")), lambda on: self.config.set("close_to_tray", on))
+        self._ambient = self._switch_row(dl, "RGB lights follow the screen", AMBIENT_HINT["off"],
+                                         bool(self.config.get("ambient")), lambda on: self.config.set("ambient", on))
+        self._ambient_hint = self._last_hint
         right.addWidget(display)
         right.addStretch(1)
         return content
@@ -198,7 +208,8 @@ class MainWindow(QMainWindow):
         col = QVBoxLayout()
         col.setSpacing(0)
         col.addWidget(_label(title))
-        col.addWidget(_label(hint, "hint", wrap=True))
+        self._last_hint = _label(hint, "hint", wrap=True)
+        col.addWidget(self._last_hint)
         sw = Switch()
         sw.setChecked(checked)
         sw.toggled.connect(on_toggle)
@@ -363,6 +374,8 @@ class MainWindow(QMainWindow):
             self._device_title.setText("Cooler not found")
             self._device_sub.setText("Check the USB header cable")
         self._banner.setVisible(dev == "busy")
+        ambient = state.get("ambient", "off")
+        self._ambient_hint.setText(AMBIENT_HINT.get(ambient) or f"Lighting {ambient} through OpenRGB.")
         if dev == "busy":
             running = state["deepcool_running"]
             self._banner_text.setText("The DeepCool app is running and holds the display exclusively. Quit it to let deephack draw."

@@ -17,6 +17,7 @@ DEFAULTS = {
     "mode": "now_playing",
     "slideshow": False,        # False: keep our image on screen. True: cooler cycles through all stored images.
     "close_to_tray": True,
+    "ambient": False,          # the PC's RGB lights (through OpenRGB) follow what is on the screen
     "slot_index": None,        # index of our image among the JPGs stored on the device
     "gif_slot_index": None,    # index of our animation among the GIFs stored on the device
     "restore_index": 0,        # JPG shown when deephack is paused or quits

@@ -21,6 +21,7 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
 from . import device, render
+from .ambient import Ambient
 from .config import GIF_SLOT_ID, SLOT_ID, Config
 from .modes import BY_ID, MODES, Mode
 from .modes.base import Animation, Dashboard
@@ -116,6 +117,7 @@ class Engine(QThread):
         self._preview: Mode | None = None
         self._preview_frame: Image.Image | Animation | None = None
         self._preview_shown = None        # placeholder of the preview last emitted
+        self.ambient = Ambient(config)    # the PC's RGB lights follow what is shown (its own thread)
 
     # ---- thread-safe API for the UI ------------------------------------
     def reload_mode(self) -> None:
@@ -135,6 +137,7 @@ class Engine(QThread):
 
     def stop(self) -> None:
         self._stop = True
+        self.ambient.stop()
 
     # ---- internals -----------------------------------------------------
     def run(self) -> None:
@@ -144,6 +147,7 @@ class Engine(QThread):
             init_apartment(ApartmentType.MULTI_THREADED)
         except Exception:
             pass
+        self.ambient.start()
         asyncio.run(self._main())
 
     def _make_mode(self) -> None:
@@ -161,6 +165,7 @@ class Engine(QThread):
 
     def _set_frame(self, img: Image.Image | Animation) -> None:
         self._frame = img
+        self.ambient.show(img)
         self._frame_seq += 1
         self.frameChanged.emit(*_qt_frames(img), False)
 
@@ -338,6 +343,7 @@ class Engine(QThread):
             "preview_status": self._preview.status if self._preview else "",
             "last_upload": self._last_upload_wall,
             "live": isinstance(self._frame, Dashboard),
+            "ambient": self.ambient.status,
             "pending": enabled and self._frame is not None and not isinstance(self._frame, Dashboard)
                        and self._frame_seq != self._uploaded_seq,
         }
