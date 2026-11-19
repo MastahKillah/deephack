@@ -171,6 +171,7 @@ through layouts.
 The Live mode drives both screens with real readings: `0A` sets the clock, `03` switches to the
 dashboard (1) or recorder (3), `04` or `05` picks the layout, then `01` follows once a second. Before
 showing a stored image again deephack switches back with `03 02` and re-sends the slideshow setting (`07`).
+Confirmed on the device, switching both ways.
 
 **Image upload**
 
