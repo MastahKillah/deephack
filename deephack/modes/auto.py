@@ -20,6 +20,7 @@ from .claude_usage import ClaudeUsage
 from .countdown import Countdown
 from .live import Live
 from .game_cover import GameCover
+from .github import GitHub
 from .nba import Nba
 from .now_playing import NowPlaying
 from .photo_frame import PhotoFrame
@@ -28,9 +29,9 @@ from .tamagotchi import Tamagotchi
 from .ticker import Ticker
 from .weather import Weather
 
-CANDIDATES: tuple[type[Mode], ...] = (GameCover, NowPlaying, Tamagotchi, Nba, Countdown, ClaudeUsage, SystemMonitor)
-FALLBACKS: tuple[type[Mode], ...] = (Weather, Live, PhotoFrame, Ticker, SystemMonitor, Countdown, ClaudeUsage, Tamagotchi, Nba, NowPlaying, GameCover)
-DEFAULT_ORDER = "game_cover,now_playing,tamagotchi,nba,countdown,-claude_usage,-system"
+CANDIDATES: tuple[type[Mode], ...] = (GameCover, NowPlaying, Tamagotchi, Nba, Countdown, ClaudeUsage, SystemMonitor, GitHub)
+FALLBACKS: tuple[type[Mode], ...] = (Weather, Live, PhotoFrame, Ticker, SystemMonitor, Countdown, ClaudeUsage, Tamagotchi, Nba, NowPlaying, GameCover, GitHub)
+DEFAULT_ORDER = "game_cover,now_playing,tamagotchi,nba,countdown,-claude_usage,-system,-github"
 LINGER = 120.0
 
 
