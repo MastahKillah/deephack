@@ -90,86 +90,71 @@ def test_every_screen_renders():
 
 
 # ------------------------------------------------------------------ engine: the firmware's sensor screens
-class RecordingDevice:
-    def __init__(self):
-        self.calls = []
-
-    def __getattr__(self, name):
-        return lambda *args, **kwargs: self.calls.append((name, args))
-
-
-def test_engine_drives_the_sensor_screen_without_writing_flash(tmp_path, monkeypatch):
-    dev = RecordingDevice()
-    monkeypatch.setattr(device, "Mystique", lambda: dev)
+def _engine(tmp_path, monkeypatch):
     config = Config(tmp_path / "config.json")
-    config.set("slot_index", 3)
+    config.set("slot_index", 1)
     config.set("restore_index", 0)
     eng = engine.Engine(config)
     clock = [1000.0]
     monkeypatch.setattr(engine.time, "monotonic", lambda: clock[0])
+    return eng, config, clock
+
+
+def _shows(cooler):
+    return sum(1 for entry in cooler.log if entry[:2] == ("cmd", device.CMD_SHOW_SLOT))
+
+
+def test_engine_drives_the_sensor_screen_without_writing_flash(tmp_path, monkeypatch, cooler):
+    eng, _, clock = _engine(tmp_path, monkeypatch)
     preview = Image.new("RGB", (480, 640))
 
     def step(frame, wait=1.0):
         clock[0] += wait
         eng._set_frame(frame)
-        dev.calls.clear()
         eng._device_step(True)
-        return [(name, args) for name, args in dev.calls if name not in ("set_slideshow",)]
+        return cooler.screen
 
-    step(Image.new("RGB", (480, 640), "red"), wait=engine.MIN_UPLOAD_INTERVAL + 1)      # connect, an image first
+    assert step(Image.new("RGB", (480, 640), "red"), wait=engine.MIN_UPLOAD_INTERVAL + 1) == ("jpg", 1)
+    writes = cooler.flash_writes
     dash = Dashboard("dashboard", (device.DASH_TEMPERATURE, 0, device.STRIP_SYSTEM), {"cpu_temp": 60.0}, preview)
-    calls = step(dash)
-    assert [name for name, _ in calls] == ["set_time", "set_mode", "set_dashboard", "send_sensors"]
-    assert calls[1][1] == (device.MODE_SITUATIONAL,) and calls[2][1] == (device.DASH_TEMPERATURE, 0, device.STRIP_SYSTEM)
-    assert step(Dashboard("dashboard", dash.layout, {"cpu_temp": 61.0}, preview)) == [("send_sensors", ())]
-    calls = step(Dashboard("recorder", (0,), {"cpu_temp": 61.0}, preview))
-    assert [name for name, _ in calls] == ["set_time", "set_mode", "set_recorder", "send_sensors"]
-    assert calls[1][1] == (device.MODE_RECORDER,)
-    calls = step(Image.new("RGB", (480, 640), "red"))                 # back to the stored image: no upload
-    assert calls == [("set_mode", (device.MODE_MOTION,)), ("show_slot", (3, device.TYPE_JPG))]
+    assert step(dash) == ("dashboard", (device.DASH_TEMPERATURE, 0, 0, device.STRIP_SYSTEM))
+    assert cooler.sensors[:3] == bytes([60, 0, 0]) and cooler.clock is not None
+    step(Dashboard("dashboard", dash.layout, {"cpu_temp": 61.0}, preview))
+    assert cooler.sensors[:3] == bytes([61, 0, 0])
+    assert step(Dashboard("recorder", (0,), {"cpu_temp": 61.0}, preview)) == ("recorder", 0)
+    assert step(Image.new("RGB", (480, 640), "red")) == ("jpg", 1)            # back to the stored image
+    assert cooler.mode == device.MODE_MOTION and cooler.flash_writes == writes  # none of it wrote to flash
     step(dash)
-    dev.calls.clear()
     eng._shutdown()
-    assert ("set_mode", (device.MODE_MOTION,)) in dev.calls and ("show_slot", (0, device.TYPE_JPG)) in dev.calls
+    assert cooler.screen == ("jpg", 0)                                        # the user's own image on quitting
 
 
-def test_engine_sets_the_cooler_light_and_shows_the_picture_again(tmp_path, monkeypatch):
-    dev = RecordingDevice()
-    monkeypatch.setattr(device, "Mystique", lambda: dev)
-    config = Config(tmp_path / "config.json")
-    config.set("slot_index", 3)
-    eng = engine.Engine(config)
-    clock = [1000.0]
-    monkeypatch.setattr(engine.time, "monotonic", lambda: clock[0])
+def test_engine_sets_the_cooler_light_and_shows_the_picture_again(tmp_path, monkeypatch, cooler):
+    eng, config, clock = _engine(tmp_path, monkeypatch)
     eng._set_frame(Image.new("RGB", (480, 640), "red"))
 
     def step(wait=1.0):
         clock[0] += wait
-        dev.calls.clear()
         eng._device_step(True)
-        return dev.calls
 
-    calls = step(engine.MIN_UPLOAD_INTERVAL + 1)
-    assert ("set_options", (70, device.LIGHT_SCREEN)) in calls and ("show_slot", (3, device.TYPE_JPG)) in calls
-    assert step() == []                                              # nothing changed
+    step(engine.MIN_UPLOAD_INTERVAL + 1)
+    assert cooler.options == (1, 1, 0, device.LIGHT_SCREEN, 70) and cooler.screen == ("jpg", 1)
+    shows = _shows(cooler)
+    step()
+    assert _shows(cooler) == shows                                          # nothing changed, nothing sent
     config.set("light", "motherboard")
     config.set("brightness", 50)
-    assert step(0.5) == [("set_options", (50, device.LIGHT_MOTHERBOARD))]
-    assert step(0.5) == []
-    assert step(1.0) == [("show_slot", (3, device.TYPE_JPG))]       # a moment later: the edges are picked again
+    step(0.5)
+    assert cooler.options == (1, 1, 0, device.LIGHT_MOTHERBOARD, 50) and _shows(cooler) == shows
+    step(0.5)
+    assert _shows(cooler) == shows
+    step(1.0)
+    assert _shows(cooler) == shows + 1                                      # a moment later: the edges are picked again
 
 
-def test_options_payload():
-    sent = []
-
-    class Probe(device.Mystique):
-        def __init__(self):
-            pass
-
-        def command(self, cmd, payload=b"", ep=1, reply=True):
-            sent.append(device.frame(cmd, payload))
-
-    Probe().set_options(85, device.LIGHT_SCREEN)
-    Probe().set_brightness(70)
-    assert sent[0][2:8] == bytes([device.CMD_OPTIONS, 1, 1, 0, 2, 85])
-    assert sent[1][2:8] == bytes([device.CMD_OPTIONS, 1, 1, 0, 1, 70])   # as the official app sends it
+def test_options_payload(cooler):
+    with device.Mystique() as m:
+        m.set_options(85, device.LIGHT_SCREEN)
+        assert cooler.options == (1, 1, 0, device.LIGHT_SCREEN, 85)
+        m.set_brightness(70)
+        assert cooler.options == (1, 1, 0, device.LIGHT_WARNING, 70)        # as the official app sends it

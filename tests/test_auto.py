@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from PIL import Image
 
-from deephack import device, engine
+from deephack import engine
 from deephack.config import Config
 from deephack.modes import auto, nba
 from deephack.modes.base import Animation, Mode, parse_order
@@ -116,45 +116,38 @@ def test_nba_claims_around_the_picked_teams_games():
 
 
 # ------------------------------------------------------------------ engine: no upload for an image already stored
-class FakeDevice:
-    def __init__(self):
-        self.calls = []
-
-    def __getattr__(self, name):
-        return lambda *args: self.calls.append(name)
-
-
-def test_engine_skips_uploads_of_stored_images(tmp_path, monkeypatch):
-    dev = FakeDevice()
-    monkeypatch.setattr(device, "Mystique", lambda: dev)
+def _engine(tmp_path, monkeypatch):
     config = Config(tmp_path / "config.json")
-    config.set("slot_index", 3)
-    config.set("gif_slot_index", 1)
+    config.set("slot_index", 1)                       # the model holds one still of the official app before ours
+    config.set("gif_slot_index", 0)
     eng = engine.Engine(config)
     clock = [1000.0]
     monkeypatch.setattr(engine.time, "monotonic", lambda: clock[0])
+    return eng, config, clock
+
+
+def test_engine_skips_uploads_of_stored_images(tmp_path, monkeypatch, cooler):
+    eng, _, clock = _engine(tmp_path, monkeypatch)
 
     def show(frame, wait=engine.MIN_UPLOAD_INTERVAL + 1):
         clock[0] += wait
         eng._frame, eng._frame_seq = frame, eng._frame_seq + 1
-        dev.calls.clear()
+        before = cooler.flash_writes
         eng._device_step(True)
-        return [c for c in dev.calls if c in ("upload_jpeg", "upload_gif", "show_slot")]
+        return cooler.flash_writes - before, cooler.screen
 
     still = Image.new("RGB", (480, 640), "red")
     pet = Animation([Image.new("RGB", (480, 640), c) for c in ("blue", "green")], 1000)
-    assert show(still) == ["upload_jpeg", "show_slot"]
-    assert show(pet) == ["upload_gif", "show_slot"]
-    assert show(Image.new("RGB", (480, 640), "red"), wait=0) == ["show_slot"]     # back to the same still: no write, no wait
-    assert show(Animation([Image.new("RGB", (480, 640), c) for c in ("blue", "green")], 1000), wait=0) == ["show_slot"]
-    assert show(Image.new("RGB", (480, 640), "white"), wait=0) == []              # new content still waits for the rate limit
+    assert show(still) == (1, ("jpg", 1))
+    assert show(pet) == (2, ("gif", 0))                                   # an animation: a write per frame
+    assert show(Image.new("RGB", (480, 640), "red"), wait=0) == (0, ("jpg", 1))   # back to the same still: no write, no wait
+    assert show(Animation([Image.new("RGB", (480, 640), c) for c in ("blue", "green")], 1000), wait=0) == (0, ("gif", 0))
+    assert show(Image.new("RGB", (480, 640), "white"), wait=0) == (0, ("gif", 0))  # new content waits for the rate limit
+    assert cooler.still(1).getpixel((10, 10))[0] > 200 and len(cooler.stills) == 2
     assert engine.digest(still) != engine.digest(pet)
 
 
-def test_preview_never_reaches_the_cooler_and_is_promoted_when_shown(tmp_path, monkeypatch):
-    dev = FakeDevice()
-    monkeypatch.setattr(device, "Mystique", lambda: dev)
-
+def test_preview_never_reaches_the_cooler_and_is_promoted_when_shown(tmp_path, monkeypatch, cooler):
     class Still(Mode):
         id, title = "still", "Still"
         builds = 0
@@ -169,9 +162,7 @@ def test_preview_never_reaches_the_cooler_and_is_promoted_when_shown(tmp_path, m
             return img
 
     monkeypatch.setitem(engine.BY_ID, "still", Still)
-    config = Config(tmp_path / "config.json")
-    config.set("slot_index", 3)
-    eng = engine.Engine(config)
+    eng, config, clock = _engine(tmp_path, monkeypatch)
     previews, lives = [], []
     eng.previewChanged.connect(lambda mode_id, frames, ms, placeholder: previews.append((mode_id, placeholder)))
     eng.frameChanged.connect(lambda frames, ms, placeholder: lives.append(placeholder))
@@ -180,12 +171,13 @@ def test_preview_never_reaches_the_cooler_and_is_promoted_when_shown(tmp_path, m
     asyncio.run(eng._preview_step())
     assert previews == [("still", True), ("still", False)]
     eng._device_step(True)
-    assert "upload_jpeg" not in dev.calls              # the preview's image is not sent
+    assert cooler.flash_writes == 0 and len(cooler.stills) == 1      # the preview's image is not sent
     assert asyncio.run(eng._preview_step()) is None and len(previews) == 2
 
     config.set("mode", "still")
     eng._make_mode()                                   # "Show on cooler": the running preview takes over
     assert Still.builds == 1 and eng._preview is None and isinstance(eng._mode, Still)
     assert lives[-1] is False                          # with the frame it already drew, no placeholder
+    clock[0] += engine.MIN_UPLOAD_INTERVAL + 1
     eng._device_step(True)
-    assert "upload_jpeg" in dev.calls
+    assert cooler.flash_writes == 1 and cooler.screen == ("jpg", 1) and cooler.still(1).getpixel((5, 5))[0] > 200
