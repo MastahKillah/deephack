@@ -3,16 +3,22 @@ taking photos. Needs opencv-python-headless (not a dependency of the app)."""
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 OUT = Path(__file__).resolve().parent.parent / "captures" / "cam"
-CROP = (0, 420, 325, 680)   # y0, y1, x0, x1 of the LCD in the 1280x720 frame; depends on where the camera sits
+CROP = (125, 512, 362, 672)   # y0, y1, x0, x1 of the LCD in the 1280x960 frame; depends on where the camera sits
 
 
 class Cam:
+    """The camera's whole sensor is 4:3 (1280x960 is the most it gives): at 1280x720 it cuts the top of the
+    LCD off. Its focus is fixed and the LCD is only some 280 pixels wide in the frame, so text stays soft.
+    Exposure -6 suits the LCD in a dark room; anything dimmer (the side light, the case) needs -4 or so,
+    which blows the LCD out."""
+
     def __init__(self, index=0, exposure=-6):
         self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
         self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)
         self.cap.set(cv2.CAP_PROP_EXPOSURE, exposure)   # auto exposure blows the LCD out
         OUT.mkdir(parents=True, exist_ok=True)
@@ -30,6 +36,20 @@ class Cam:
         if f is not None:
             cv2.imwrite(str(OUT / f"{name}.jpg"), f, [cv2.IMWRITE_JPEG_QUALITY, 90])
         return f
+
+    def photo(self, name, frames=16, scale=2):
+        """A picture of a screen that holds still, as good as this camera gives: the mean of several frames
+        (less noise), enlarged and sharpened a little. Saved as PNG; returns its path."""
+        self.frame()
+        y0, y1, x0, x1 = CROP
+        got = [f[y0:y1, x0:x1].astype(np.float32) for ok, f in (self.cap.read() for _ in range(frames)) if ok]
+        if not got:
+            return None
+        mean = cv2.resize(sum(got) / len(got), None, fx=scale, fy=scale, interpolation=cv2.INTER_LANCZOS4)
+        sharp = cv2.addWeighted(mean, 1.6, cv2.GaussianBlur(mean, (0, 0), 2.0 * scale), -0.6, 0)
+        path = OUT / f"{name}.png"
+        cv2.imwrite(str(path), np.clip(sharp, 0, 255).astype(np.uint8))
+        return path
 
     def close(self):
         self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)

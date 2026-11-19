@@ -328,6 +328,11 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   and not from the stored file when it is shown. Blue shows no difference: not explained, the screen's
   own blue on the sticks may simply drown it.
 
+- **Every mode's pictures are drawn now** (`_draw_still`): Weather, System, Claude Code, Ticker and Now
+  Playing one after the other in one session, each one `20` with a JPEG of 27 to 68 KB that took 36 to
+  88 ms to send, and no upload at all. They go over a plain black still stored once in deephack's slot.
+  An animation (Scene) in between is stored as before, and the pictures after it are drawn again.
+
 Not looked at on the cooler: a frame with a wrong sum, a frame the host abandons half way, how far a
 drawn frame is behind its command (the webcam's own delay is not known), and how the patched firmware
 behaves over hours.

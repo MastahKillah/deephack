@@ -60,15 +60,19 @@ autostart entry.
   with a button for that. The DeepCool app starts with Windows by default, so disable its autostart if you
   want deephack to own the display after a reboot. Fan control is a separate Windows service and keeps
   working, and so does the sensor service the System and Live modes read.
-- **Every update is a write to the cooler's flash**, except in Live, which uses the cooler's own sensor
-  screens, and in Visualizer, which draws directly or flips between pictures stored once. DeepCool's
-  firmware has no way to draw our own pictures without storing them first (a patched one has, see
-  [Protocol](#protocol)). deephack rate-limits
+- **On DeepCool's own firmware every update is a write to the cooler's flash**, except in Live, which
+  uses the cooler's own sensor screens, and in Visualizer, which flips between pictures stored once: that
+  firmware has no way to show a picture without storing it first. With the direct drawing firmware (see
+  [Protocol](#protocol)) deephack draws its pictures straight from USB instead: nothing is stored but
+  one plain black picture, once, for the frames to go over, and the animations of Claude Pet and Scene.
+  A slide show of the stored pictures is the exception: with that switched on, ours is stored as before.
+  Where it does store, deephack rate-limits
   writes (at most one every 8 seconds, tracks have to settle before they are drawn), but the flash
   endurance of the device is unknown. "Cover only" writes once per album instead
   of once per track. Showing an image the cooler already holds again (Auto switching back to it) costs
   no write.
-- **deephack adds files the DeepCool app does not know about:** one image, one animation once you use
+- **deephack adds files the DeepCool app does not know about:** one image (a black one on the direct
+  drawing firmware), one animation once you use
   Claude Pet or Scene, and up to seven more images once you use Visualizer on DeepCool's own firmware
   (the cooler keeps about nine in all, so it takes whatever room your own pictures leave). They are stored after the JPGs / GIFs you uploaded with the official app. If you later add
   files there, its numbering will be off by one. `python -m deephack.device delete <index>` (add `--gif`
@@ -237,8 +241,10 @@ from RAM, and the driver has `can_draw()` and `draw_jpeg()` for it. It runs in t
 (`python tools/emu/bench.py --firmware ...`, and `tests/test_direct_draw.py`) and, since 19 Nov 2026,
 **on one cooler**: `tools/fw/flash.py patched` sent it through the cooler's update channel, the cooler
 was off the bus for 12 seconds and came back drawing. Measured there, from the host: a 41 KB frame 16
-times a second, a 72 KB one 10 times, an 8 KB one 20 times. The Visualizer uses it: the engine sends a
-frame every 50 ms (12 to 30 KB each) and the cooler takes them all.
+times a second, a 72 KB one 10 times, an 8 KB one 20 times. The engine uses it for every picture a
+mode returns (one frame of 27 to 68 KB, on screen 36 to 88 ms after it was ready; nothing is stored and
+there is no wait between two) and for the Visualizer, which gets a frame every 50 ms (12 to 30 KB each).
+A picture over the firmware's 128 KiB is sent at a lower JPEG quality.
 
 Two things the engine works around, both seen on the cooler:
 

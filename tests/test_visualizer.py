@@ -257,35 +257,24 @@ def test_the_stored_picture_comes_back_after_drawn_frames(tmp_path, monkeypatch,
     and come back (the model keeps the drawn frame up otherwise, as the cooler did)."""
     cooler.direct = True
     eng, config, states, step = _book_engine(tmp_path, monkeypatch)
-    picture = _eight()[6]
-    eng._set_frame(picture)
-    eng._device_step(True)
-    assert cooler.screen == ("jpg", 1) and cooler.flash_writes == 1
     step(2)
     step(2)
     assert cooler.screen == _drawn(_eight()[2])
-    eng._set_frame(picture)                                             # the picture the cooler already holds
-    eng._device_step(True)
-    assert cooler.screen == ("jpg", 1) and cooler.flash_writes == 1
+    eng._device_step(False)                                             # paused: the user's own picture
+    assert cooler.screen == ("jpg", 0)
     modes = [payload[0] for kind, cmd, payload in cooler.log if kind == "cmd" and cmd == device.CMD_MODE]
     assert modes[-2:] == [device.MODE_SITUATIONAL, device.MODE_MOTION]
 
-    step(2)
-    step(2)
-    eng._device_step(False)                                             # paused: the user's own picture
-    assert cooler.screen == ("jpg", 0)
 
-
-def test_a_new_picture_after_drawn_frames_needs_no_detour(tmp_path, monkeypatch, cooler):
+def test_a_picture_after_drawn_frames_is_drawn_too_without_a_detour(tmp_path, monkeypatch, cooler):
     cooler.direct = True
     eng, config, states, step = _book_engine(tmp_path, monkeypatch)
     step(2)
     step(2)
     before = len(cooler.log)
-    monkeypatch.setattr(engine, "MIN_UPLOAD_INTERVAL", 0.0)
     eng._set_frame(_eight()[6])
     eng._device_step(True)
-    assert cooler.screen == ("jpg", 1) and cooler.flash_writes == 2
+    assert cooler.screen == ("drawn", engine.frame_jpeg(_eight()[6])) and cooler.flash_writes == 1
     assert not [e for e in cooler.log[before:] if e[0] == "cmd" and e[1] == device.CMD_MODE]
 
 

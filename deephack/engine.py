@@ -32,12 +32,15 @@ REOPEN_INTERVAL = 3.0
 TICK = 0.5
 CLOCK_SYNC = 3600.0         # the sensor screens' clock is set when shown and then hourly
 FLIP_INTERVAL = 0.1         # stored pictures: the firmware shows ten a second and drops what comes faster
-DRAW_QUALITY = 85           # JPEG quality of frames drawn from USB: the smaller the frame, the sooner it is on screen
+DRAW_QUALITY = 85           # JPEG quality of a flipbook's drawn frames: the smaller the frame, the sooner it is on screen
+STILL_QUALITIES = (92, 85, 75, 60, 40, 20)   # a drawn picture: the best of these that fits the firmware's 128 KiB
 DRAW_SETTLE = 0.3           # a stored still is on screen 0.1 s after "show"; a frame drawn sooner is replaced by it
 DRAW_PATIENCE = 0.2         # seconds to wait while the cooler is busy with the last frame; then the step is skipped
 REDRAW = 1.0                # an unchanged drawn frame is sent again this often, in case the screen lost it
+REDRAW_STILL = 10.0         # ... and a picture that may stay for hours this often (the stored still under it could
+                            # have loaded late and taken its place)
 BACK_PAUSE = 0.15           # on the sensor screen, when the image screen has to be left and entered again
-DRAW_STUCK = 2.0            # frames refused for this long: start over (see _draw_step)
+DRAW_STUCK = 2.0            # frames refused for this long: start over (see _draw)
 DEEPCOOL_EXE = "DeepCool.exe"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -73,6 +76,15 @@ def digest(frame: Image.Image | Animation) -> bytes:
     if isinstance(frame, Animation):
         h.update(str(frame.duration_ms).encode())
     return h.digest()
+
+
+def frame_jpeg(img: Image.Image) -> bytes:
+    """A picture as the JPEG to draw from USB: as good as what would be stored, unless that is too large."""
+    for quality in STILL_QUALITIES:
+        jpeg = device.encode_jpeg(img, quality=quality)
+        if len(jpeg) <= device.DIRECT_MAX:
+            break
+    return jpeg
 
 
 def to_qimage(img: Image.Image) -> QImage:
@@ -128,8 +140,10 @@ class Engine(QThread):
         self._book_room = True                   # False: the cooler is too full for a flipbook
         self._flipped = 0.0                      # when the last stored frame of a flipbook was shown
         self._can_draw = False                   # the cooler's firmware draws frames straight from USB (tools/fw)
+        self._drawing = False                    # ... and that is how pictures get there now (not during a slide show)
+        self._still: tuple[int, bytes] = (-1, b"")   # frame seq of the picture last drawn, and its JPEG
         self._veiled = False                     # a frame drawn from USB may be hiding the stored still on screen
-        self._drawn: int | None = None           # index of the flipbook frame last drawn
+        self._drawn = None                       # what was drawn last: (flipbook key, index) or ("still", frame seq)
         self._drawn_at = 0.0
         self._draw_from = 0.0
         self._refused: float | None = None       # since when the cooler has taken no frame
@@ -277,6 +291,9 @@ class Engine(QThread):
             if slideshow != self._slideshow_applied and self._display == device.MODE_MOTION:
                 self._dev.set_slideshow(slideshow)
                 self._slideshow_applied = slideshow
+            drawing = self._can_draw and not slideshow     # a slide show is of stored pictures: ours is stored then
+            if drawing != self._drawing:
+                self._drawing, self._on_screen, self._uploaded_seq = drawing, None, -1
             options = (int(self.config.get("brightness")), LIGHTS.get(self.config.get("light"), device.LIGHT_SCREEN))
             if options != self._options_applied:
                 self._dev.set_options(*options)
@@ -298,10 +315,13 @@ class Engine(QThread):
                 self._dashboard_step(self._frame, now)
                 return
             if isinstance(self._frame, Flipbook):
-                if self._can_draw:
-                    self._draw_step(self._frame, now)
+                if self._drawing:
+                    self._draw_book(self._frame, now)
                 else:
                     self._flipbook_step(self._frame, now)
+                return
+            if self._drawing and not isinstance(self._frame, Animation):
+                self._draw_still(self._frame, now)
                 return
             if self._frame_seq != self._uploaded_seq:
                 animated = isinstance(self._frame, Animation)
@@ -322,6 +342,7 @@ class Engine(QThread):
                         self._dev.upload_gif(GIF_SLOT_ID, frames, self._frame.duration_ms)
                     else:
                         self._dev.upload_jpeg(SLOT_ID, device.encode_jpeg(self._frame))
+                        self.config.set("ground", False)
                     self._slot_digest[slot] = self._frame_digest[1]
                     self._last_upload = time.monotonic()
                     self._veiled = False          # after an upload the firmware loads the stored picture afresh
@@ -367,37 +388,74 @@ class Engine(QThread):
             self._slot_digest.pop(device.TYPE_JPG, None)
         return main
 
-    def _draw_step(self, book: Flipbook, now: float) -> None:
-        """Draw the book's current frame straight from USB: nothing is stored, and any number of frames will do.
+    def _ground(self) -> int:
+        """Index of our own still as the ground for drawn frames: a plain black picture, stored once.
 
-        Needs the direct drawing firmware (tools/fw). It draws over a stored still that is on show (an
-        animation would take the screen back with its next frame), so ours is shown first. And the image
-        screen is entered afresh for it: once an animation has been on that screen, the firmware takes one
-        frame and answers "later" to every one after it, also over a still (seen on the cooler, cause not
-        known). Should it stop taking frames all the same, the whole start is done again."""
-        target = ("drawn", book.key)
-        if self._on_screen != target:
-            self._show_stored(self._own_still(), device.TYPE_JPG, afresh=True)
-            self._on_screen, self._drawn, self._draw_from, self._refused = target, None, now + DRAW_SETTLE, None
-            return
+        Frames are drawn over a stored still, and all that is seen of it is a moment before the first
+        frame. Whatever picture was last stored there would flash up each time, so it is made plain."""
+        main = self.config.get("slot_index")
+        if main is None or not self.config.get("ground"):
+            if main is None:
+                main = _stored_count("jpg")
+            self._dev.upload_jpeg(SLOT_ID, device.encode_jpeg(Image.new("RGB", (device.WIDTH, device.HEIGHT))))
+            self._last_upload = time.monotonic()
+            self.config.set("slot_index", main)
+            self.config.set("ground", True)
+            self._slot_digest.pop(device.TYPE_JPG, None)
+        return main
+
+    def _draw(self, what, jpeg, now: float, again: float) -> bool:
+        """Put a picture on screen straight from USB: nothing is stored. True once `what` is on screen.
+
+        `what` names the picture, `jpeg()` makes its data when it has to be sent, and an unchanged one is
+        sent again every `again` seconds. Needs the direct drawing firmware (tools/fw). It draws over a
+        stored still that is on show (an animation would take the screen back with its next frame), so
+        ours is shown first. And the image screen is entered afresh for it: once an animation has been on
+        that screen, the firmware takes one frame and answers "later" to every one after it, also over a
+        still (seen on the cooler, cause not known). Should it stop taking frames all the same, the whole
+        start is done again."""
+        if self._on_screen != "drawn":
+            self._show_stored(self._ground(), device.TYPE_JPG, afresh=True)
+            self._on_screen, self._drawn, self._draw_from, self._refused = "drawn", None, now + DRAW_SETTLE, None
+            return False
         if now < self._draw_from:
-            return
-        if self._drawn != book.index or now - self._drawn_at >= REDRAW:
-            if self._jpegs[0] != book.key:
-                self._jpegs = (book.key, {})
-            jpeg = self._jpegs[1].get(book.index)
-            if jpeg is None:
-                jpeg = self._jpegs[1][book.index] = device.encode_jpeg(book.frames[book.index], quality=DRAW_QUALITY)
+            return False
+        if self._drawn != what or now - self._drawn_at >= again:
             try:
-                self._dev.draw_jpeg(jpeg, patience=DRAW_PATIENCE)
+                self._dev.draw_jpeg(jpeg(), patience=DRAW_PATIENCE)
             except TimeoutError:              # busy with the last frame: the next step tries again
                 if self._refused is None:
                     self._refused = now
                 elif now - self._refused > DRAW_STUCK:
                     self._on_screen = None
-                return
-            self._drawn, self._drawn_at, self._veiled, self._refused = book.index, now, True, None
-        self._uploaded_seq = self._frame_seq
+                return False
+            self._drawn, self._drawn_at, self._veiled, self._refused = what, now, True, None
+        return True
+
+    def _draw_book(self, book: Flipbook, now: float) -> None:
+        """Draw the book's current frame: any number of frames will do, and none is stored."""
+        if self._jpegs[0] != book.key:
+            self._jpegs = (book.key, {})
+        frames = self._jpegs[1]
+
+        def jpeg() -> bytes:
+            if book.index not in frames:
+                frames[book.index] = device.encode_jpeg(book.frames[book.index], quality=DRAW_QUALITY)
+            return frames[book.index]
+
+        if self._draw((book.key, book.index), jpeg, now, REDRAW):
+            self._uploaded_seq = self._frame_seq
+
+    def _draw_still(self, picture: Image.Image, now: float) -> None:
+        """Draw a mode's picture instead of storing it: no flash write, and no wait between two of them."""
+        def jpeg() -> bytes:
+            if self._still[0] != self._frame_seq:
+                self._still = (self._frame_seq, frame_jpeg(picture))
+            return self._still[1]
+
+        if self._draw(("still", self._frame_seq), jpeg, now, REDRAW_STILL) and self._frame_seq != self._uploaded_seq:
+            self._uploaded_seq = self._frame_seq
+            self._last_upload_wall = time.time()
 
     def _flipbook_step(self, book: Flipbook, now: float) -> None:
         """Store the book's frames once (one per step, each a flash write), then just show the wanted one.
@@ -475,7 +533,8 @@ class Engine(QThread):
             "preview_status": self._preview.status if self._preview else "",
             "last_upload": self._last_upload_wall,
             "live": isinstance(self._frame, (Dashboard, Flipbook)) and self._book_storing is None,
-            "mode_live": "dashboard" if not isinstance(self._frame, Flipbook) else "drawn" if self._can_draw else "flipbook",
+            "mode_live": "dashboard" if not isinstance(self._frame, Flipbook) else "drawn" if self._drawing else "flipbook",
+            "drawn": self._drawing and isinstance(self._frame, Image.Image),
             "storing": (self._book_storing[2], self._book_storing[3])
                        if self._book_storing and isinstance(self._frame, Flipbook) else None,
             "no_room": isinstance(self._frame, Flipbook) and not self._book_room,

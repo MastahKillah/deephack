@@ -27,6 +27,7 @@ DEFAULTS = {
     "light": "screen",         # the pump head's light strip: screen (edge colours) | motherboard | warning
     "brightness": 70,          # screen backlight, percent (70 is what the official app sends)
     "slot_index": None,        # index of our image among the JPGs stored on the device
+    "ground": False,           # True: that image is the plain one frames are drawn over (direct drawing firmware)
     "gif_slot_index": None,    # index of our animation among the GIFs stored on the device
     "restore_index": 0,        # JPG shown when deephack is paused or quits
     "book": None,              # the flipbook stored on the device: {"key", "first" (index of frame 0), "count"}

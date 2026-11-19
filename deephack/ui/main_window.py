@@ -418,6 +418,8 @@ class MainWindow(QMainWindow):
             text = "Sending to the cooler…"
         elif s.get("last_upload"):
             text = "On the cooler since " + time.strftime("%H:%M", time.localtime(s["last_upload"]))
+            if s.get("drawn"):
+                text += " · drawn from USB, nothing stored"
         else:
             text = ""
         self._caption.setText(text)
