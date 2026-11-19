@@ -110,12 +110,22 @@ AA 2E <cmd> <payload, zero padded to 39 bytes> 'H' 'I' 'D' 'C' <sum16 LE of byte
 | `01` | sensor values (ep 2, once a second) | 3-byte fields, see below |
 | `02` | device options | not decoded |
 | `03` | display mode | `mode` (1 = sensor dashboard, 2 = stored images, 3 = recorder) |
+| `05` | recorder layout | `0` frequency + temperature graphs, `1` frequency graph only |
 | `07` | slideshow | `duration` `animation` (0 none, 1 slide, 2 fade) |
 | `08` | show stored image | `type` (0 jpg, 1 gif) `index` |
 | `09` | delete stored image | `type` `index` |
 | `0A` | set clock (ep 2) | `year:u16` `month` `day` `hour` `minute` `second` |
 | `0F` | start upload | none |
 | `12` | get UUID | reply: status byte + 32 ASCII characters |
+| `13` | **factory reset** | none. Reboots and erases every stored image and the UUID |
+| `14` | **delete all stored images** | none |
+
+Commands `0B`, `0C`, `0D`, `0E` and `11` are acknowledged but did nothing visible with an empty payload.
+`18` to `30` are answered with command byte `00`, which looks like "unknown command". `13` and `14` were
+found the hard way; `tools/restore_originals.py` re-uploads what the official app had stored.
+
+**Recorder mode** (`03` = 3) plots the last seven minutes of the CPU frequency and temperature you feed
+with command `01`, as live line graphs. Like the dashboard it is not stored, so it costs no flash writes.
 
 **Sensor values** (command `01`) feed the firmware's own dashboard and are not stored, so they can change
 every second without wearing the flash. The payload is a row of 3-byte fields, `integer:u16` `fraction:u8`;

@@ -47,6 +47,8 @@ CMD_SET_TIME = 0x0A         # year:u16 month day hour minute second (ep 2)
 CMD_START_DOWNLOAD = 0x0F
 CMD_ROTATE_QUERY = 0x10
 CMD_GET_UUID = 0x12
+CMD_FACTORY_RESET = 0x13    # reboots, erases every stored image AND the UUID (cmd 12 returns junk afterwards)
+CMD_DELETE_ALL = 0x14       # erases every stored image, no reboot
 
 TYPE_JPG, TYPE_GIF = 0, 1   # slot type in the show / delete commands
 FILE_JPG, FILE_GIF = 1, 2   # file type in the upload header
