@@ -157,6 +157,10 @@ class Mystique:
     def uuid(self) -> str:
         return self.command(CMD_GET_UUID)[1:33].decode("ascii", "replace").rstrip("\0")
 
+    def set_brightness(self, percent: int) -> None:
+        """Backlight brightness, 0 (off) to 100. The other option bytes are sent as the official app sends them."""
+        self.command(CMD_OPTIONS, bytes([1, 1, 0, 1, max(0, min(100, percent))]))
+
     def set_mode(self, mode: int) -> None:
         self.command(CMD_MODE, bytes([mode]))
 

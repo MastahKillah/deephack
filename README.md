@@ -108,7 +108,7 @@ AA 2E <cmd> <payload, zero padded to 39 bytes> 'H' 'I' 'D' 'C' <sum16 LE of byte
 | cmd | meaning | payload |
 | --- | --- | --- |
 | `01` | sensor values (ep 2, once a second) | 3-byte fields, see below |
-| `02` | device options | not decoded |
+| `02` | device options | five bytes, the official app sends `01 01 00 01 46`. The fifth is the backlight brightness in percent (0 turns the screen off); the others showed no visible effect |
 | `03` | display mode | `mode` (1 = sensor dashboard, 2 = stored images, 3 = recorder) |
 | `05` | recorder layout | `0` frequency + temperature graphs, `1` frequency graph only |
 | `07` | slideshow | `duration` `animation` (0 none, 1 slide, 2 fade) |
