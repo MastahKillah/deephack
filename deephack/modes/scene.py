@@ -180,7 +180,7 @@ def traffic(seed: int) -> tuple[tuple, tuple]:
 
 
 def _vehicle(d: ImageDraw.ImageDraw, beams: ImageDraw.ImageDraw, x: int, y: int, vehicle: str, colour,
-             facing: int, glass, lights: bool) -> None:
+             facing: int, glass, lights: str) -> None:
     """A car, taxi, van or bus with its wheels on row y, facing right (1) or left (-1)."""
     n = VEHICLES[vehicle]
     roof = tuple(round(c * 0.86) for c in colour)
@@ -206,7 +206,7 @@ def _vehicle(d: ImageDraw.ImageDraw, beams: ImageDraw.ImageDraw, x: int, y: int,
     if lights:
         hy = y - 2
         reach = front + 16 * facing
-        beams.polygon([(front, hy), (reach, hy - 3), (reach, hy + 3)], fill=WARM + (84,))
+        beams.polygon([(front, hy), (reach, hy - 3), (reach, hy + 3)], fill=WARM + (84 if lights == "night" else 40,))
         d.point((front, hy), fill=WARM)
         d.point((back, hy), fill=RED_LIGHT)
         if top < y - 5:
@@ -321,7 +321,8 @@ def render_frame(f: int, phase: str, kind: str, seed: int = 0, sky: Sky | None =
         d.line([(x, 126), (x + 3, 126)], fill=(60, 62, 74))
         if glow:
             g.ellipse([x - 1, 123, x + 7, 131], fill=WARM + (60,))           # halo around the lamp
-            g.ellipse([x - 7, STREET - 1, x + 13, STREET + 5], fill=WARM + (70,))   # light pool on the pavement
+            if night:                                          # a pool of light only shows on a dark street
+                g.ellipse([x - 7, STREET - 1, x + 13, STREET + 5], fill=WARM + (70,))
             if kind in ("rain", "thunder"):                 # reflections on the wet road
                 g.rectangle([x + 1, STREET + 6, x + 4, LH], fill=WARM + (40,))
     img.paste(layer, (0, 0), layer)
@@ -338,7 +339,8 @@ def render_frame(f: int, phase: str, kind: str, seed: int = 0, sky: Sky | None =
             travelled = (offset + f * TRAFFIC_STEP) % TRAFFIC_SPAN      # once across per loop: seamless
             length = VEHICLES[vehicle]
             x = travelled - TRAFFIC_MARGIN if lane == 0 else LW - travelled
-            _vehicle(d, b, x, LANE_BOTTOM[lane], vehicle, colour, 1 if lane == 0 else -1, glass, glow)
+            _vehicle(d, b, x, LANE_BOTTOM[lane], vehicle, colour, 1 if lane == 0 else -1, glass,
+                     ("night" if night else "dim") if glow else "")
     img.paste(beams, (0, 0), beams)
 
     # weather in front of everything
