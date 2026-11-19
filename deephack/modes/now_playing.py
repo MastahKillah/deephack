@@ -84,6 +84,25 @@ def render_track(track: Track, layout: str = "full") -> Image.Image:
     return canvas
 
 
+class Playback:
+    """Whether the system's current media session is playing, for modes that only need to know that."""
+
+    def __init__(self):
+        self._manager = None
+
+    async def playing(self) -> bool:
+        try:
+            from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager as Manager
+            from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status
+
+            if self._manager is None:
+                self._manager = await Manager.request_async()
+            session = self._manager.get_current_session()
+            return session is not None and session.get_playback_info().playback_status == Status.PLAYING
+        except (ImportError, OSError, AttributeError):
+            return False
+
+
 class NowPlaying(Mode):
     id = "now_playing"
     title = "Now Playing"

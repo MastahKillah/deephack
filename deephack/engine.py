@@ -119,7 +119,7 @@ class Engine(QThread):
 
     def _make_mode(self) -> None:
         cls = BY_ID.get(self.config.get("mode"), MODES[0])
-        self._mode = cls.build(self.config)
+        self._mode = cls.build(self.config.mode_settings)
         self._frame = None
         self._emit_placeholder()
 

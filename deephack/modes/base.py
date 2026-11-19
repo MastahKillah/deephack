@@ -64,9 +64,9 @@ class Mode:
         self.active = False                               # has something worth showing right now (see `claims`)
 
     @classmethod
-    def build(cls, config) -> Mode:
-        """Create the mode with its saved settings."""
-        return cls(config.mode_settings(cls.id))
+    def build(cls, settings) -> Mode:
+        """Create the mode with its saved settings; `settings(mode_id)` returns any mode's saved values."""
+        return cls(settings(cls.id))
 
     async def frame(self) -> Image.Image | Animation | None:
         raise NotImplementedError

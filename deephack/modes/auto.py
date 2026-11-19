@@ -50,7 +50,7 @@ class Auto(Mode):
         by_id = {c.id: c for c in CANDIDATES + FALLBACKS}
         self.order = [mode_id for mode_id, on in parse_order(self.values["order"], [c.id for c in CANDIDATES]) if on]
         self.fallback = self.values["fallback"] if self.values["fallback"] in by_id else Weather.id
-        self.children: dict[str, Mode] = {i: by_id[i](child_settings(i)) for i in dict.fromkeys(self.order + [self.fallback])}
+        self.children: dict[str, Mode] = {i: by_id[i].build(child_settings) for i in dict.fromkeys(self.order + [self.fallback])}
         self._latest: dict[str, tuple[int, Image.Image | Animation]] = {}   # mode id -> (frame number, last frame)
         self._seen: dict[str, float] = {}                                   # mode id -> when it was last active
         self._sent: tuple[str, int] | None = None
@@ -58,8 +58,8 @@ class Auto(Mode):
         self.placeholder = ("Auto", "Looking for something to show…")
 
     @classmethod
-    def build(cls, config) -> Auto:
-        return cls(config.mode_settings(cls.id), config.mode_settings)
+    def build(cls, settings) -> Auto:
+        return cls(settings(cls.id), settings)
 
     def pick(self, now: float) -> str | None:
         """First mode in the order that is (or was, within LINGER) active and has a frame; else the fallback."""

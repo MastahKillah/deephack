@@ -17,7 +17,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **Weather** | Current conditions and a three day outlook for a city you pick, from [Open-Meteo](https://open-meteo.com) (no account or key). |
 | **NBA** | The last two results and the next two games, with team logos, for one team or the whole league. From ESPN's public feed; tip-off times in your local time zone. While your team plays, a big scoreboard with points per quarter takes over, updated every few minutes. |
 | **Claude Code** | Plan limits (5-hour and weekly) and today's tokens, requests, hourly activity and model split. All from local files, see below. |
-| **Claude Pet** | An animated pixel pet with your plan limit percentages. Its mood follows the fullest limit: happy, fine, stressed, exhausted. |
+| **Claude Pet** | An animated pixel pet with your plan limit percentages. It works along while Claude Code is busy, dances while music plays, sleeps at night and celebrates or sulks after your NBA team's games; you pick which of these count and which wins. Otherwise its mood follows the fullest limit: happy, fine, stressed, exhausted. |
 | **Countdown** | Days until a date you set, with a title. On the last day it counts hours, then minutes. |
 | **Photo Frame** | Pictures from a folder you pick, changing every 15 minutes to once a day, shuffled or by file name. Portrait photos fill the screen, wider ones are shown whole. |
 | **Game Cover** | The cover art of the game you are playing, for games started through Steam (Steam notes the running game in the registry; covers come from its image server). |
