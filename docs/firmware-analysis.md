@@ -34,7 +34,17 @@ What that means:
   never run on it, next to a `ui.bin` on the serial flash that came with 2.71. The firmware uses its
   widgets unchecked: a screen whose widget ids differ between the two would end in a call through a null
   pointer, and a cooler that does that on its boot screen has no USB to be flashed back through.
-- There is no 2.71 image to go back to. No USB command reads the firmware out.
+- There is no 2.71 image to go back to. No USB command reads the firmware out. Looked for on
+  19 Nov 2026 and not found:
+  - the app's firmware service: it logs in as a guest at `downloads.deepcool.com/official/auth/login`
+    and asks `/firmware/update`; both answer 404 now, the service is gone;
+  - the installers on DeepCool's download site (`deepcool.io/downloads/DeepCool-<version>-setup.exe`,
+    versions from the site's own list): every one that can still be downloaded, 1.2.2 (May 2025) to
+    1.2.16 (Nov 2026), carries `MYSTIQUE_2.70.bin` and no other firmware. 1.2.1 and older are 404.
+
+  So 2.71 was never given out through the app: it looks like a build that only the factory used, for a
+  reason nobody outside knows (a fix, or a change in the hardware). DeepCool's support is the one place
+  left to ask.
 
 ## Platform
 

@@ -228,8 +228,11 @@ Every frame is written to flash, so keep them few. For real-time changes a mode 
 firmware that can: one new command (`20`, size and sum16, then the JPEG) puts a frame on screen straight
 from RAM, and the driver has `can_draw()` and `draw_jpeg()` for it. So far it runs **only in the
 emulator** (`python tools/emu/bench.py --firmware ...`, and `tests/test_direct_draw.py`). It has not
-been flashed to a cooler, and nothing in this repository does that: see "Direct drawing" in
-[docs/firmware-analysis.md](docs/firmware-analysis.md) for what is still unknown.
+been flashed to a cooler. `tools/fw/flash.py` can send it (or DeepCool's own v2.70) through the
+cooler's update channel, and has only ever done so to the emulated firmware: **a flash that goes wrong
+cannot be undone from USB.** Read "Which firmware" and "Direct drawing" in
+[docs/firmware-analysis.md](docs/firmware-analysis.md) first; the cooler this was written on runs a
+newer firmware than the only image there is.
 
 `python -m deephack.device --help` exposes the driver on the command line.
 
