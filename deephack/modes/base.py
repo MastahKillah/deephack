@@ -17,7 +17,8 @@ from PIL import Image
 
 @dataclass
 class Animation:
-    """A looping animation. Every frame is stored on the cooler's flash, so keep the frame count low."""
+    """A looping animation. Every frame is stored on the cooler's flash, so keep the frame count low. (A cooler
+    with the direct drawing firmware stores none: the engine draws each frame when it is due.)"""
     frames: list[Image.Image]
     duration_ms: int               # length of one loop
 

@@ -63,8 +63,9 @@ autostart entry.
 - **On DeepCool's own firmware every update is a write to the cooler's flash**, except in Live, which
   uses the cooler's own sensor screens, and in Visualizer, which flips between pictures stored once: that
   firmware has no way to show a picture without storing it first. With the direct drawing firmware (see
-  [Protocol](#protocol)) deephack draws its pictures straight from USB instead: nothing is stored but
-  one plain black picture, once, for the frames to go over, and the animations of Claude Pet and Scene.
+  [Protocol](#protocol)) deephack draws its pictures straight from USB instead, and plays the
+  animations of Claude Pet and Scene from the PC, frame by frame: nothing is stored but one plain black
+  picture, once, for the frames to go over.
   A slide show of the stored pictures is the exception: with that switched on, ours is stored as before.
   Where it does store, deephack rate-limits
   writes (at most one every 8 seconds, tracks have to settle before they are drawn), but the flash
@@ -234,7 +235,8 @@ may set its own `tick` for a moment to animate (see `now_playing.py`: the progre
 a new track).
 
 A mode returns an `Animation(frames, duration_ms)` instead of an image to use this (see `tamagotchi.py`).
-Every frame is written to flash, so keep them few. For real-time changes a mode returns a
+Every frame is written to flash, so keep them few. (On the direct drawing firmware the engine plays the
+animation itself instead, drawing each frame when it is due, and stores none.) For real-time changes a mode returns a
 `Flipbook(key, frames, index)` and a short `tick`: only `index` decides which frame shows (see
 `visualizer.py`). On the direct drawing firmware the engine draws that frame from USB and stores
 nothing; otherwise it stores as many of the frames as fit, once, as stills, and shows those, ten a
@@ -248,7 +250,8 @@ from RAM, and the driver has `can_draw()` and `draw_jpeg()` for it. It runs in t
 was off the bus for 12 seconds and came back drawing. Measured there, from the host: a 41 KB frame 16
 times a second, a 72 KB one 10 times, an 8 KB one 20 times. The engine uses it for every picture a
 mode returns (one frame of 27 to 68 KB, on screen 36 to 88 ms after it was ready; nothing is stored and
-there is no wait between two) and for the Visualizer, which gets a frame every 50 ms (12 to 30 KB each).
+there is no wait between two), for animations (Scene and Claude Pet: a frame of 18 KB every 300 or 250
+ms, under 2 % of one CPU core) and for the Visualizer, which gets a frame every 50 ms (12 to 30 KB each).
 A picture over the firmware's 128 KiB is sent at a lower JPEG quality.
 
 Two things the engine works around, both seen on the cooler:

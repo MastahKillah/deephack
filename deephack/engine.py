@@ -34,6 +34,8 @@ CLOCK_SYNC = 3600.0         # the sensor screens' clock is set when shown and th
 FLIP_INTERVAL = 0.1         # stored pictures: the firmware shows ten a second and drops what comes faster
 DRAW_QUALITY = 85           # JPEG quality of a flipbook's drawn frames: the smaller the frame, the sooner it is on screen
 STILL_QUALITIES = (92, 85, 75, 60, 40, 20)   # a drawn picture: the best of these that fits the firmware's 128 KiB
+PLAY_QUALITY = 88           # an animation's frames, drawn one after the other: what they are stored with
+DRAW_RETRY = 0.05           # the device step is run again this soon while a picture is waiting to be drawn
 DRAW_SETTLE = 0.3           # a stored still is on screen 0.1 s after "show"; a frame drawn sooner is replaced by it
 DRAW_PATIENCE = 0.2         # seconds to wait while the cooler is busy with the last frame; then the step is skipped
 REDRAW = 1.0                # an unchanged drawn frame is sent again this often, in case the screen lost it
@@ -78,9 +80,11 @@ def digest(frame: Image.Image | Animation) -> bytes:
     return h.digest()
 
 
-def frame_jpeg(img: Image.Image) -> bytes:
+def frame_jpeg(img: Image.Image, best: int = STILL_QUALITIES[0]) -> bytes:
     """A picture as the JPEG to draw from USB: as good as what would be stored, unless that is too large."""
     for quality in STILL_QUALITIES:
+        if quality > best:
+            continue
         jpeg = device.encode_jpeg(img, quality=quality)
         if len(jpeg) <= device.DIRECT_MAX:
             break
@@ -142,6 +146,9 @@ class Engine(QThread):
         self._can_draw = False                   # the cooler's firmware draws frames straight from USB (tools/fw)
         self._drawing = False                    # ... and that is how pictures get there now (not during a slide show)
         self._still: tuple[int, bytes] = (-1, b"")   # frame seq of the picture last drawn, and its JPEG
+        self._play: tuple[int, list[bytes], float] = (-1, [], 0.0)   # frame seq of the animation played from here,
+                                                                     # its frames as JPEGs, and when it started
+        self._again: float | None = None         # the device step wants to run again in this many seconds
         self._veiled = False                     # a frame drawn from USB may be hiding the stored still on screen
         self._drawn = None                       # what was drawn last: (flipbook key, index) or ("still", frame seq)
         self._drawn_at = 0.0
@@ -229,36 +236,41 @@ class Engine(QThread):
 
     async def _main(self) -> None:
         self._make_mode()
+        modes_due = 0.0                       # when the modes are asked for a picture again (perf_counter)
         while not self._stop:
             started = time.perf_counter()
+            commanded = not self._commands.empty()
             while True:
                 try:
                     self._commands.get_nowait()()
                 except queue.Empty:
                     break
             enabled = self.config.get("enabled")
-            if enabled:
-                self._mode.direct = self._drawing
-                try:
-                    img = await self._mode.frame()
-                except Exception:
-                    traceback.print_exc()
-                    self._mode.status = "Mode error, see console"
-                    img = None
-                if img is not None:
-                    self._set_frame(img)
-                elif self._frame is None and self._mode.placeholder != self._placeholder_shown:
-                    self._emit_placeholder()   # a mode may refine its placeholder (e.g. "city not found")
-            if self._preview is not None:
-                await self._preview_step()
+            if commanded or started >= modes_due:
+                if enabled:
+                    self._mode.direct = self._drawing
+                    try:
+                        img = await self._mode.frame()
+                    except Exception:
+                        traceback.print_exc()
+                        self._mode.status = "Mode error, see console"
+                        img = None
+                    if img is not None:
+                        self._set_frame(img)
+                    elif self._frame is None and self._mode.placeholder != self._placeholder_shown:
+                        self._emit_placeholder()   # a mode may refine its placeholder (e.g. "city not found")
+                if self._preview is not None:
+                    await self._preview_step()
+                # A mode's tick is from one step's start to the next, so a step's own work does not add to it.
+                modes_due = started + min(m.tick or TICK for m in (self._mode, self._preview) if m is not None)
             if self.use_device:
                 self._device_step(enabled)
             self._emit_state(enabled)
-            tick = min(m.tick or TICK for m in (self._mode, self._preview) if m is not None)
-            # The tick is from one step's start to the next, so a step's own work does not add to it. Timed
-            # with perf_counter and slept in a thread: on Windows time.monotonic() moves in steps of 15.6 ms,
-            # and asyncio's sleep goes by it. With those a 50 ms tick came out as 62.5 (measured).
-            deadline = started + tick
+            # The cooler may be due before the modes are: the next frame of an animation played from here, or
+            # a picture that could not be drawn yet. Timed with perf_counter and slept in a thread: on
+            # Windows time.monotonic() moves in steps of 15.6 ms, and asyncio's sleep goes by it. With those
+            # a 50 ms tick came out as 62.5 (measured).
+            deadline = modes_due if self._again is None else min(modes_due, started + self._again)
             while (left := deadline - time.perf_counter()) > 0 and not self._stop and self._commands.empty():
                 await asyncio.to_thread(time.sleep, min(0.05, left))
             await asyncio.sleep(0)
@@ -266,6 +278,7 @@ class Engine(QThread):
 
     def _device_step(self, enabled: bool) -> None:
         now = time.monotonic()
+        self._again = None
         if self._dev is None:
             if now < self._next_open:
                 return
@@ -322,8 +335,11 @@ class Engine(QThread):
                 else:
                     self._flipbook_step(self._frame, now)
                 return
-            if self._drawing and not isinstance(self._frame, Animation):
-                self._draw_still(self._frame, now)
+            if self._drawing:
+                if isinstance(self._frame, Animation):
+                    self._draw_animation(self._frame, now)
+                else:
+                    self._draw_still(self._frame, now)
                 return
             if self._frame_seq != self._uploaded_seq:
                 animated = isinstance(self._frame, Animation)
@@ -419,8 +435,10 @@ class Engine(QThread):
         if self._on_screen != "drawn":
             self._show_stored(self._ground(), device.TYPE_JPG, afresh=True)
             self._on_screen, self._drawn, self._draw_from, self._refused = "drawn", None, now + DRAW_SETTLE, None
+            self._again = DRAW_RETRY
             return False
         if now < self._draw_from:
+            self._again = DRAW_RETRY
             return False
         if self._drawn != what or now - self._drawn_at >= again:
             try:
@@ -430,6 +448,7 @@ class Engine(QThread):
                     self._refused = now
                 elif now - self._refused > DRAW_STUCK:
                     self._on_screen = None
+                self._again = DRAW_RETRY
                 return False
             self._drawn, self._drawn_at, self._veiled, self._refused = what, now, True, None
         return True
@@ -447,6 +466,23 @@ class Engine(QThread):
 
         if self._draw((book.key, book.index), jpeg, now, REDRAW):
             self._uploaded_seq = self._frame_seq
+
+    def _draw_animation(self, animation: Animation, now: float) -> None:
+        """Play a mode's animation from here: the frame that is due is drawn, and none is stored.
+
+        The cooler would loop a stored animation by itself, at the price of a flash write per frame every
+        time the animation changes. Two frames in a row that are the same picture cost one draw."""
+        if self._play[0] != self._frame_seq:
+            self._play = (self._frame_seq, [frame_jpeg(f, PLAY_QUALITY) for f in animation.frames], now)
+        seq, jpegs, started = self._play
+        period = max(0.02, animation.duration_ms / 1000 / len(jpegs))
+        at = (now - started) / period
+        jpeg = jpegs[int(at) % len(jpegs)]
+        if self._draw((seq, jpeg), lambda: jpeg, now, REDRAW_STILL):
+            self._again = max(0.01, (int(at) + 1 - at) * period)       # until the next frame is due
+            if seq != self._uploaded_seq:
+                self._uploaded_seq = seq
+                self._last_upload_wall = time.time()
 
     def _draw_still(self, picture: Image.Image, now: float) -> None:
         """Draw a mode's picture instead of storing it: no flash write, and no wait between two of them."""
@@ -536,7 +572,7 @@ class Engine(QThread):
             "last_upload": self._last_upload_wall,
             "live": isinstance(self._frame, (Dashboard, Flipbook)) and self._book_storing is None,
             "mode_live": "dashboard" if not isinstance(self._frame, Flipbook) else "drawn" if self._drawing else "flipbook",
-            "drawn": self._drawing and isinstance(self._frame, Image.Image),
+            "drawn": self._drawing and isinstance(self._frame, (Image.Image, Animation)),
             "storing": (self._book_storing[2], self._book_storing[3])
                        if self._book_storing and isinstance(self._frame, Flipbook) else None,
             "no_room": isinstance(self._frame, Flipbook) and not self._book_room,

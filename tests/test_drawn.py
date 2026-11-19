@@ -83,16 +83,55 @@ def test_a_picture_too_large_for_the_firmware_is_drawn_at_a_lower_quality(tmp_pa
     assert cooler.screen == _drawn(noise)
 
 
-def test_an_animation_is_still_stored_and_a_picture_after_it_is_drawn(tmp_path, monkeypatch, cooler):
+def _played(picture):
+    return ("drawn", engine.frame_jpeg(picture, engine.PLAY_QUALITY))
+
+
+def test_an_animation_is_played_from_here_frame_by_frame(tmp_path, monkeypatch, cooler):
     cooler.direct = True
+    clock = [5000.0]
+    monkeypatch.setattr(engine.time, "monotonic", lambda: clock[0])
+    eng = _engine(tmp_path, monkeypatch)
+    _show(eng, Animation([RED, BLUE, BLUE, RED], 400))                    # a tenth of a second per frame
+    assert cooler.screen == _played(RED) and cooler.flash_writes == 1 and not cooler.gifs
+    assert eng._again == pytest.approx(0.1)                               # when the next frame is due
+
+    def later(seconds):
+        clock[0] += seconds
+        eng._device_step(True)
+        return cooler.screen, cooler.draws
+
+    assert later(0.1) == (_played(BLUE), 2)
+    assert later(0.1) == (_played(BLUE), 2)                               # the same picture again: not sent
+    assert later(0.04) == (_played(BLUE), 2) and eng._again == pytest.approx(0.06)
+    assert later(0.06) == (_played(RED), 3)
+    assert later(0.1) == (_played(RED), 3)                                # round to the first frame, the same picture
+    assert later(0.1) == (_played(BLUE), 4)
+    eng._emit_state(True)
+    assert eng._last_state["drawn"] and not eng._last_state["pending"]
+    assert cooler.flash_writes == 1 and cooler.shown == ("jpg", 1)        # over the ground still, never an animation
+
+    _show(eng, RED, steps=1)                                              # a picture after it: no detour needed
+    assert cooler.screen == _drawn(RED)
+
+
+def test_deepcools_own_firmware_gets_its_animations_stored(tmp_path, monkeypatch, cooler):
     cooler.gifs.append(["app-gif-0", [], 1000])
     eng = _engine(tmp_path, monkeypatch)
-    _show(eng, Animation([RED, BLUE], 400), steps=1)
-    assert cooler.screen == ("gif", 1) and cooler.flash_writes == 2
+    _show(eng, Animation([RED, BLUE], 400))
+    assert cooler.screen == ("gif", 1) and cooler.flash_writes == 2 and cooler.draws == 0 and eng._again is None
+
+
+def test_a_picture_that_cannot_be_drawn_yet_is_tried_again_soon(tmp_path, monkeypatch, cooler):
+    cooler.direct = True
+    eng = _engine(tmp_path, monkeypatch)
+    monkeypatch.setattr(engine, "DRAW_SETTLE", 60.0)
     _show(eng, RED)
-    _show(eng, BLUE, steps=1)             # after an animation the firmware takes one frame and no more, unless
-    _show(eng, RED, steps=1)              # the image screen was left and entered again in between
-    assert cooler.screen == _drawn(RED) and cooler.draws == 3
+    assert cooler.draws == 0 and eng._again == engine.DRAW_RETRY          # not left until the mode's next turn
+    monkeypatch.setattr(engine, "DRAW_SETTLE", 0.0)
+    eng._draw_from = 0.0
+    eng._device_step(True)
+    assert cooler.screen == _drawn(RED) and eng._again is None
 
 
 def test_during_a_slide_show_pictures_are_stored_as_before(tmp_path, monkeypatch, cooler):

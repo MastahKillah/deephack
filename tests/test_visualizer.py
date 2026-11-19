@@ -225,13 +225,12 @@ def test_a_frame_is_not_drawn_before_the_still_under_it_is_on_screen(tmp_path, m
 
 
 def test_drawn_frames_go_over_a_still_also_when_an_animation_was_on(tmp_path, monkeypatch, cooler):
-    from deephack.modes.base import Animation
     cooler.direct = True
+    cooler.gifs.append(["app-gif-0", [], 1000])
+    with device.Mystique() as m:                                        # what was on before deephack started
+        m.set_mode(device.MODE_MOTION)
+        m.show_slot(0, device.TYPE_GIF)
     eng, config, states, step = _book_engine(tmp_path, monkeypatch)
-    cooler.gifs.append(["app-gif-0", [], 1000])                         # the official app's, as _stored_count says
-    eng._set_frame(Animation(_eight()[:2], 400))
-    eng._device_step(True)
-    assert cooler.screen == ("gif", 1)
     for index in (3, 3, 5, 1):          # after an animation the firmware takes one frame and no more, unless
         step(index)                     # the image screen was left and entered again in between
     assert cooler.screen == _drawn(_eight()[1]) and cooler.shown == ("jpg", 1) and cooler.draws == 3
