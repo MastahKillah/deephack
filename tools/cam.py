@@ -5,7 +5,7 @@ from pathlib import Path
 import cv2
 
 OUT = Path(__file__).resolve().parent.parent / "captures" / "cam"
-CROP = (0, 520, 280, 660)   # y0, y1, x0, x1 of the LCD in the 1280x720 frame; depends on where the camera sits
+CROP = (0, 420, 325, 680)   # y0, y1, x0, x1 of the LCD in the 1280x720 frame; depends on where the camera sits
 
 
 class Cam:
