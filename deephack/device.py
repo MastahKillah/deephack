@@ -179,6 +179,10 @@ class Mystique:
         byte2 sits between style and strip on the wire; 1 changed nothing visible."""
         self.command(CMD_SITUATION_MODE, bytes([main, style, byte2, strip]))
 
+    def set_recorder(self, frequency_only: int = 0) -> None:
+        """Graphs of the recorder mode: CPU frequency and temperature (0) or frequency only (1)."""
+        self.command(CMD_RECORDER_MODE, bytes([1 if frequency_only else 0]))
+
     def set_slideshow(self, enabled: bool) -> None:
         """Cycle through all stored images (fade transition) or keep the selected one on screen.
 

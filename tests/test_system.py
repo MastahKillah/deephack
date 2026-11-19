@@ -49,6 +49,9 @@ class FakePipe:
             self.out.write(_answer(2, seq, {"ok": True, "op": request["op"], "body": {"server": "SensorBridge"}}))
         self.out.seek(pos)
 
+    def close(self):
+        pass
+
     def read(self, n):
         return self.out.read(min(n, 7))            # in dribs and drabs, like a pipe may
 

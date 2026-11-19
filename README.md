@@ -23,6 +23,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **Game Cover** | The cover art of the game you are playing, for games started through Steam (Steam notes the running game in the registry; covers come from its image server). |
 | **Ticker** | Up to five stocks, indices, currency pairs or coins with price, change and a sparkline for today, five days or a month. From Yahoo Finance's public chart feed (no account or key). |
 | **System** | CPU and GPU temperature, load and power, memory, and pump and fan speeds, with graphs of the last half hour to three hours. Readings are taken every 10 seconds; the screen is redrawn every few minutes, since each redraw is a flash write. Temperatures and fans come from DeepCool's own sensor service (see [Protocol](#protocol)); without it only CPU load and memory are shown. |
+| **Live** | The cooler's own built-in screens (a big CPU temperature, frequency, fan and pump speed, a clock, or a 7 minute graph of frequency and temperature) fed with real readings every second. The cooler draws these itself and stores nothing, so this is the one mode that updates every second without wearing the flash. A good fallback for Auto. |
 
 Clicking a mode opens its page with a live preview and leaves the cooler alone; **Show on cooler** (or a
 double-click on the mode) puts it on the display. A green dot marks the mode that is on it.
@@ -50,8 +51,8 @@ autostart entry.
 - **Quit the DeepCool app first.** It holds the cooler's USB interface exclusively. deephack shows a banner
   with a button for that. The DeepCool app starts with Windows by default, so disable its autostart if you
   want deephack to own the display after a reboot. Fan control is a separate Windows service and keeps working.
-- **Every update is a write to the cooler's flash.** There is no known way to draw without storing the
-  image first. deephack rate-limits writes (at most one every 8 seconds, tracks have to settle before they
+- **Every update is a write to the cooler's flash**, except in Live, which uses the cooler's own sensor
+  screens. There is no known way to draw our own pictures without storing them first. deephack rate-limits writes (at most one every 8 seconds, tracks have to settle before they
   are drawn), but the flash endurance of the device is unknown. "Cover only" writes once per album instead
   of once per track. Showing an image the cooler already holds again (Auto switching back to it) costs
   no write.

@@ -121,25 +121,53 @@ def read_frame(f) -> tuple[int, int, dict]:
     return head[5], seq, json.loads(body)
 
 
+class BridgeClient:
+    """Connection to DeepCool's sensor service, kept open between snapshots and reopened after an error."""
+
+    def __init__(self, pipe: str = PIPE):
+        self.pipe = pipe
+        self._f = None
+        self._seq = 0
+
+    def _request(self, op: str) -> dict:
+        self._seq += 1
+        self._f.write(_frame(self._seq, op))
+        for _ in range(16):                     # skip events pushed in between
+            kind, got, payload = read_frame(self._f)
+            if kind == 2 and got == self._seq:
+                if not payload.get("ok"):
+                    raise ValueError(f"{op} refused")
+                return payload
+        raise ValueError(f"no answer to {op}")
+
+    def snapshot(self) -> dict | None:
+        """The current readings, None when the service is not installed or not answering."""
+        try:
+            if self._f is None:
+                self._f = open(self.pipe, "r+b", buffering=0)
+                self._request("HELLO")
+            body = self._request("GET_SENSOR_SNAPSHOT").get("body")
+            return body if isinstance(body, dict) else None
+        except (OSError, ValueError):
+            self.close()
+            return None
+
+    def close(self) -> None:
+        if self._f is not None:
+            try:
+                self._f.close()
+            except OSError:
+                pass
+            self._f = None
+
+
 def read_bridge(pipe: str = PIPE) -> dict | None:
     """One sensor snapshot from DeepCool's sensor service, None when it is not installed or not answering."""
+    client = BridgeClient(pipe)
     try:
-        with open(pipe, "r+b", buffering=0) as f:
-            payload = {}
-            for seq, op in ((1, "HELLO"), (2, "GET_SENSOR_SNAPSHOT")):
-                f.write(_frame(seq, op))
-                for _ in range(16):             # skip events pushed in between
-                    kind, got, payload = read_frame(f)
-                    if kind == 2 and got == seq:
-                        break
-                else:
-                    return None
-                if not payload.get("ok"):
-                    return None
-            body = payload.get("body")
-            return body if isinstance(body, dict) else None
-    except (OSError, ValueError):
-        return None
+        return client.snapshot()
+    finally:
+        client.close()
 
 
 class _FileTime(ctypes.Structure):

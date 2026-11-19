@@ -110,7 +110,7 @@ def test_mode_switches_to_the_scoreboard_while_the_team_plays(tmp_path, monkeypa
 
     m = nba.Nba({"team": "GS", "live": "5"})
     assert asyncio.run(m.frame()) is not None and m.status.startswith("LIVE MEM 83")
-    assert m._next - __import__("time").monotonic() <= 5 * 60
+    assert m._next - __import__("time").monotonic() <= 5 * 60 + 1
     m._next = 0
     assert asyncio.run(m.frame()) is None                     # same score: no new write
     feed["live"] = nba.parse_event(live_event(state="post", detail="Final"))

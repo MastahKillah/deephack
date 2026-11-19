@@ -21,6 +21,16 @@ class Animation:
     duration_ms: int               # length of one loop
 
 
+@dataclass
+class Dashboard:
+    """The cooler's own sensor screen, drawn by its firmware from values sent over USB. Nothing is stored,
+    so a mode can send one every second without wearing the flash."""
+    screen: str                    # "dashboard" (device.set_dashboard) or "recorder" (device.set_recorder)
+    layout: tuple[int, ...]        # set_dashboard(main, style, strip), or set_recorder(frequency_only)
+    values: dict[str, float]       # device.SENSOR_FIELDS
+    preview: Image.Image           # deephack's approximation of the screen, for the window
+
+
 @dataclass(frozen=True)
 class Setting:
     key: str
@@ -69,7 +79,7 @@ class Mode:
         """Create the mode with its saved settings; `settings(mode_id)` returns any mode's saved values."""
         return cls(settings(cls.id))
 
-    async def frame(self) -> Image.Image | Animation | None:
+    async def frame(self) -> Image.Image | Animation | Dashboard | None:
         raise NotImplementedError
 
     async def close(self) -> None:

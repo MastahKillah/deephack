@@ -383,6 +383,8 @@ class MainWindow(QMainWindow):
             text = "Preview only · not connected to the cooler"
         elif self._placeholder:
             text = "Waiting for something to show"
+        elif s.get("live"):
+            text = "Live · the cooler draws this itself, no flash writes"
         elif s.get("pending"):
             text = "Sending to the cooler…"
         elif s.get("last_upload"):

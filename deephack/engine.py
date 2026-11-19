@@ -23,11 +23,12 @@ from PySide6.QtGui import QImage
 from . import device, render
 from .config import GIF_SLOT_ID, SLOT_ID, Config
 from .modes import BY_ID, MODES, Mode
-from .modes.base import Animation
+from .modes.base import Animation, Dashboard
 
 MIN_UPLOAD_INTERVAL = 8.0     # seconds between flash writes, whatever the mode asks for
 REOPEN_INTERVAL = 3.0
 TICK = 0.5
+CLOCK_SYNC = 3600.0         # the sensor screens' clock is set when shown and then hourly
 DEEPCOOL_EXE = "DeepCool.exe"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -70,7 +71,9 @@ def to_qimage(img: Image.Image) -> QImage:
     return QImage(rgba.tobytes(), rgba.width, rgba.height, QImage.Format.Format_RGBA8888).copy()
 
 
-def _qt_frames(img: Image.Image | Animation) -> tuple[list[QImage], int]:
+def _qt_frames(img: Image.Image | Animation | Dashboard) -> tuple[list[QImage], int]:
+    if isinstance(img, Dashboard):
+        return [to_qimage(img.preview)], 0
     if isinstance(img, Animation):
         return [to_qimage(f) for f in img.frames], img.duration_ms
     return [to_qimage(img)], 0
@@ -104,7 +107,9 @@ class Engine(QThread):
         self._dev: device.Mystique | None = None
         self._dev_state = "missing" if use_device else "preview"   # connected | busy | missing | preview
         self._next_open = 0.0
-        self._on_screen = None            # "ours" | "restore" | None (unknown)
+        self._on_screen = None            # "ours" | "restore" | (screen, layout) of a sensor screen | None (unknown)
+        self._display = None              # the device's display mode, device.MODE_*
+        self._clock_set = 0.0
         self._slideshow_applied: bool | None = None
         self._last_state: dict | None = None
         self._placeholder_shown = None
@@ -223,6 +228,7 @@ class Engine(QThread):
             try:
                 self._dev = device.Mystique()
                 self._dev.set_mode(device.MODE_MOTION)
+                self._display = device.MODE_MOTION
             except device.DeviceBusy:
                 self._dev, self._dev_state = None, "busy"
                 return
@@ -236,15 +242,18 @@ class Engine(QThread):
             self._slot_digest = {}            # unknown what the slots hold after a reconnect
         try:
             slideshow = bool(self.config.get("slideshow"))
-            if slideshow != self._slideshow_applied:
+            if slideshow != self._slideshow_applied and self._display == device.MODE_MOTION:
                 self._dev.set_slideshow(slideshow)
                 self._slideshow_applied = slideshow
             if not enabled:
                 if self._on_screen != "restore":
-                    self._dev.show_slot(self.config.get("restore_index"))
+                    self._show_stored(self.config.get("restore_index"), device.TYPE_JPG)
                     self._on_screen = "restore"
                 return
             if self._frame is None:
+                return
+            if isinstance(self._frame, Dashboard):
+                self._dashboard_step(self._frame, now)
                 return
             if self._frame_seq != self._uploaded_seq:
                 animated = isinstance(self._frame, Animation)
@@ -268,16 +277,47 @@ class Engine(QThread):
                     self._slot_digest[slot] = self._frame_digest[1]
                     self._last_upload = time.monotonic()
                 self._ours = (slot, index)
-                self._dev.show_slot(index, slot)
+                self._show_stored(index, slot)
                 self._uploaded_seq = self._frame_seq
                 self._last_upload_wall = time.time()
                 self._on_screen = "ours"
             elif self._on_screen != "ours" and self._ours is not None:
-                self._dev.show_slot(self._ours[1], self._ours[0])
+                self._show_stored(self._ours[1], self._ours[0])
                 self._on_screen = "ours"
         except (usb.core.USBError, RuntimeError):
             traceback.print_exc()
             self._drop_device()
+
+    def _show_stored(self, index: int, slot: int) -> None:
+        """Show a stored image or animation, first leaving a sensor screen if one is up."""
+        if self._display != device.MODE_MOTION:
+            self._dev.set_mode(device.MODE_MOTION)
+            self._display = device.MODE_MOTION
+            slideshow = bool(self.config.get("slideshow"))
+            self._dev.set_slideshow(slideshow)
+            self._slideshow_applied = slideshow
+        self._dev.show_slot(index, slot)
+
+    def _dashboard_step(self, dash: Dashboard, now: float) -> None:
+        """Bring up the firmware's sensor screen and feed it. None of this is stored: no flash writes."""
+        target = (dash.screen, tuple(dash.layout))
+        if self._on_screen != target or now - self._clock_set >= CLOCK_SYNC:
+            self._dev.set_time()
+            self._clock_set = now
+        if self._on_screen != target:
+            mode = device.MODE_RECORDER if dash.screen == "recorder" else device.MODE_SITUATIONAL
+            if self._display != mode:
+                self._dev.set_mode(mode)
+                self._display = mode
+            if dash.screen == "recorder":
+                self._dev.set_recorder(*dash.layout)
+            else:
+                self._dev.set_dashboard(*dash.layout)
+            self._on_screen = target
+            self._uploaded_seq = -1
+        if self._frame_seq != self._uploaded_seq:
+            self._dev.send_sensors(**dash.values)
+            self._uploaded_seq = self._frame_seq
 
     def _drop_device(self) -> None:
         if self._dev is not None:
@@ -297,7 +337,9 @@ class Engine(QThread):
             "preview": self._preview.id if self._preview else None,
             "preview_status": self._preview.status if self._preview else "",
             "last_upload": self._last_upload_wall,
-            "pending": enabled and self._frame is not None and self._frame_seq != self._uploaded_seq,
+            "live": isinstance(self._frame, Dashboard),
+            "pending": enabled and self._frame is not None and not isinstance(self._frame, Dashboard)
+                       and self._frame_seq != self._uploaded_seq,
         }
         if state != self._last_state:
             self._last_state = state
@@ -307,8 +349,8 @@ class Engine(QThread):
         if self._dev is None:
             return
         try:
-            if self._on_screen == "ours":
-                self._dev.show_slot(self.config.get("restore_index"))
+            if self._on_screen not in (None, "restore"):     # ours, or a sensor screen
+                self._show_stored(self.config.get("restore_index"), device.TYPE_JPG)
         except (usb.core.USBError, RuntimeError):
             pass
         self._drop_device()

@@ -18,6 +18,7 @@ from PIL import Image
 from .base import Animation, Mode, Setting, parse_order
 from .claude_usage import ClaudeUsage
 from .countdown import Countdown
+from .live import Live
 from .game_cover import GameCover
 from .nba import Nba
 from .now_playing import NowPlaying
@@ -28,7 +29,7 @@ from .ticker import Ticker
 from .weather import Weather
 
 CANDIDATES: tuple[type[Mode], ...] = (GameCover, NowPlaying, Tamagotchi, Nba, Countdown, ClaudeUsage, SystemMonitor)
-FALLBACKS: tuple[type[Mode], ...] = (Weather, PhotoFrame, Ticker, SystemMonitor, Countdown, ClaudeUsage, Tamagotchi, Nba, NowPlaying, GameCover)
+FALLBACKS: tuple[type[Mode], ...] = (Weather, Live, PhotoFrame, Ticker, SystemMonitor, Countdown, ClaudeUsage, Tamagotchi, Nba, NowPlaying, GameCover)
 DEFAULT_ORDER = "game_cover,now_playing,tamagotchi,nba,countdown,-claude_usage,-system"
 LINGER = 120.0
 
