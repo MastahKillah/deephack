@@ -31,11 +31,7 @@ class SdCard:
         self.image = image
         self.dirty = False
         if image and image.exists():
-            raw = image.read_bytes()
-            for lba in range(len(raw) // BLOCK):
-                chunk = raw[lba * BLOCK:(lba + 1) * BLOCK]
-                if chunk.strip(b"\0"):
-                    self.blocks[lba] = chunk
+            self.load(image.read_bytes())
         self.rca = 0x1234
         self.app = False                     # the next command is an application command (after CMD55)
         self.log: list[tuple[str, int]] = []
@@ -60,6 +56,14 @@ class SdCard:
         for i in range(len(data) // BLOCK):
             self.blocks[lba + i] = bytes(data[i * BLOCK:(i + 1) * BLOCK])
         self.dirty = True
+
+    def load(self, raw: bytes) -> None:
+        """Replace the card's contents (only the blocks that hold something are kept)."""
+        self.blocks = {}
+        for lba in range(len(raw) // BLOCK):
+            chunk = raw[lba * BLOCK:(lba + 1) * BLOCK]
+            if chunk.count(0) != BLOCK:
+                self.blocks[lba] = chunk
 
     def save(self) -> None:
         if self.image is None or not self.dirty:

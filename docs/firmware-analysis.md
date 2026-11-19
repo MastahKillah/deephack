@@ -170,22 +170,51 @@ How far the stock firmware gets (v2.70), and what each step needed:
 | real-time clock | its "configurable" flag |
 | I2C (the tilt sensor) | transfers end at once; nothing answers |
 | graphics | nothing more: LVGL starts and draws |
+| serial flash contents | a FAT volume with `ui.bin` on it (`tools/emu/fat.py`, `tools/emu/uibin.py`) |
+| UI data | the hardware divider (`DIV`): the loader divides with it and checks the answer |
+| SD card contents | a FAT volume (`fat.py`); the firmware makes its `IMG` and `GIF` folders itself |
 
-It then **draws its first screen**: a red cross and "Couldn't open 'S:spi:///ui.bin'", and idles in a
-loop behind it. The frame buffer is saved as a picture after every run (`captures/emu_screen.png`).
+It then runs its **main loop**: USB endpoints set up, the tilt sensor polled over I2C, the screen from
+`ui.bin` on the LCD. The frame buffer is saved as a picture after every run (`captures/emu_screen.png`).
+With `--flash blank` the firmware shows what it does without its UI data: a red cross and "Couldn't
+open 'S:spi:///ui.bin'".
 
-That is the wall for booting the *whole* firmware: `ui.bin` (the screens, built with Synwit's UI tool)
-and `SynwitManifest.cfg` exist only on the cooler's serial flash. They are not in the update file or
-in the DeepCool app, and no USB command reads a file back. Ways on:
+Still to model: the USB device controller, to feed the firmware the `AA 2E` command frames and uploads
+the real driver sends, and the JPEG decoder, without which no stored picture reaches the frame buffer.
 
-1. Read the cooler's serial flash (hardware access: the flash chip or the debug port).
-2. Work out the `ui.bin` format from its loader and write a minimal one that satisfies it.
-3. Leave the UI out: run only the parts a direct-draw patch touches (USB receive, JPEG decode, LCD
-   flush) as functions in the emulator, with the hardware JPEG decoder and the USB controller modelled.
+### The serial flash and `ui.bin`
 
-Still to model for any of them: the USB device controller, to feed the firmware the `AA 2E` command
-frames and uploads the real driver sends, and the JPEG decoder, without which no stored picture
-reaches the frame buffer.
+The serial flash is a FAT volume without a partition table, read 4 KiB at a time through the memory
+window (FatFs drive 3; the SD card is drive 1). The firmware opens `S:spi:///ui.bin` from it. The file
+is made by Synwit's UI tool and is not in the update file or the DeepCool app, and no USB command reads
+a file back, so the real one is out of reach without hardware access. Its format, as the loader
+(`FUN_0000110c`, `FUN_00001564`) reads it, is "SynwitUI" format 0.7:
+
+| part | layout |
+| --- | --- |
+| header, `0x34` bytes | `"SynwitUI\0"`; `0x10` format major (0); `0x14` format minor (7); `0x18` a flag byte; `0x1C` offset of the screen table; `0x20` of the widgets; `0x24` of the resource table; `0x28`, `0x2C`, `0x30` of three resource data sections |
+| screen table | u32 count, then that many u32 screen ids |
+| widgets | 12 bytes (u16 at `+0x0A`: the screen to start with), u32 count, then {u32 screen id, u32 offset of the screen's widget} each |
+| a widget | a blob: u32 size, u8 type, the rest is the widget's own structure; then u32 string count, u32 (unknown), the strings as {u32 length, bytes}; then u32 child count and that many u32 offsets of child widgets |
+| resource table | `"RESLD\0"`, u32 0, u32 1, u32 count (not 0), then 12 bytes {screen id, offset, ?} each; at the offset three lists of u32 (count first), one per resource data section |
+
+A wrong magic gives "Invalid UI data file", a wrong version "Incompatible UI data(fmt:%d.%d)! Current
+platform version is v1.5.0, which uses UI data(fmt:0.7)".
+
+Widget types, from the class name table in the image: 0 widget, 1 screen, 2 button, 3 label,
+4 checkbox, 5 image, 6 bar, 7 slider, 8 switch, 9 image_btn, 10 list, 11 artchar, 12 roller,
+13 dropdown, 14 arc, 15 touch, 16 levelimg, 17 chart, 18 textarea, 19 imgroller, 20 clock, 21 avi.
+This firmware registers only four of them: **screen** (structure size `0x60`), **label** (`0x130`),
+**image** (`0x68`) and **levelimg** (`0x98`). So every stock screen, the gauges included, is made of
+labels, pictures and "level images" (a picture chosen by a value).
+
+The loader guards itself: before and after loading a screen it divides a running number with the
+chip's hardware divider and spins forever if quotient and remainder are not what software division
+gives. An emulator without the divider hangs there, which is presumably the point.
+
+`uibin.py` writes a file with empty screens. That is enough to boot; the fields inside a widget's
+structure (position, size, text, picture) are not worked out, so the stock screens cannot be rebuilt
+yet.
 
 Not covered, ever: the bootloader below `0xE000` (not in the update file), which is what decides
 whether a flashed image is accepted. The emulator makes patches testable; it cannot make flashing safe.
@@ -197,7 +226,7 @@ whether a flashed image is accepted. The emulator makes patches testable; it can
 - LCD flush entry point: exact signature, for a direct-draw command to target
 - Sensor fields at offset 27+ and the clock command (`0A`) live in the second-endpoint handler, not
   yet read
-- Which storage device holds the `SD:` files (the SDIO device or the QSPI flash), and its real
-  erase-cycle budget
+- The SD-type chip's real erase-cycle budget (it holds the `SD:` files; the serial flash holds the UI)
+- The fields inside a `ui.bin` widget, and which widget ids the firmware's own code looks up
 - What `13` (factory reset) and `14` (delete all) do after their flags are set, and why `12` returns
   junk until a power cycle after a reset

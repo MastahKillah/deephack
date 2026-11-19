@@ -17,8 +17,11 @@ What is known about the image and the chip:
 - 0x11000000 is the chip's mask ROM (flash timing helpers). It is not in the image either: every
   routine there is stubbed to return at once, and the calls are logged.
 
-With the models here the stock firmware starts its graphics library and draws its first screen: an
-error page, "Couldn't open 'S:spi:///ui.bin'". The UI data lives only on the cooler's serial flash.
+With the models here the stock firmware boots into its main loop: it mounts the SD card (and makes
+its IMG and GIF folders on a fresh one), loads its screens from `ui.bin` on the serial flash, sets up
+USB and polls the tilt sensor. The real ui.bin lives only on the cooler's serial flash; uibin.py writes
+a stand-in the firmware accepts (one empty screen). `--flash blank` shows what the firmware does
+without one: an error page, "Couldn't open 'S:spi:///ui.bin'".
 
 Hardware registers are plain memory here (they read back what was written, 0 at first) unless MODELS
 or a device (the SD card and its host controller, sdcard.py) says otherwise. Every access is logged, and when the firmware spins on a register that never changes,
@@ -36,9 +39,11 @@ from pathlib import Path
 
 from unicorn import (UC_ARCH_ARM, UC_HOOK_BLOCK, UC_HOOK_MEM_READ, UC_HOOK_MEM_UNMAPPED, UC_HOOK_MEM_WRITE, UC_MODE_MCLASS,
                      UC_MODE_THUMB, Uc, UcError)
-from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_SP
+from unicorn.arm_const import UC_ARM_REG_LR, UC_ARM_REG_PC, UC_ARM_REG_R0, UC_ARM_REG_SP
 
 sys.path.insert(0, str(Path(__file__).parent))
+import fat  # noqa: E402
+import uibin  # noqa: E402
 from sdcard import SdCard, SdHost  # noqa: E402
 
 DEFAULT_IMAGE = Path("C:/DeepCool/resources/app.asar.unpacked/resources/fw/MYSTIQUE_2.70.bin")
@@ -85,11 +90,15 @@ MODELS = {
     "SFC.GO": lambda m, v: 0,                   # a serial flash command is done as soon as it is started
     "RTC.CFGABLE": lambda m, v: 1,              # the real-time clock can always be configured
     "I2C0.MCR": lambda m, v: 0,                 # an I2C start / read / write / stop is over at once (nothing answers)
+    # the hardware divider: the UI loader divides with it and hangs on purpose when the answer is wrong
+    "DIV.QUO": lambda m, v: m.register("DIV.DIVIDEND") // (m.register("DIV.DIVISOR") or 1),
+    "DIV.REMAIN": lambda m, v: m.register("DIV.DIVIDEND") % (m.register("DIV.DIVISOR") or 1),
 }
 
 
 class Machine:
-    def __init__(self, image: bytes, functions: Path | None = None, sd_image: Path | None = None):
+    def __init__(self, image: bytes, functions: Path | None = None, sd_image: Path | None = None,
+                 flash: bytes | None = None):
         self.uc = Uc(UC_ARCH_ARM, UC_MODE_THUMB | UC_MODE_MCLASS)
         self.sd = SdCard(image=sd_image)
         self.devices = [SdHost(_MAP["peripherals"]["SDIO"], self.sd, self._memory)]     # modelled peripherals
@@ -99,6 +108,8 @@ class Machine:
         self.uc.mem_write(ROM[0], b"\x70\x47" * (ROM[1] // 2))           # "bx lr" everywhere
         self.uc.mem_map(*EXT_FLASH)
         self.uc.mem_write(EXT_FLASH[0], b"\xff" * EXT_FLASH[1])            # erased flash reads as FF
+        if flash:
+            self.uc.mem_write(EXT_FLASH[0], flash[:EXT_FLASH[1]])
         self.sp, self.reset = struct.unpack_from("<II", image, 0)
         self.reads: collections.Counter = collections.Counter()           # register -> times read
         self.writes: dict[int, list[int]] = collections.defaultdict(list)  # register -> last few values written
@@ -110,6 +121,7 @@ class Machine:
         self.console = bytearray()              # what the firmware prints on its debug port (UART0)
         self.models = {ADDRESS[name]: fn for name, fn in MODELS.items()}
         self._spin = 0
+        self._spin_state: tuple = ()
         self.stuck: int | None = None
         self._interrupted = None                # the saved CPU state while an interrupt handler runs
         self._fire: int | None = None           # exception number to take at the next stop
@@ -197,14 +209,25 @@ class Machine:
             return
         self.recent.append(address)
         self._spin = self._spin + 1 if len(set(self.recent)) <= 6 and len(self.recent) == self.recent.maxlen else 0
-        if self._spin >= SPIN_LIMIT and not self._ticking():
-            self.stuck = address
-            uc.emu_stop()
+        if self._spin == SPIN_LIMIT // 2:
+            self._spin_state = self._registers()
+        elif self._spin >= SPIN_LIMIT and not self._ticking():
+            if self._registers() == self._spin_state:    # same registers as 10 000 rounds ago: it is waiting
+                self.stuck = address
+                uc.emu_stop()
+            self._spin = 0                               # otherwise a loop that works (clearing memory, copying)
         self._until_tick -= 1
         if self._until_tick <= 0 and self._ticking():
             self._until_tick = BLOCKS_PER_TICK
             self._fire = 15                          # SysTick
             uc.emu_stop()
+
+    def register(self, name: str) -> int:
+        """What a hardware register holds now (the last value written, unless a model says otherwise)."""
+        return struct.unpack("<I", self.uc.mem_read(ADDRESS[name], 4))[0]
+
+    def _registers(self) -> tuple:
+        return tuple(self.uc.reg_read(r) for r in range(UC_ARM_REG_R0, UC_ARM_REG_R0 + 13))
 
     def _ticking(self) -> bool:
         """SysTick is enabled with its interrupt on."""
@@ -302,12 +325,25 @@ def main() -> int:
     ap.add_argument("image", nargs="?", default=str(DEFAULT_IMAGE))
     ap.add_argument("--steps", type=int, default=200_000_000)
     ap.add_argument("--blocks", type=int, default=3_000_000, help="stop after this many code blocks")
-    ap.add_argument("--sd", default="", help="raw image file for the SD card (read at start, written back at the end)")
+    ap.add_argument("--sd", default="", help="image file for the SD card, made if missing and written back at the end; "
+                    "'blank' for an unformatted card (default: a formatted card that is not kept)")
+    ap.add_argument("--flash", default="", help="image file for the serial flash; 'blank' for an erased chip "
+                    "(default: a FAT volume with a ui.bin of one empty screen, see fat.py and uibin.py)")
     ap.add_argument("--functions", default=str(Path.home() / "Desktop" / "m_fmw_decompiled" / "functions_index.txt"),
                     help="Ghidra's function list, to name code addresses (optional)")
     a = ap.parse_args()
     image = Path(a.image).read_bytes()
-    m = Machine(image, Path(a.functions), Path(a.sd) if a.sd else None)
+    if a.flash == "blank":
+        flash = None
+    elif a.flash:
+        flash = Path(a.flash).read_bytes()
+    else:
+        flash = fat.build({"ui.bin": uibin.build({1: uibin.Widget("screen")})})
+    sd_file = Path(a.sd) if a.sd not in ("", "blank") else None
+    m = Machine(image, Path(a.functions), sd_file, flash)
+    if a.sd != "blank" and not (sd_file and sd_file.exists()):
+        m.sd.load(fat.build({}, megabytes=64, cluster_sectors=8, label="COOLER"))
+        m.sd.dirty = sd_file is not None
     m.block_budget = a.blocks
     print(f"image {len(image)} bytes, stack {m.sp:#x}, reset handler {m.reset:#x}")
     report(m, m.run(a.steps))
