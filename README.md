@@ -17,6 +17,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **NBA** | The last two results and the next two games, with team logos, for one team or the whole league. From ESPN's public feed; tip-off times in your local time zone. |
 | **Claude Code** | Plan limits (5-hour and weekly) and today's tokens, requests, hourly activity and model split. All from local files, see below. |
 | **Claude Pet** | An animated pixel pet with your plan limit percentages. Its mood follows the fullest limit: happy, fine, stressed, exhausted. |
+| **Countdown** | Days until a date you set, with a title. On the last day it counts hours, then minutes. |
 
 **Keep on screen** decides whether the cooler stays on deephack's image or cycles through every image
 stored on it (the cooler's own slideshow).
