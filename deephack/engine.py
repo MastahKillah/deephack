@@ -1,7 +1,8 @@
 """Background engine: runs the active mode and keeps the cooler's display in sync with it.
 
 Lives in its own thread with an asyncio loop (the Windows media APIs are async, USB calls are short and
-blocking). The UI talks to it through thread-safe methods and listens to two signals.
+blocking). The UI talks to it through thread-safe methods and listens to its signals. While the UI shows
+the page of another mode, the engine runs that one too, as a preview that never reaches the cooler.
 """
 from __future__ import annotations
 
@@ -69,8 +70,20 @@ def to_qimage(img: Image.Image) -> QImage:
     return QImage(rgba.tobytes(), rgba.width, rgba.height, QImage.Format.Format_RGBA8888).copy()
 
 
+def _qt_frames(img: Image.Image | Animation) -> tuple[list[QImage], int]:
+    if isinstance(img, Animation):
+        return [to_qimage(f) for f in img.frames], img.duration_ms
+    return [to_qimage(img)], 0
+
+
+def _placeholder_frames(mode: Mode) -> tuple[list[QImage], int]:
+    title, subtitle = mode.placeholder or (mode.title, "")
+    return [to_qimage(render.message(title, subtitle))], 0
+
+
 class Engine(QThread):
     frameChanged = Signal(object, int, bool)   # list[QImage], loop duration in ms (0 for a still), is_placeholder
+    previewChanged = Signal(str, object, int, bool)   # mode id, then as frameChanged
     stateChanged = Signal(dict)
 
     def __init__(self, config: Config, use_device: bool = True, parent=None):
@@ -95,11 +108,22 @@ class Engine(QThread):
         self._slideshow_applied: bool | None = None
         self._last_state: dict | None = None
         self._placeholder_shown = None
+        self._preview: Mode | None = None
+        self._preview_frame: Image.Image | Animation | None = None
+        self._preview_shown = None        # placeholder of the preview last emitted
 
     # ---- thread-safe API for the UI ------------------------------------
     def reload_mode(self) -> None:
         """Call after the selected mode or its settings changed in the config."""
         self._commands.put(self._make_mode)
+
+    def set_preview(self, mode_id: str | None) -> None:
+        """Run this mode next to the active one for the UI only (None: stop). Its frames never reach the cooler."""
+        self._commands.put(lambda: self._make_preview(mode_id))
+
+    def reload_preview(self) -> None:
+        """Call after the previewed mode's settings changed."""
+        self._commands.put(lambda: self._make_preview(self._preview.id if self._preview else None))
 
     def retry_device(self) -> None:
         self._commands.put(lambda: setattr(self, "_next_open", 0.0))
@@ -119,14 +143,46 @@ class Engine(QThread):
 
     def _make_mode(self) -> None:
         cls = BY_ID.get(self.config.get("mode"), MODES[0])
-        self._mode = cls.build(self.config.mode_settings)
+        if self._preview is not None and self._preview.id == cls.id:
+            # the previewed mode goes on the cooler: keep it running, with what it has drawn so far
+            self._mode, frame, self._preview, self._preview_frame = self._preview, self._preview_frame, None, None
+            if frame is not None:
+                self._set_frame(frame)
+                return
+        else:
+            self._mode = cls.build(self.config.mode_settings)
         self._frame = None
         self._emit_placeholder()
 
+    def _set_frame(self, img: Image.Image | Animation) -> None:
+        self._frame = img
+        self._frame_seq += 1
+        self.frameChanged.emit(*_qt_frames(img), False)
+
     def _emit_placeholder(self) -> None:
         self._placeholder_shown = self._mode.placeholder
-        title, subtitle = self._mode.placeholder or (self._mode.title, "")
-        self.frameChanged.emit([to_qimage(render.message(title, subtitle))], 0, True)
+        self.frameChanged.emit(*_placeholder_frames(self._mode), True)
+
+    def _make_preview(self, mode_id: str | None) -> None:
+        self._preview = BY_ID[mode_id].build(self.config.mode_settings) if mode_id in BY_ID else None
+        self._preview_frame = None
+        if self._preview is not None:
+            self._preview_shown = self._preview.placeholder
+            self.previewChanged.emit(self._preview.id, *_placeholder_frames(self._preview), True)
+
+    async def _preview_step(self) -> None:
+        mode = self._preview
+        try:
+            img = await mode.frame()
+        except Exception:
+            traceback.print_exc()
+            mode.status, img = "Mode error, see console", None
+        if img is not None:
+            self._preview_frame = img
+            self.previewChanged.emit(mode.id, *_qt_frames(img), False)
+        elif self._preview_frame is None and mode.placeholder != self._preview_shown:
+            self._preview_shown = mode.placeholder
+            self.previewChanged.emit(mode.id, *_placeholder_frames(mode), True)
 
     async def _main(self) -> None:
         self._make_mode()
@@ -145,14 +201,11 @@ class Engine(QThread):
                     self._mode.status = "Mode error, see console"
                     img = None
                 if img is not None:
-                    self._frame = img
-                    self._frame_seq += 1
-                    if isinstance(img, Animation):
-                        self.frameChanged.emit([to_qimage(f) for f in img.frames], img.duration_ms, False)
-                    else:
-                        self.frameChanged.emit([to_qimage(img)], 0, False)
+                    self._set_frame(img)
                 elif self._frame is None and self._mode.placeholder != self._placeholder_shown:
                     self._emit_placeholder()   # a mode may refine its placeholder (e.g. "city not found")
+            if self._preview is not None:
+                await self._preview_step()
             if self.use_device:
                 self._device_step(enabled)
             self._emit_state(enabled)
@@ -241,6 +294,8 @@ class Engine(QThread):
             "enabled": enabled,
             "mode": self._mode.id,
             "mode_status": self._mode.status,
+            "preview": self._preview.id if self._preview else None,
+            "preview_status": self._preview.status if self._preview else "",
             "last_upload": self._last_upload_wall,
             "pending": enabled and self._frame is not None and self._frame_seq != self._uploaded_seq,
         }

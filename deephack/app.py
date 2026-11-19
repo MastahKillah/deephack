@@ -69,12 +69,12 @@ def main(argv: list[str] | None = None) -> int:
     menu.addSeparator()
     mode_actions: list[QAction] = []
     for cls in MODES:
-        act = menu.addAction(cls.title, lambda mode_id=cls.id: window._select_mode(mode_id))
+        act = menu.addAction(cls.title, lambda mode_id=cls.id: window.activate_mode(mode_id))
         act.setCheckable(True)
         act.setData(cls.id)
         mode_actions.append(act)
     menu.addSeparator()
-    pause = menu.addAction("Active")
+    pause = menu.addAction("Draw on the cooler")
     pause.setCheckable(True)
     pause.triggered.connect(window.set_enabled)
     menu.addSeparator()

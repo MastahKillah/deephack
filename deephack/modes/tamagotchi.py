@@ -405,9 +405,10 @@ DOING = {"working": "Working along", "dancing": "Dancing", "sleeping": "Asleep"}
 class Tamagotchi(Mode):
     id = "tamagotchi"
     title = "Claude Pet"
-    description = "A pixel pet that reacts to your day"
+    description = "A pixel pet with moods"
     glyph = ""
     claims = "Claude busy"
+    reads = ("nba",)               # the team to cheer for
     settings = (
         Setting("reacts", "Reacts to", "order", DEFAULT_REACTIONS, REACTIONS,
                 hint="Drag to reorder, untick to ignore. The first one that applies decides what the pet does; "

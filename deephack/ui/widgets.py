@@ -190,6 +190,10 @@ class StatusDot(QWidget):
 
 
 class ModeButton(QPushButton):
+    """A mode in the sidebar. Checked: its page is open. The green dot: it is the one on the cooler."""
+
+    doubleClicked = Signal()
+
     def __init__(self, glyph: str, title: str, description: str, parent=None):
         super().__init__(parent)
         self.setObjectName("modeButton")
@@ -197,7 +201,7 @@ class ModeButton(QPushButton):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumHeight(60)
         row = QHBoxLayout(self)
-        row.setContentsMargins(12, 8, 10, 8)
+        row.setContentsMargins(12, 8, 12, 8)
         row.setSpacing(12)
         g = QLabel(glyph, objectName="modeGlyph")
         g.setFixedWidth(26)
@@ -207,12 +211,29 @@ class ModeButton(QPushButton):
         t = QLabel(title, objectName="modeTitle")
         d = QLabel(description, objectName="modeDesc")
         d.setWordWrap(True)
-        col.addWidget(t)
+        self._live = StatusDot()
+        self._live.setFixedSize(7, 7)
+        self._live.set_color(style.OK)
+        self._live.setVisible(False)
+        head = QHBoxLayout()
+        head.setSpacing(7)
+        head.addWidget(t)
+        head.addWidget(self._live, 0, Qt.AlignmentFlag.AlignVCenter)
+        head.addStretch(1)
+        col.addLayout(head)
         col.addWidget(d)
         row.addWidget(g)
         row.addLayout(col, 1)
-        for w in (g, t, d):
+        for w in (g, t, d, self._live):
             w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def set_live(self, on: bool) -> None:
+        self._live.setVisible(on)
+        self.setToolTip("On the cooler" if on else "Double-click to show it on the cooler")
+
+    def mouseDoubleClickEvent(self, event):  # noqa: N802
+        super().mouseDoubleClickEvent(event)
+        self.doubleClicked.emit()
 
 
 def app_icon() -> QIcon:

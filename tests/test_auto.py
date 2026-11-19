@@ -149,3 +149,43 @@ def test_engine_skips_uploads_of_stored_images(tmp_path, monkeypatch):
     assert show(Animation([Image.new("RGB", (480, 640), c) for c in ("blue", "green")], 1000), wait=0) == ["show_slot"]
     assert show(Image.new("RGB", (480, 640), "white"), wait=0) == []              # new content still waits for the rate limit
     assert engine.digest(still) != engine.digest(pet)
+
+
+def test_preview_never_reaches_the_cooler_and_is_promoted_when_shown(tmp_path, monkeypatch):
+    dev = FakeDevice()
+    monkeypatch.setattr(device, "Mystique", lambda: dev)
+
+    class Still(Mode):
+        id, title = "still", "Still"
+        builds = 0
+
+        def __init__(self, values=None):
+            super().__init__(values)
+            Still.builds += 1
+            self.pending = Image.new("RGB", (480, 640), "orange")
+
+        async def frame(self):
+            img, self.pending = self.pending, None
+            return img
+
+    monkeypatch.setitem(engine.BY_ID, "still", Still)
+    config = Config(tmp_path / "config.json")
+    config.set("slot_index", 3)
+    eng = engine.Engine(config)
+    previews, lives = [], []
+    eng.previewChanged.connect(lambda mode_id, frames, ms, placeholder: previews.append((mode_id, placeholder)))
+    eng.frameChanged.connect(lambda frames, ms, placeholder: lives.append(placeholder))
+    eng._make_mode()                                   # the configured mode (the first one) is live
+    eng._make_preview("still")
+    asyncio.run(eng._preview_step())
+    assert previews == [("still", True), ("still", False)]
+    eng._device_step(True)
+    assert "upload_jpeg" not in dev.calls              # the preview's image is not sent
+    assert asyncio.run(eng._preview_step()) is None and len(previews) == 2
+
+    config.set("mode", "still")
+    eng._make_mode()                                   # "Show on cooler": the running preview takes over
+    assert Still.builds == 1 and eng._preview is None and isinstance(eng._mode, Still)
+    assert lives[-1] is False                          # with the frame it already drew, no placeholder
+    eng._device_step(True)
+    assert "upload_jpeg" in dev.calls

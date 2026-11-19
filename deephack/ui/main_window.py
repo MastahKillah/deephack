@@ -48,6 +48,8 @@ class MainWindow(QMainWindow):
         self.quitting = False
         self._placeholder = True
         self._state: dict = {}
+        self._viewing = ""                       # the mode whose page is open; config "mode" is the one on the cooler
+        self._live_frames: tuple | None = None   # last frames of the mode on the cooler, to show again
         self.setWindowTitle("deephack")
         self.setFixedSize(960, 620)
 
@@ -60,8 +62,12 @@ class MainWindow(QMainWindow):
         row.addWidget(self._build_content(), 1)
 
         engine.frameChanged.connect(self._on_frame)
+        engine.previewChanged.connect(self._on_preview)
         engine.stateChanged.connect(self._on_state)
-        self._select_mode(config.get("mode") if config.get("mode") in BY_ID else MODES[0].id, notify=False)
+        if config.get("mode") not in BY_ID:
+            config.set("mode", MODES[0].id)
+        self._mark_live()
+        self.view_mode(config.get("mode"))
 
     # ------------------------------------------------------------ layout
     def _build_sidebar(self) -> QWidget:
@@ -84,7 +90,8 @@ class MainWindow(QMainWindow):
         mode_list.setSpacing(6)
         for cls in MODES:
             btn = ModeButton(cls.glyph, cls.title, cls.description)
-            btn.clicked.connect(lambda _=False, mode_id=cls.id: self._select_mode(mode_id))
+            btn.clicked.connect(lambda _=False, mode_id=cls.id: self.view_mode(mode_id))
+            btn.doubleClicked.connect(lambda mode_id=cls.id: self.activate_mode(mode_id))
             btn.setProperty("mode_id", cls.id)
             self._mode_buttons.addButton(btn)
             mode_list.addWidget(btn)
@@ -150,16 +157,21 @@ class MainWindow(QMainWindow):
         right.setSpacing(14)
         row.addWidget(_scroll(column), 1)
 
-        # active toggle
+        # title, and either "on the cooler" or a button to put it there
         head = QHBoxLayout()
+        head.setSpacing(8)
         self._mode_title = _label("", "h1")
-        self._enabled = Switch()
-        self._enabled.setChecked(bool(self.config.get("enabled")))
-        self._enabled.toggled.connect(self._set_enabled)
-        self._enabled.setToolTip("Turn off to show your own stored image again")
+        self._live_dot = StatusDot()
+        self._live_dot.setFixedSize(8, 8)
+        self._live_dot.set_color(style.OK)
+        self._live_label = _label("On the cooler", "muted")
+        self._show_button = QPushButton("Show on cooler", objectName="primary")
+        self._show_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._show_button.clicked.connect(lambda: self.activate_mode(self._viewing))
         head.addWidget(self._mode_title, 1)
-        head.addWidget(_label("Active", "muted"))
-        head.addWidget(self._enabled)
+        head.addWidget(self._live_dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        head.addWidget(self._live_label)
+        head.addWidget(self._show_button)
         right.addLayout(head)
         self._mode_desc = _label("", "muted", wrap=True)
         right.addWidget(self._mode_desc)
@@ -169,6 +181,8 @@ class MainWindow(QMainWindow):
 
         display, dl = _card()
         dl.addWidget(_label("DISPLAY", "section"))
+        self._enabled = self._switch_row(dl, "Draw on the cooler", "Off: the cooler shows your own stored image again.",
+                                         bool(self.config.get("enabled")), self._set_enabled)
         self._keep = self._switch_row(dl, "Keep on screen", "Off: the cooler cycles through all images stored on it.",
                                       not self.config.get("slideshow"), lambda on: self.config.set("slideshow", not on))
         self._autostart = self._switch_row(dl, "Start with Windows", "Launches minimised to the tray.",
@@ -194,8 +208,15 @@ class MainWindow(QMainWindow):
         return sw
 
     # ------------------------------------------------------------ modes
-    def _select_mode(self, mode_id: str, notify: bool = True) -> None:
+    @property
+    def _live(self) -> str:
+        return self.config.get("mode")
+
+    def view_mode(self, mode_id: str) -> None:
+        """Open a mode's page. The cooler keeps showing what it shows; the preview runs the viewed mode."""
         cls = BY_ID[mode_id]
+        changed = mode_id != self._viewing
+        self._viewing = mode_id
         for btn in self._mode_buttons.buttons():
             btn.setChecked(btn.property("mode_id") == mode_id)
             if btn.isChecked():   # once laid out, so the selected mode is not hidden in the scrolled list
@@ -203,9 +224,29 @@ class MainWindow(QMainWindow):
         self._mode_title.setText(cls.title)
         self._mode_desc.setText(cls.description + ".")
         self._build_settings(cls)
-        if notify and self.config.get("mode") != mode_id:
+        live = mode_id == self._live
+        self._live_dot.setVisible(live)
+        self._live_label.setVisible(live)
+        self._show_button.setVisible(not live)
+        if changed:
+            self.engine.set_preview(None if live else mode_id)
+            if live and self._live_frames:
+                self._show_frames(*self._live_frames)
+        self._on_state(self._state)
+
+    def activate_mode(self, mode_id: str) -> None:
+        """Put a mode on the cooler (and open its page)."""
+        if self._live != mode_id:
             self.config.set("mode", mode_id)
+            self._live_frames = None
             self.engine.reload_mode()
+            self._mark_live()
+        self._viewing = ""                       # rebuild the page as the live one
+        self.view_mode(mode_id)
+
+    def _mark_live(self) -> None:
+        for btn in self._mode_buttons.buttons():
+            btn.set_live(btn.property("mode_id") == self._live)
 
     def _build_settings(self, cls) -> None:
         lay = self._settings_layout
@@ -264,12 +305,19 @@ class MainWindow(QMainWindow):
         if self.config.mode_settings(mode_id).get(key, None) == value:
             return
         self.config.set_mode_setting(mode_id, key, value)
-        if self.config.get("mode") in (mode_id, "auto"):    # Auto runs the other modes with their own settings
+
+        def uses(target: str) -> bool:           # Auto, for one, runs the other modes with their own settings
+            return target == mode_id or mode_id in BY_ID[target].reads
+
+        if uses(self._live):
             self.engine.reload_mode()
+        if self._viewing != self._live and uses(self._viewing):
+            self.engine.reload_preview()
 
     def _set_enabled(self, on: bool) -> None:
         self.config.set("enabled", on)
-        self._preview.set_dimmed(not on)
+        if self._viewing == self._live:
+            self._preview.set_dimmed(not on)
         self._refresh_caption()
 
     def set_enabled(self, on: bool) -> None:
@@ -278,12 +326,23 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ engine events
     def _on_frame(self, frames: list, duration_ms: int, placeholder: bool) -> None:
+        self._live_frames = (frames, duration_ms, placeholder)
+        if self._viewing == self._live:
+            self._show_frames(frames, duration_ms, placeholder)
+
+    def _on_preview(self, mode_id: str, frames: list, duration_ms: int, placeholder: bool) -> None:
+        if mode_id == self._viewing != self._live:     # late frames of a page already left are dropped
+            self._show_frames(frames, duration_ms, placeholder)
+
+    def _show_frames(self, frames: list, duration_ms: int, placeholder: bool) -> None:
         self._placeholder = placeholder
-        self._preview.set_frames(frames, duration_ms, dimmed=not self.config.get("enabled"))
+        self._preview.set_frames(frames, duration_ms, dimmed=self._viewing == self._live and not self.config.get("enabled"))
         self._refresh_caption()
 
     def _on_state(self, state: dict) -> None:
         self._state = state
+        if not state:
+            return
         dev = state["device"]
         if dev == "connected":
             self._dot.set_color(style.OK)
@@ -307,12 +366,18 @@ class MainWindow(QMainWindow):
             self._banner_text.setText("The DeepCool app is running and holds the display exclusively. Quit it to let deephack draw."
                                       if running else "Another program holds the cooler's USB interface. Close it, then retry.")
             self._banner_button.setText("Quit DeepCool app" if running else "Retry")
-        self._now.setText(self._now.fontMetrics().elidedText(state["mode_status"], Qt.TextElideMode.ElideRight, 350))
+        if self._viewing == self._live:
+            now = state.get("mode_status", "")
+        else:
+            now = state.get("preview_status", "") if state.get("preview") == self._viewing else ""
+        self._now.setText(self._now.fontMetrics().elidedText(now, Qt.TextElideMode.ElideRight, 350))
         self._refresh_caption()
 
     def _refresh_caption(self) -> None:
         s = self._state
-        if not self.config.get("enabled"):
+        if self._viewing != self._live:
+            text = f"Preview · the cooler shows {BY_ID[self._live].title}"
+        elif not self.config.get("enabled"):
             text = "Paused · the cooler shows your own stored image"
         elif not s or s.get("device") != "connected":
             text = "Preview only · not connected to the cooler"
@@ -336,5 +401,6 @@ class MainWindow(QMainWindow):
         if not self.quitting and self.config.get("close_to_tray"):
             event.ignore()
             self.hide()
+            self.view_mode(self._live)            # no preview running while nobody looks
         else:
             event.accept()

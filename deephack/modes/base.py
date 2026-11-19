@@ -54,6 +54,7 @@ class Mode:
     description: str = ""
     glyph: str = ""                # character from the "Segoe Fluent Icons" font
     claims: str = ""               # when the mode wants the screen in Auto ("music plays"); empty: never
+    reads: tuple[str, ...] = ()    # other modes whose settings `build()` reads, reloaded when those change
     settings: tuple[Setting, ...] = ()
 
     def __init__(self, values: dict | None = None):

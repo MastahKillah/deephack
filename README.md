@@ -23,6 +23,9 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **Game Cover** | The cover art of the game you are playing, for games started through Steam (Steam notes the running game in the registry; covers come from its image server). |
 | **Ticker** | Up to five stocks, indices, currency pairs or coins with price, change and a sparkline for today, five days or a month. From Yahoo Finance's public chart feed (no account or key). |
 
+Clicking a mode opens its page with a live preview and leaves the cooler alone; **Show on cooler** (or a
+double-click on the mode) puts it on the display. A green dot marks the mode that is on it.
+
 **Keep on screen** decides whether the cooler stays on deephack's image or cycles through every image
 stored on it (the cooler's own slideshow).
 

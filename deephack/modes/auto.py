@@ -36,6 +36,7 @@ class Auto(Mode):
     id = "auto"
     title = "Auto"
     description = "Picks the mode for the moment"
+    reads = tuple(dict.fromkeys(i for c in CANDIDATES + FALLBACKS for i in (c.id, *c.reads)))
     glyph = ""
     settings = (
         Setting("order", "Show first", "order", DEFAULT_ORDER, tuple((c.id, f"{c.title} · {c.claims}") for c in CANDIDATES),
