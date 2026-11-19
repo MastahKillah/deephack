@@ -15,6 +15,7 @@ import traceback
 
 from PIL import Image
 
+from .agenda import Calendar
 from .base import Animation, Mode, Setting, parse_order
 from .claude_usage import ClaudeUsage
 from .countdown import Countdown
@@ -29,9 +30,9 @@ from .tamagotchi import Tamagotchi
 from .ticker import Ticker
 from .weather import Weather
 
-CANDIDATES: tuple[type[Mode], ...] = (GameCover, NowPlaying, Tamagotchi, Nba, Countdown, ClaudeUsage, SystemMonitor, GitHub)
-FALLBACKS: tuple[type[Mode], ...] = (Weather, Live, PhotoFrame, Ticker, SystemMonitor, Countdown, ClaudeUsage, Tamagotchi, Nba, NowPlaying, GameCover, GitHub)
-DEFAULT_ORDER = "game_cover,now_playing,tamagotchi,nba,countdown,-claude_usage,-system,-github"
+CANDIDATES: tuple[type[Mode], ...] = (Calendar, GameCover, NowPlaying, Tamagotchi, Nba, Countdown, ClaudeUsage, SystemMonitor, GitHub)
+FALLBACKS: tuple[type[Mode], ...] = (Weather, Live, PhotoFrame, Ticker, SystemMonitor, Countdown, ClaudeUsage, Tamagotchi, Nba, NowPlaying, GameCover, GitHub, Calendar)
+DEFAULT_ORDER = "calendar,game_cover,now_playing,tamagotchi,nba,countdown,-claude_usage,-system,-github"
 LINGER = 120.0
 
 

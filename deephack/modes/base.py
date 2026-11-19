@@ -35,7 +35,8 @@ class Dashboard:
 class Setting:
     key: str
     label: str
-    kind: str                      # "choice" | "text" | "folder" (text with a Browse button) | "order" (see parse_order)
+    kind: str                      # "choice" | "text" | "secret" (text shown as dots) | "folder" (text with a Browse button)
+                                   # | "order" (see parse_order)
     default: str
     choices: tuple[tuple[str, str], ...] = ()   # (value, label) for kind "choice" and "order"
     placeholder: str = ""

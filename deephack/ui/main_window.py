@@ -280,6 +280,8 @@ class MainWindow(QMainWindow):
                 edit = QLineEdit(current)
                 edit.setPlaceholderText(s.placeholder)
                 edit.setMinimumWidth(60)
+                if s.kind == "secret":            # shown while typing, dots otherwise (and in screenshots)
+                    edit.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
                 edit.editingFinished.connect(lambda e=edit, key=s.key: self._set_setting(cls.id, key, e.text().strip()))
                 if s.kind == "folder":
                     line = QHBoxLayout()

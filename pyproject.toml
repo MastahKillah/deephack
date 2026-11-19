@@ -19,6 +19,9 @@ dependencies = [
     "winrt-Windows.Media>=3",
     "winrt-Windows.Media.Control>=3",
     "winrt-Windows.Storage.Streams>=3",
+    "icalendar>=6",
+    "recurring-ical-events>=3",
+    "tzdata",
 ]
 
 [project.optional-dependencies]
