@@ -18,6 +18,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **Claude Code** | Plan limits (5-hour and weekly) and today's tokens, requests, hourly activity and model split. All from local files, see below. |
 | **Claude Pet** | An animated pixel pet with your plan limit percentages. Its mood follows the fullest limit: happy, fine, stressed, exhausted. |
 | **Countdown** | Days until a date you set, with a title. On the last day it counts hours, then minutes. |
+| **Photo Frame** | Pictures from a folder you pick, changing every 15 minutes to once a day, shuffled or by file name. Portrait photos fill the screen, wider ones are shown whole. |
 
 **Keep on screen** decides whether the cooler stays on deephack's image or cycles through every image
 stored on it (the cooler's own slideshow).

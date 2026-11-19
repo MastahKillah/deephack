@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QPushButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import QDir, Qt, QTimer
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from .. import autostart
 from ..config import Config
@@ -20,6 +20,17 @@ def _label(text: str, name: str = "", wrap: bool = False) -> QLabel:
         lab.setObjectName(name)
     lab.setWordWrap(wrap)
     return lab
+
+
+def _scroll(inner: QWidget) -> QScrollArea:
+    """Vertical scroller that is invisible until its content no longer fits."""
+    area = QScrollArea(objectName="scroll")
+    area.setWidgetResizable(True)
+    area.setFrameShape(QFrame.Shape.NoFrame)
+    area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    inner.setObjectName("scrollInner")
+    area.setWidget(inner)
+    return area
 
 
 def _card() -> tuple[QFrame, QVBoxLayout]:
@@ -67,13 +78,20 @@ class MainWindow(QMainWindow):
 
         self._mode_buttons = QButtonGroup(self)
         self._mode_buttons.setExclusive(True)
+        modes = QWidget()
+        mode_list = QVBoxLayout(modes)
+        mode_list.setContentsMargins(0, 0, 0, 0)
+        mode_list.setSpacing(6)
         for cls in MODES:
             btn = ModeButton(cls.glyph, cls.title, cls.description)
             btn.clicked.connect(lambda _=False, mode_id=cls.id: self._select_mode(mode_id))
             btn.setProperty("mode_id", cls.id)
             self._mode_buttons.addButton(btn)
-            lay.addWidget(btn)
-        lay.addStretch(1)
+            mode_list.addWidget(btn)
+        mode_list.addStretch(1)
+        self._mode_scroll = _scroll(modes)
+        lay.addWidget(self._mode_scroll, 1)
+        lay.addSpacing(8)
 
         status = QHBoxLayout()
         status.setSpacing(10)
@@ -126,9 +144,11 @@ class MainWindow(QMainWindow):
         left.addStretch(1)
         row.addLayout(left)
 
-        right = QVBoxLayout()
+        column = QWidget()
+        right = QVBoxLayout(column)
+        right.setContentsMargins(0, 0, 0, 0)
         right.setSpacing(14)
-        row.addLayout(right, 1)
+        row.addWidget(_scroll(column), 1)
 
         # active toggle
         head = QHBoxLayout()
@@ -178,6 +198,8 @@ class MainWindow(QMainWindow):
         cls = BY_ID[mode_id]
         for btn in self._mode_buttons.buttons():
             btn.setChecked(btn.property("mode_id") == mode_id)
+            if btn.isChecked():   # once laid out, so the selected mode is not hidden in the scrolled list
+                QTimer.singleShot(0, lambda b=btn: self._mode_scroll.ensureWidgetVisible(b, 0, 8))
         self._mode_title.setText(cls.title)
         self._mode_desc.setText(cls.description + ".")
         self._build_settings(cls)
@@ -187,10 +209,14 @@ class MainWindow(QMainWindow):
 
     def _build_settings(self, cls) -> None:
         lay = self._settings_layout
-        while lay.count():
-            item = lay.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+        def clear(layout) -> None:
+            while layout.count():
+                item = layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+                elif item.layout():
+                    clear(item.layout())
+        clear(lay)
         values = self.config.mode_settings(cls.id)
         lay.addWidget(_label("SETTINGS", "section"))
         for s in cls.settings:
@@ -198,6 +224,8 @@ class MainWindow(QMainWindow):
             current = values.get(s.key, s.default)
             if s.kind == "choice":
                 box = QComboBox()
+                box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+                box.setMinimumContentsLength(12)      # long entries must not widen the column
                 for value, text in s.choices:
                     box.addItem(text, value)
                 box.setCurrentIndex(max(0, box.findData(current)))
@@ -206,11 +234,27 @@ class MainWindow(QMainWindow):
             else:
                 edit = QLineEdit(current)
                 edit.setPlaceholderText(s.placeholder)
+                edit.setMinimumWidth(60)
                 edit.editingFinished.connect(lambda e=edit, key=s.key: self._set_setting(cls.id, key, e.text().strip()))
-                lay.addWidget(edit)
+                if s.kind == "folder":
+                    line = QHBoxLayout()
+                    line.setSpacing(8)
+                    browse = QPushButton("Browse…")
+                    browse.clicked.connect(lambda _=False, e=edit, key=s.key, label=s.label: self._browse(cls.id, key, e, label))
+                    line.addWidget(edit, 1)
+                    line.addWidget(browse)
+                    lay.addLayout(line)
+                else:
+                    lay.addWidget(edit)
             if s.hint:
                 lay.addWidget(_label(s.hint, "hint", wrap=True))
         self._settings_card.setVisible(bool(cls.settings))
+
+    def _browse(self, mode_id: str, key: str, edit: QLineEdit, label: str) -> None:
+        folder = QFileDialog.getExistingDirectory(self, label, edit.text().strip())
+        if folder:
+            edit.setText(QDir.toNativeSeparators(folder))
+            self._set_setting(mode_id, key, edit.text())
 
     def _set_setting(self, mode_id: str, key: str, value) -> None:
         if self.config.mode_settings(mode_id).get(key, None) == value:

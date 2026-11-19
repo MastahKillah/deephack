@@ -57,6 +57,13 @@ QComboBox::down-arrow {{ image: url("@ARROW@"); width: 12px; height: 12px; }}
 QComboBox QAbstractItemView {{
     background: {CARD}; border: 1px solid {BORDER}; selection-background-color: {ACCENT_SOFT}; outline: none; padding: 4px;
 }}
+#scroll, #scrollInner {{ background: transparent; }}
+QScrollBar:vertical {{ background: transparent; width: 8px; margin: 0 0 0 2px; }}
+QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 3px; min-height: 32px; }}
+QScrollBar::handle:vertical:hover {{ background: {MUTED}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
+
 QMenu {{ background: {CARD}; border: 1px solid {BORDER}; padding: 6px; }}
 QMenu::item {{ padding: 6px 22px; border-radius: 6px; }}
 QMenu::item:selected {{ background: {ACCENT_SOFT}; }}

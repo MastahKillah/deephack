@@ -22,7 +22,7 @@ class Animation:
 class Setting:
     key: str
     label: str
-    kind: str                      # "choice" | "text"
+    kind: str                      # "choice" | "text" | "folder" (text with a Browse button)
     default: str
     choices: tuple[tuple[str, str], ...] = ()   # (value, label) for kind == "choice"
     placeholder: str = ""
