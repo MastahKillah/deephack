@@ -1,4 +1,6 @@
 """Protocol encoding checked against packets captured from the official DeepCool app."""
+import pytest
+
 from deephack import device
 
 # "get uuid" and "show jpg slot 1" exactly as the official app sent them
