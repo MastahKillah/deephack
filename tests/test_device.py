@@ -31,6 +31,11 @@ def test_upload_header_matches_capture():
     assert device.upload_header("9f5801c74adf43ad844a0f172ca0ee41", data) == HEADER
 
 
+def test_upload_header_refuses_the_firmware_update_type():
+    with pytest.raises(ValueError, match="firmware update"):
+        device.upload_header("0" * 32, b"\xff\xd8\xff\xd9", device.FILE_FIRMWARE)
+
+
 def test_upload_header_rejects_bad_id():
     try:
         device.upload_header("short", b"")

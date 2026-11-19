@@ -57,6 +57,8 @@ DIRECT_MAX = 128 * 1024     # bytes of JPEG the patched firmware takes for one f
 
 TYPE_JPG, TYPE_GIF = 0, 1   # slot type in the show / delete commands
 FILE_JPG, FILE_GIF = 1, 2   # file type in the upload header
+FILE_FIRMWARE = 0           # ... and what the firmware takes for a firmware update: it stores the data as
+                            # FW_update.bin and reboots into its bootloader. upload_header refuses it
 MAX_GIF_DURATION_MS = 0xFFFF
 MAX_STILLS = 9              # the firmware indexes nine stills (and nine animations). A tenth upload gets no
                             # error but is written without being indexed: never send one. Asking for a
@@ -113,6 +115,8 @@ def upload_header(file_id: str, data: bytes, ftype: int = FILE_JPG, frame_count:
     fid = file_id.encode("ascii")
     if len(fid) != 32:
         raise ValueError("file id must be exactly 32 ASCII characters")
+    if ftype == FILE_FIRMWARE:
+        raise ValueError("file type 0 is a firmware update, not a picture: the cooler would try to flash the data")
     h = bytearray(64)
     h[0:4] = b"DCLd"
     h[4] = ftype
