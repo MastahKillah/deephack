@@ -20,6 +20,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **Countdown** | Days until a date you set, with a title. On the last day it counts hours, then minutes. |
 | **Photo Frame** | Pictures from a folder you pick, changing every 15 minutes to once a day, shuffled or by file name. Portrait photos fill the screen, wider ones are shown whole. |
 | **Game Cover** | The cover art of the game you are playing, for games started through Steam (Steam notes the running game in the registry; covers come from its image server). |
+| **Ticker** | Up to five stocks, indices, currency pairs or coins with price, change and a sparkline for today, five days or a month. From Yahoo Finance's public chart feed (no account or key). |
 
 **Keep on screen** decides whether the cooler stays on deephack's image or cycles through every image
 stored on it (the cooler's own slideshow).

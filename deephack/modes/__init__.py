@@ -7,9 +7,10 @@ from .nba import Nba
 from .now_playing import NowPlaying
 from .photo_frame import PhotoFrame
 from .tamagotchi import Tamagotchi
+from .ticker import Ticker
 from .weather import Weather
 
-MODES: tuple[type[Mode], ...] = (NowPlaying, Weather, Nba, ClaudeUsage, Tamagotchi, Countdown, PhotoFrame, GameCover)
+MODES: tuple[type[Mode], ...] = (NowPlaying, Weather, Nba, ClaudeUsage, Tamagotchi, Countdown, PhotoFrame, GameCover, Ticker)
 BY_ID = {m.id: m for m in MODES}
 
 __all__ = ["Animation", "Mode", "Setting", "MODES", "BY_ID"]

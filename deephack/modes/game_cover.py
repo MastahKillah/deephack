@@ -142,7 +142,7 @@ def render_cover(name: str, art: Image.Image | None, layout: str = "full") -> Im
 class GameCover(Mode):
     id = "game_cover"
     title = "Game Cover"
-    description = "Cover art of the Steam game you play"
+    description = "Art of the Steam game you play"
     glyph = ""
     settings = (
         Setting("layout", "Layout", "choice", "full", (("full", "Cover with the game's name"), ("art", "Cover only")),
