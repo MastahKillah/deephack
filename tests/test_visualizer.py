@@ -119,61 +119,61 @@ def _book_engine(tmp_path, monkeypatch, official=1):
 
 def test_engine_stores_a_flipbook_once_and_then_only_flips(tmp_path, monkeypatch, cooler):
     eng, config, states, step = _book_engine(tmp_path, monkeypatch)
-    for _ in range(8):                                                  # one frame stored per step
+    for _ in range(7):                                                  # one frame stored per step
         step(2)
-    assert cooler.flash_writes == 9 and len(cooler.stills) == 10        # our own still first, then the eight frames
-    assert [s[0] for s in cooler.stills[2:]] == [book_id(i) for i in range(8)]
-    assert config.get("book") == {"key": "book-a", "first": 2, "count": 8}
-    assert [s["storing"] for s in states if s["storing"]] == [(i, 8) for i in range(1, 8)]
+    assert cooler.flash_writes == 8 and len(cooler.stills) == 9         # our own still, then the 7 of 8 frames that fit
+    assert [s[0] for s in cooler.stills[2:]] == [book_id(i) for i in range(7)]
+    assert config.get("book") == {"key": "book-a", "first": 2, "count": 7}
+    assert [s["storing"] for s in states if s["storing"]] == [(i, 7) for i in range(1, 7)]
     step(2)
-    assert cooler.screen == ("jpg", 4) and cooler.flash_writes == 9
-    for index in (0, 7, 1, 1, 5):
+    assert cooler.screen == ("jpg", 4) and cooler.flash_writes == 8
+    for index, slot in ((0, 2), (7, 8), (1, 3), (1, 3), (5, 6)):        # eight steps spread over seven pictures
         step(index)
-        assert cooler.screen == ("jpg", 2 + index)
-    assert cooler.flash_writes == 9 and states[-1]["live"] and states[-1]["mode_live"] == "flipbook"
+        assert cooler.screen == ("jpg", slot)
+    assert cooler.flash_writes == 8 and states[-1]["live"] and states[-1]["mode_live"] == "flipbook"
 
     again = engine.Engine(config)                                       # after a restart: nothing is stored again
     frames = list(visualizer.frames("aurora"))
     again._set_frame(Flipbook("book-a", frames, 3))
     again._device_step(True)
     again._device_step(True)
-    assert cooler.flash_writes == 9 and cooler.screen == ("jpg", 5)
+    assert cooler.flash_writes == 8 and cooler.screen == ("jpg", 5)
 
-    for _ in range(9):                                                  # other frames: replaced in place
+    for _ in range(8):                                                  # other frames: replaced in place
         again._set_frame(Flipbook("book-b", frames[::-1], 0))
         again._device_step(True)
-    assert cooler.flash_writes == 17 and len(cooler.stills) == 10 and cooler.screen == ("jpg", 2)
+    assert cooler.flash_writes == 15 and len(cooler.stills) == 9 and cooler.screen == ("jpg", 2)
     assert config.get("book")["key"] == "book-b"
 
 
 def test_a_fuller_cooler_gets_fewer_steps(tmp_path, monkeypatch, cooler):
-    cooler.stills.extend([f"app-still-{i}", b""] for i in range(1, 5))  # five pictures of the user's own
-    eng, config, states, step = _book_engine(tmp_path, monkeypatch, official=5)
+    cooler.stills.extend([f"app-still-{i}", b""] for i in range(1, 4))  # four pictures of the user's own
+    eng, config, states, step = _book_engine(tmp_path, monkeypatch, official=4)
     for _ in range(5):                                                  # our own still, then the 4 that fit
         step(0)
-    assert config.get("book") == {"key": "book-a", "first": 6, "count": 4} and len(cooler.stills) == 10
-    brightness = [sum(cooler.still(i).resize((1, 1)).getpixel((0, 0))) for i in range(6, 10)]
+    assert config.get("book") == {"key": "book-a", "first": 5, "count": 4} and len(cooler.stills) == 9
+    brightness = [sum(cooler.still(i).resize((1, 1)).getpixel((0, 0))) for i in range(5, 9)]
     assert brightness == sorted(brightness) and len(set(brightness)) == 4       # from the first to the last, evenly
-    for index, slot in ((0, 6), (7, 9), (2, 7), (5, 8)):
+    for index, slot in ((0, 5), (7, 8), (2, 6), (5, 7)):
         step(index)
         assert cooler.screen == ("jpg", slot)
 
 
 def test_no_room_for_a_flipbook(tmp_path, monkeypatch, cooler):
-    cooler.stills.extend([f"app-still-{i}", b""] for i in range(1, 9))  # nine of the user's own
+    cooler.stills.extend([f"app-still-{i}", b""] for i in range(1, 8))  # eight of the user's own
     cooler.stills.append(["ours", b""])
-    eng, config, states, step = _book_engine(tmp_path, monkeypatch, official=9)
-    config.set("slot_index", 9)
+    eng, config, states, step = _book_engine(tmp_path, monkeypatch, official=8)
+    config.set("slot_index", 8)
     step(3)
     assert cooler.flash_writes == 0 and states[-1]["no_room"] and config.get("book") is None
 
 
-def test_the_model_knows_the_ten_still_limit(cooler):
+def test_the_model_knows_the_still_limit(cooler):
     from PIL import Image
     with device.Mystique() as m:
-        for i in range(10):
+        for i in range(device.MAX_STILLS):
             m.upload_jpeg(book_id(i), device.encode_jpeg(Image.new("RGB", (480, 640), "red")))
-    assert len(cooler.stills) == 10 and any("eleventh still" in v for v in cooler.violations)
+    assert len(cooler.stills) == device.MAX_STILLS and any("one still too many" in v for v in cooler.violations)
     cooler.violations.clear()
 
 

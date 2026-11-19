@@ -53,8 +53,9 @@ CMD_DELETE_ALL = 0x14       # erases every stored image, no reboot
 TYPE_JPG, TYPE_GIF = 0, 1   # slot type in the show / delete commands
 FILE_JPG, FILE_GIF = 1, 2   # file type in the upload header
 MAX_GIF_DURATION_MS = 0xFFFF
-MAX_STILLS = 10             # the cooler keeps stills 0 to 9; more are dropped without an error, and asking for
-                            # one that is not there does nothing (found with the webcam)
+MAX_STILLS = 9              # stills the cooler is sure to keep. With nine on it a tenth was dropped without an
+                            # error (once a tenth did show: the limit may be by size, not count); asking
+                            # for one that is not there does nothing. Found with the webcam.
 MODE_SITUATIONAL = 1        # the firmware's own sensor dashboard, fed by CMD_SENSORS
 MODE_MOTION = 2             # the mode in which stored images are displayed
 MODE_RECORDER = 3           # the firmware's CPU clock / temperature recorder

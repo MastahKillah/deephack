@@ -14,10 +14,13 @@ from .scene import Scene
 from .system import SystemMonitor
 from .tamagotchi import Tamagotchi
 from .ticker import Ticker
-from .visualizer import Visualizer
 from .weather import Weather
 
-MODES: tuple[type[Mode], ...] = (Auto, NowPlaying, Weather, Calendar, Nba, ClaudeUsage, Tamagotchi, Countdown, PhotoFrame, GameCover, Ticker, SystemMonitor, Live, GitHub, Scene, Visualizer)
+MODES: tuple[type[Mode], ...] = (Auto, NowPlaying, Weather, Calendar, Nba, ClaudeUsage, Tamagotchi, Countdown, PhotoFrame, GameCover, Ticker, SystemMonitor, Live, GitHub, Scene)
 BY_ID = {m.id: m for m in MODES}
 
 __all__ = ["Animation", "Mode", "Setting", "MODES", "BY_ID"]
+
+# Not in the list: visualizer.Visualizer. It works, but a stored picture needs about 0.1 s to appear and
+# the whole chain ends up 0.2 to 0.3 s behind the music, which looks wrong on the cooler. It waits for a
+# way to draw directly (see the firmware issues).

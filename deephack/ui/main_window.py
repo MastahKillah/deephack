@@ -405,7 +405,7 @@ class MainWindow(QMainWindow):
         elif self._placeholder:
             text = "Waiting for something to show"
         elif s.get("no_room"):
-            text = "No room on the cooler: it keeps 10 pictures. Delete some in the DeepCool app."
+            text = "No room on the cooler: it keeps about 9 pictures. Delete some in the DeepCool app."
         elif s.get("storing"):
             text = "Storing frames on the cooler, once · {} of {}".format(*s["storing"])
         elif s.get("live") and s.get("mode_live") == "flipbook":
