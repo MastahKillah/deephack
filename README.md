@@ -50,10 +50,12 @@ autostart entry.
 
 - **Quit the DeepCool app first.** It holds the cooler's USB interface exclusively. deephack shows a banner
   with a button for that. The DeepCool app starts with Windows by default, so disable its autostart if you
-  want deephack to own the display after a reboot. Fan control is a separate Windows service and keeps working.
+  want deephack to own the display after a reboot. Fan control is a separate Windows service and keeps
+  working, and so does the sensor service the System and Live modes read.
 - **Every update is a write to the cooler's flash**, except in Live, which uses the cooler's own sensor
-  screens. There is no known way to draw our own pictures without storing them first. deephack rate-limits writes (at most one every 8 seconds, tracks have to settle before they
-  are drawn), but the flash endurance of the device is unknown. "Cover only" writes once per album instead
+  screens. There is no known way to draw our own pictures without storing them first. deephack rate-limits
+  writes (at most one every 8 seconds, tracks have to settle before they are drawn), but the flash
+  endurance of the device is unknown. "Cover only" writes once per album instead
   of once per track. Showing an image the cooler already holds again (Auto switching back to it) costs
   no write.
 - **deephack adds files the DeepCool app does not know about:** one image, and one animation once you use
@@ -141,6 +143,7 @@ found the hard way; `tools/restore_originals.py` re-uploads what the official ap
 
 **Recorder mode** (`03` = 3) plots the last seven minutes of the CPU frequency and temperature you feed
 with command `01`, as live line graphs. Like the dashboard it is not stored, so it costs no flash writes.
+Command `05` picks the graphs: `00` frequency and temperature, `01` frequency only.
 
 **Sensor values** (command `01`) feed the firmware's own dashboard and are not stored, so they can change
 every second without wearing the flash. The payload is a row of 3-byte fields, `integer:u16` `fraction:u8`;
@@ -164,6 +167,10 @@ and units on every layout are fixed in the firmware; only the numbers are yours.
 
 `python -m deephack.device probe-sensors` shows the dashboard with test values, and `map-dashboards` steps
 through layouts.
+
+The Live mode drives both screens with real readings: `0A` sets the clock, `03` switches to the
+dashboard (1) or recorder (3), `04` or `05` picks the layout, then `01` follows once a second. Before
+showing a stored image again deephack switches back with `03 02` and re-sends the slideshow setting (`07`).
 
 **Image upload**
 
@@ -192,12 +199,11 @@ Every frame is written to flash, so keep them few.
 
 **DeepCool's sensor service.** The DeepCool app installs a Windows service, "JZFS Sensor Bridge Service",
 that reads the hardware through HWiNFO and answers on the named pipe `\\.\pipe\jzfs_sensor_bridge_v2`,
-also to programs without admin rights. It keeps running when the app is closed. Every message is a 20 byte
-header, `"DCS2"`, version `2`, kind (`1` request, `2` response, `3` pushed event), two zero bytes, the body
-length `u32`, a sequence number `u32` (a response repeats its request's) and the CRC-32 of the body `u32`,
-followed by a JSON body `{"op": "...", "body": {}}`. `HELLO` and then `GET_SENSOR_SNAPSHOT` return the
-readings by name (`"CPU Temperature"`, `"Gpu usage"`, `"Memory Load"`, `"Fan list"`, ...). The app ships a
-read-only client for it, `tools/fan-sensor-observer.mjs` inside `resources/app.asar`.
+also to programs without admin rights, and keeps running when the app is closed. Requests are JSON in a
+small binary frame (`"DCS2"`, kind, length, sequence, CRC-32); `HELLO` and then `GET_SENSOR_SNAPSHOT`
+return the readings by name (`"CPU Temperature"`, `"Gpu usage"`, `"Fan list"`, ...). The System and Live
+modes read it. [docs/deepcool-services.md](docs/deepcool-services.md) has the frame layout, every field,
+the fan control and display services next to it, and how all this was found.
 
 ## Disclaimer
 

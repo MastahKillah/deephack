@@ -80,6 +80,7 @@ The image screen builds a path (`<slot>/angle_0.jpg`) and hands it to the JPEG l
 to the LVGL framebuffer that is then flushed to the LCD controller. The dashboard and recorder modes
 use the same framebuffer→panel flush but render LVGL widgets instead of a decoded JPEG — and crucially
 **do not touch flash**, which is why live sensor/graph updates cost no erase cycles. *Confirmed in code.*
+deephack's Live mode relies on this: it feeds both screens once a second.
 
 ## Direct drawing — feasibility
 
