@@ -408,6 +408,8 @@ class MainWindow(QMainWindow):
             text = "No room on the cooler: it keeps about 9 pictures. Delete some in the DeepCool app."
         elif s.get("storing"):
             text = "Storing frames on the cooler, once · {} of {}".format(*s["storing"])
+        elif s.get("live") and s.get("mode_live") == "drawn":
+            text = "Live · drawn straight from USB, nothing is stored"
         elif s.get("live") and s.get("mode_live") == "flipbook":
             text = "Live · flipping stored frames, no flash writes"
         elif s.get("live"):

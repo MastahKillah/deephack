@@ -23,6 +23,12 @@ NO_EFFECT = {0x05, 0x06, 0x0B, 0x0C, 0x0D, 0x0E, 0x10, 0x11, 0x15, 0x16, 0x17}  
 class CoolerModel:
     def __init__(self, stored_stills: int = 1, stored_gifs: int = 0, uuid: str = "0123456789ABCDEF0123456789ABCDEF"):
         self.uuid = uuid
+        self.direct = False                     # True: the direct drawing firmware (tools/fw/patch.py), command 20
+        self.drawn: bytes | None = None         # the JPEG drawn from USB that is on screen in place of the stored still
+        self.draws = 0
+        self._drawing: dict | None = None       # a frame that is coming in
+        self._animated = False                  # an animation has been on the image screen since it was entered
+        self.stuck = False                      # ... and a frame was drawn after: no further frame is taken
         self.mode: int | None = None            # device.MODE_*; None until the first CMD_MODE
         self.stills = [[f"app-still-{i}", b""] for i in range(stored_stills)]       # [file id, jpeg] by index
         self.gifs = [[f"app-gif-{i}", [], 1000] for i in range(stored_gifs)]       # [file id, frames, ms]
@@ -46,6 +52,8 @@ class CoolerModel:
             return ("dashboard", self.dashboard)
         if self.mode == device.MODE_RECORDER:
             return ("recorder", self.recorder)
+        if self.drawn is not None:
+            return ("drawn", self.drawn)
         return self.shown
 
     @property
@@ -62,7 +70,9 @@ class CoolerModel:
     def write(self, ep: int, data, timeout=None) -> int:
         data = bytes(data)
         is_command = len(data) == 48 and data[:2] == b"\xaa\x2e"
-        if self._upload is not None and not (is_command and data[42:46] == b"HIDC"):
+        if self._drawing is not None:           # while a frame is coming in, everything on endpoint 1 is picture data
+            self._draw_data(ep, data)
+        elif self._upload is not None and not (is_command and data[42:46] == b"HIDC"):
             self._upload_packet(data)
         elif is_command:
             if self._upload is not None:
@@ -111,6 +121,9 @@ class CoolerModel:
         elif cmd == device.CMD_MODE:
             if payload[0] not in (device.MODE_SITUATIONAL, device.MODE_MOTION, device.MODE_RECORDER):
                 self._violate(f"unknown display mode {payload[0]}")
+            if payload[0] != self.mode:
+                self.drawn = None               # the image screen loads its stored picture when it is entered
+                self._animated = self.stuck = False
             self.mode = payload[0]
         elif cmd == device.CMD_SITUATION_MODE:
             self.dashboard = tuple(payload[:4])
@@ -125,7 +138,11 @@ class CoolerModel:
                 self._violate(f"show {'gif' if kind else 'jpg'} {index}, but only {len(slots)} are stored")
             if self.mode != device.MODE_MOTION:
                 self._violate("show a stored image without switching back to image mode first (deephack's rule)")
-            self.shown = ("gif" if kind == device.TYPE_GIF else "jpg", index)
+            shown = ("gif" if kind == device.TYPE_GIF else "jpg", index)
+            if shown != self.shown:
+                self.drawn = None               # "show" for the slot already selected leaves a drawn frame up
+            self._animated = self._animated or kind == device.TYPE_GIF
+            self.shown = shown
         elif cmd == device.CMD_DELETE_SLOT:
             slots = self.stills if payload[0] == device.TYPE_JPG else self.gifs
             if payload[1] < len(slots):
@@ -136,10 +153,38 @@ class CoolerModel:
             self._upload = {"stage": "header", "files": []}
         elif cmd == device.CMD_GET_UUID:
             reply = b"\x00" + self.uuid.encode()
+        elif cmd == device.CMD_DIRECT and self.direct:
+            size, total = struct.unpack_from("<IH", payload)
+            if not 0 < size <= device.DIRECT_MAX:
+                reply = bytes([device.DIRECT_REFUSED])
+            elif self.stuck:
+                reply = bytes([device.DIRECT_LATER])
+            else:
+                self._drawing = {"size": size, "sum": total, "data": b""}
+                reply = bytes([device.DIRECT_GO])
         elif cmd not in NO_EFFECT and cmd not in (device.CMD_FACTORY_RESET, device.CMD_DELETE_ALL):
             self._reply(ep, cmd, known=False)
             return
         self._reply(ep, cmd, reply)
+
+    # ---- direct drawing: 20 with size and sum16, then the JPEG; it replaces the stored still on screen
+    def _draw_data(self, ep: int, data: bytes) -> None:
+        frame = self._drawing
+        frame["data"] += data
+        if ep != 1 or len(frame["data"]) > frame["size"]:
+            self._violate("a drawn frame's data on the wrong endpoint, or more of it than announced")
+        if len(frame["data"]) < frame["size"]:
+            return
+        self._drawing = None
+        self.stuck = self._animated             # seen on the cooler: one frame is taken, then "later" for good
+        if device.sum16(frame["data"]) != frame["sum"]:
+            self._violate("a drawn frame does not match its sum16: the firmware does not show it")
+        elif device.jpeg_size(frame["data"]) != (device.WIDTH, device.HEIGHT):
+            self._violate(f"drew something that is not a {device.WIDTH}x{device.HEIGHT} baseline JPEG")
+        elif self.mode != device.MODE_MOTION or self.shown is None or self.shown[0] != "jpg":
+            self._violate("a frame drawn with no stored still on show: it is dropped, or an animation takes the screen back")
+        else:
+            self.drawn, self.draws = frame["data"], self.draws + 1
 
     # ---- uploads: 0F, then a 64 byte header and the data in 64 byte packets per file, then dcldfinish
     def _upload_packet(self, data: bytes) -> None:
@@ -172,6 +217,7 @@ class CoolerModel:
 
     def _finish(self, data: bytes) -> None:
         up, self._upload = self._upload, None
+        self.drawn = None                       # the firmware leaves its upload screen and loads the stored picture
         if data != FINISH:
             self._violate("malformed dcldfinish")
         if up["stage"] == "data":

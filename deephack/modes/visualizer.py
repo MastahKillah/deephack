@@ -1,15 +1,18 @@
-"""Visualizer: an orb that pulses with the music, ten times a second, without wearing the flash.
+"""Visualizer: an orb that pulses with the music, without wearing the flash.
 
-NOT IN THE MODE LIST: on the cooler it trails the music by 0.2 to 0.3 seconds (the firmware alone needs
-about 0.1 s to show a stored picture), which is too late for a beat. Kept for when pictures can be drawn
-directly; the Flipbook mechanism it uses works and is tested.
+The louder (the bass counts most), the bigger and hotter the orb and the longer its rays. The mode draws
+24 frames, from silence to full blast, once, and from then on only says which one belongs on screen: a
+Flipbook. What the engine does with it depends on the cooler's firmware:
 
-The cooler cannot be drawn on directly: every picture has to be stored first. But showing a stored
-picture is only a read, and the firmware keeps up with about ten a second. So this mode is a flipbook:
-8 frames, from silence to full blast, are stored once (as many as fit), and from then on the mode only
-tells the cooler which one to show. The louder (the bass counts most), the bigger and hotter the orb and the longer its
-rays; the frames' edges glow in their colour, so the cooler's own light follows the beat. The cooler
-keeps only nine or so stills in all, so the engine stores as many of the steps as there is room for.
+- With the direct drawing firmware (tools/fw, see the README) the frame is drawn straight from USB,
+  about twenty times a second and well under a tenth of a second behind the sound. Nothing is stored.
+- DeepCool's own firmware cannot be drawn on: every picture has to be stored first. Showing a stored
+  picture is only a read, and the firmware keeps up with about ten a second, so the engine stores as
+  many of the frames as the cooler has room for (it keeps nine or so stills in all), once, and flips
+  between those. That way the orb trails the music by 0.2 to 0.3 seconds, which is late for a beat.
+
+The frames' edges glow in their colour. The cooler's own light picks its colour from the edges of a
+stored picture when it is shown, so it follows the beat with stored frames and not with drawn ones.
 
 The sound comes from what the PC is playing (see audio.py); nothing is recorded or sent anywhere.
 """
@@ -27,8 +30,8 @@ from ..audio import LISTENER
 from ..render import H, W
 from .base import Flipbook, Mode, Setting
 
-LEVELS = 8
-VERSION = 2                                    # bump when the frames change, so they are stored again
+LEVELS = 24
+VERSION = 3                                    # bump when the frames change, so they are stored again
 PALETTES = {   # hue (degrees) at the quietest and at the loudest bass level
     "aurora": (205, 320), "fire": (350, 48), "ocean": (150, 215), "mono": None,
 }
@@ -105,15 +108,16 @@ class Visualizer(Mode):
     title = "Visualizer"
     description = "Pulses with the music"
     glyph = ""
-    tick = 0.1
+    tick = 0.05
     settings = (
         Setting("palette", "Colours", "choice", "aurora",
                 (("aurora", "Aurora: blue to magenta"), ("fire", "Fire: red to yellow"), ("ocean", "Ocean: green to blue"),
                  ("mono", "White")),
-                hint="Follows whatever the PC is playing, ten times a second. The cooler cannot be drawn on directly, "
-                     "so 8 frames are stored on it once (8 flash writes, also when you pick other colours here); "
-                     "after that the mode only flips between them, which wears nothing. The cooler keeps about nine "
-                     "stills in all: with several pictures of your own on it there is room for fewer steps."),
+                hint="Follows whatever the PC is playing. With the direct drawing firmware on the cooler the frames "
+                     "are drawn straight from USB, on the beat, and nothing is stored. On DeepCool's own firmware "
+                     "as many of the frames as there is room for, seven at most, are stored on it once (as many flash "
+                     "writes, also when you pick other colours here) and the mode flips between them, a quarter "
+                     "of a second behind the music."),
     )
 
     def __init__(self, values=None, listener=None):

@@ -20,6 +20,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **Claude Code** | Plan limits (5-hour and weekly) and today's tokens, requests, hourly activity and model split. All from local files, see below. |
 | **Claude Pet** | An animated pixel pet with your plan limit percentages. It works along while Claude Code is busy, dances while music plays, sleeps at night and celebrates or sulks after your NBA team's games; you pick which of these count and which wins. Otherwise its mood follows the fullest limit: happy, fine, stressed, exhausted. |
 | **Scene** | A little pixel-art city under your real sky: dawn, day, dusk and night follow the sunrise and sunset, and clouds, fog, rain, snow or a thunderstorm follow the current weather in the Weather page's city. Windows light up in the evening, street lamps glow, a car drives by. An 8-frame animation, rewritten only when the time of day or the kind of weather changes. Also a fallback for Auto. |
+| **Visualizer** | An orb that pulses with whatever the PC is playing (the bass counts most). With the [direct drawing firmware](#protocol) on the cooler its frames are drawn straight from USB, about twenty a second, and nothing is stored. On DeepCool's own firmware it is a flipbook: up to seven frames from silence to full blast are stored once and the mode says which one to show, which wears nothing but trails the music by a quarter of a second. The sound is read from the PC's output (nothing is recorded or sent anywhere). |
 | **Countdown** | Days until a date you set, with a title. On the last day it counts hours, then minutes. |
 | **Photo Frame** | Pictures from a folder you pick, changing every 15 minutes to once a day, shuffled or by file name. Portrait photos fill the screen, wider ones are shown whole. |
 | **Game Cover** | The cover art of the game you are playing, for games started through Steam (Steam notes the running game in the registry; covers come from its image server). |
@@ -60,13 +61,16 @@ autostart entry.
   want deephack to own the display after a reboot. Fan control is a separate Windows service and keeps
   working, and so does the sensor service the System and Live modes read.
 - **Every update is a write to the cooler's flash**, except in Live, which uses the cooler's own sensor
-  screens. There is no known way to draw our own pictures without storing them first. deephack rate-limits
+  screens, and in Visualizer, which draws directly or flips between pictures stored once. DeepCool's
+  firmware has no way to draw our own pictures without storing them first (a patched one has, see
+  [Protocol](#protocol)). deephack rate-limits
   writes (at most one every 8 seconds, tracks have to settle before they are drawn), but the flash
   endurance of the device is unknown. "Cover only" writes once per album instead
   of once per track. Showing an image the cooler already holds again (Auto switching back to it) costs
   no write.
-- **deephack adds files the DeepCool app does not know about:** one image, and one animation once you use
-  Claude Pet or Scene. They are stored after the JPGs / GIFs you uploaded with the official app. If you later add
+- **deephack adds files the DeepCool app does not know about:** one image, one animation once you use
+  Claude Pet or Scene, and up to seven more images once you use Visualizer on DeepCool's own firmware
+  (the cooler keeps about nine in all, so it takes whatever room your own pictures leave). They are stored after the JPGs / GIFs you uploaded with the official app. If you later add
   files there, its numbering will be off by one. `python -m deephack.device delete <index>` (add `--gif`
   for the animation) removes them; the indexes are `slot_index` and `gif_slot_index` in
   `%APPDATA%\deephack\config.json`.
@@ -206,9 +210,9 @@ Seen with the webcam and in the firmware ([docs/firmware-analysis.md](docs/firmw
 
 - `08` (show a stored still) is answered in 0.3 ms and the picture is on screen about 0.1 s later, all at
   once, whatever the JPEG's size (5 to 42 KB tried). Ten switches a second all show; from about twelve a
-  second the firmware starts dropping them. `Flipbook` frames use this. It is still too slow for music:
-  a visualizer built on it (`modes/visualizer.py`, not in the mode list) ends up 0.2 to 0.3 s behind
-  the beat, which looks wrong. That needs direct drawing.
+  second the firmware starts dropping them. `Flipbook` frames use this on DeepCool's firmware. It is
+  still slow for music: the Visualizer ends up 0.2 to 0.3 s behind the beat that way, which looks
+  wrong. Direct drawing (below) is what it is meant for.
 - The sensor screens redraw about twice a second: values sent faster than that are skipped.
 
 The image is only displayed once it is committed: after the data without `dcldfinish` the screen shows
@@ -222,8 +226,10 @@ loop duration in milliseconds, and the frame's index.
 
 A mode returns an `Animation(frames, duration_ms)` instead of an image to use this (see `tamagotchi.py`).
 Every frame is written to flash, so keep them few. For real-time changes a mode returns a
-`Flipbook(key, frames, index)` and sets `tick = 0.1`: the frames are stored once as stills, then only
-`index` decides which one shows (see `visualizer.py`, which is kept out of the mode list for now).
+`Flipbook(key, frames, index)` and a short `tick`: only `index` decides which frame shows (see
+`visualizer.py`). On the direct drawing firmware the engine draws that frame from USB and stores
+nothing; otherwise it stores as many of the frames as fit, once, as stills, and shows those, ten a
+second at most.
 
 **Drawing without storing** is not something the stock firmware can do. `tools/fw/patch.py` builds a
 firmware that can: one new command (`20`, size and sum16, then the JPEG) puts a frame on screen straight
@@ -231,10 +237,18 @@ from RAM, and the driver has `can_draw()` and `draw_jpeg()` for it. It runs in t
 (`python tools/emu/bench.py --firmware ...`, and `tests/test_direct_draw.py`) and, since 19 Nov 2026,
 **on one cooler**: `tools/fw/flash.py patched` sent it through the cooler's update channel, the cooler
 was off the bus for 12 seconds and came back drawing. Measured there, from the host: a 41 KB frame 16
-times a second, a 72 KB one 10 times, an 8 KB one 20 times. The modes do not use it yet.
+times a second, a 72 KB one 10 times, an 8 KB one 20 times. The Visualizer uses it: the engine sends a
+frame every 50 ms (12 to 30 KB each) and the cooler takes them all.
 
-To get a stored picture back after drawing, show a **different** slot (`08`): showing the slot that is
-already selected, or sending the mode again, leaves the drawn frame on screen.
+Two things the engine works around, both seen on the cooler:
+
+- To get a stored picture back after drawing, `08` (show) is not enough for the slot that is already
+  selected: the drawn frame stays. Showing a different slot works, and so does leaving the image screen
+  (mode `1`, 0.15 s, mode `2`), which is what the engine does.
+- Frames are drawn over a stored **still**. Over an animation the next animation frame takes the screen
+  back, and worse: once an animation has been on the image screen, the firmware takes one frame and
+  answers "later" to every one after it, also when a still is shown again. Leaving the image screen and
+  coming back clears that, so the engine does it every time before it starts to draw.
 
 **A flash that goes wrong cannot be undone from USB.** That it worked once, on a cooler that already ran
 DeepCool's v2.70, says nothing certain about another unit: read "Which firmware" and "Direct drawing" in

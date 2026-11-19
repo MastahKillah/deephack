@@ -1,6 +1,8 @@
 import asyncio
 import math
 
+import pytest
+
 from deephack import audio, device, engine
 from deephack.config import Config, book_id
 from deephack.modes import visualizer
@@ -72,9 +74,9 @@ def test_listener_runs_while_asked(monkeypatch):
 # ------------------------------------------------------------------ the mode
 def test_frames_and_index():
     frames = visualizer.frames("aurora")
-    assert len(frames) == visualizer.LEVELS == 8
-    assert all(f.size == (device.WIDTH, device.HEIGHT) for f in frames) and len({f.tobytes() for f in frames}) == 8
-    assert visualizer.frame_index(0, 0) == 0 and visualizer.frame_index(1, 1) == 7
+    assert len(frames) == visualizer.LEVELS == 24
+    assert all(f.size == (device.WIDTH, device.HEIGHT) for f in frames) and len({f.tobytes() for f in frames}) == 24
+    assert visualizer.frame_index(0, 0) == 0 and visualizer.frame_index(1, 1) == 23
     assert visualizer.frame_index(1, 0) > visualizer.frame_index(0, 1) > 0        # the bass counts most
     for palette in visualizer.PALETTES:
         assert visualizer.render_frame(palette, 3).size == (device.WIDTH, device.HEIGHT)
@@ -92,17 +94,24 @@ def test_mode_returns_a_book_only_when_the_frame_changes():
     listener = FakeListener()
     m = visualizer.Visualizer({"palette": "fire"}, listener=listener)
     first = asyncio.run(m.frame())
-    assert isinstance(first, Flipbook) and first.index == 0 and first.key == "visualizer-fire-2" and m.status == "Nothing is playing"
+    assert isinstance(first, Flipbook) and first.index == 0 and first.key == "visualizer-fire-3" and m.status == "Nothing is playing"
     assert asyncio.run(m.frame()) is None
     listener.now = (1.0, 0.5)
     second = asyncio.run(m.frame())
-    assert second.index == 6 and second.key == first.key and m.status == "Following the music"
-    assert m.tick == 0.1
+    assert second.index == 20 and second.key == first.key and m.status == "Following the music"
+    assert m.tick == 0.05
 
 
 # ------------------------------------------------------------------ engine: a flipbook on the cooler
+def _eight():
+    """A book of eight frames, from the quietest to the loudest."""
+    return list(visualizer.frames("aurora"))[::3]
+
+
 def _book_engine(tmp_path, monkeypatch, official=1):
     monkeypatch.setattr(engine, "_stored_count", lambda kind: official)   # the official app's stills
+    monkeypatch.setattr(engine, "FLIP_INTERVAL", 0.0)                     # the tests flip faster than a cooler may
+    monkeypatch.setattr(engine, "DRAW_SETTLE", 0.0)
     config = Config(tmp_path / "config.json")
     eng = engine.Engine(config)
     eng._make_mode()
@@ -110,7 +119,7 @@ def _book_engine(tmp_path, monkeypatch, official=1):
     eng.stateChanged.connect(states.append)
 
     def step(index, key="book-a", frames=None):
-        eng._set_frame(Flipbook(key, frames or list(visualizer.frames("aurora")), index))
+        eng._set_frame(Flipbook(key, frames or _eight(), index))
         eng._device_step(True)
         eng._emit_state(True)
 
@@ -133,7 +142,7 @@ def test_engine_stores_a_flipbook_once_and_then_only_flips(tmp_path, monkeypatch
     assert cooler.flash_writes == 8 and states[-1]["live"] and states[-1]["mode_live"] == "flipbook"
 
     again = engine.Engine(config)                                       # after a restart: nothing is stored again
-    frames = list(visualizer.frames("aurora"))
+    frames = _eight()
     again._set_frame(Flipbook("book-a", frames, 3))
     again._device_step(True)
     again._device_step(True)
@@ -168,6 +177,141 @@ def test_no_room_for_a_flipbook(tmp_path, monkeypatch, cooler):
     assert cooler.flash_writes == 0 and states[-1]["no_room"] and config.get("book") is None
 
 
+def test_stored_frames_are_flipped_no_faster_than_the_firmware_shows_them(tmp_path, monkeypatch, cooler):
+    eng, config, states, step = _book_engine(tmp_path, monkeypatch)
+    for _ in range(8):
+        step(0)
+    assert cooler.screen == ("jpg", 2)
+    monkeypatch.setattr(engine, "FLIP_INTERVAL", 60.0)
+    step(7)
+    assert cooler.screen == ("jpg", 2)                                  # too soon after the last one
+    monkeypatch.setattr(engine, "FLIP_INTERVAL", 0.0)
+    step(7)
+    assert cooler.screen == ("jpg", 8)
+
+
+# ------------------------------------------------------------------ engine: frames drawn straight from USB
+def _drawn(frame):
+    return ("drawn", device.encode_jpeg(frame, quality=engine.DRAW_QUALITY))
+
+
+def test_the_direct_drawing_firmware_is_drawn_on_and_nothing_is_stored(tmp_path, monkeypatch, cooler):
+    cooler.direct = True
+    eng, config, states, step = _book_engine(tmp_path, monkeypatch)
+    book = list(visualizer.frames("aurora"))
+    step(5, frames=book)
+    assert cooler.screen == ("jpg", 1) and cooler.flash_writes == 1     # our own still, stored once, is the ground
+    step(5, frames=book)
+    assert cooler.screen == _drawn(book[5])
+    for index in (0, 23, 11):                                           # every one of the 24 steps, not seven of them
+        step(index, frames=book)
+        assert cooler.screen == _drawn(book[index])
+    step(11, frames=book)
+    assert cooler.draws == 4 and cooler.flash_writes == 1 and config.get("book") is None
+    assert states[-1]["live"] and states[-1]["mode_live"] == "drawn" and not states[-1]["storing"]
+
+    monkeypatch.setattr(engine, "REDRAW", 0.0)                          # an unchanged frame is sent again now and then
+    step(11, frames=book)
+    assert cooler.draws == 5 and cooler.screen == _drawn(book[11])
+
+
+def test_a_frame_is_not_drawn_before_the_still_under_it_is_on_screen(tmp_path, monkeypatch, cooler):
+    cooler.direct = True
+    eng, config, states, step = _book_engine(tmp_path, monkeypatch)
+    monkeypatch.setattr(engine, "DRAW_SETTLE", 60.0)
+    for _ in range(3):
+        step(4)
+    assert cooler.screen == ("jpg", 1) and cooler.draws == 0
+
+
+def test_drawn_frames_go_over_a_still_also_when_an_animation_was_on(tmp_path, monkeypatch, cooler):
+    from deephack.modes.base import Animation
+    cooler.direct = True
+    eng, config, states, step = _book_engine(tmp_path, monkeypatch)
+    cooler.gifs.append(["app-gif-0", [], 1000])                         # the official app's, as _stored_count says
+    eng._set_frame(Animation(_eight()[:2], 400))
+    eng._device_step(True)
+    assert cooler.screen == ("gif", 1)
+    for index in (3, 3, 5, 1):          # after an animation the firmware takes one frame and no more, unless
+        step(index)                     # the image screen was left and entered again in between
+    assert cooler.screen == _drawn(_eight()[1]) and cooler.shown == ("jpg", 1) and cooler.draws == 3
+
+
+def test_a_cooler_that_stops_taking_frames_is_started_over(tmp_path, monkeypatch, cooler):
+    cooler.direct = True
+    eng, config, states, step = _book_engine(tmp_path, monkeypatch)
+    step(3)
+    step(3)
+    cooler.stuck = True
+    monkeypatch.setattr(engine, "DRAW_STUCK", -1.0)
+    step(5)                             # refused
+    step(5)                             # refused for too long
+    assert cooler.screen == _drawn(_eight()[3])
+    step(5)                             # the image screen is entered afresh
+    step(5)
+    assert cooler.screen == _drawn(_eight()[5]) and not cooler.stuck
+
+
+def test_the_stored_picture_comes_back_after_drawn_frames(tmp_path, monkeypatch, cooler):
+    """The firmware ignores "show" for the still it has selected: the engine has to leave the image screen
+    and come back (the model keeps the drawn frame up otherwise, as the cooler did)."""
+    cooler.direct = True
+    eng, config, states, step = _book_engine(tmp_path, monkeypatch)
+    picture = _eight()[6]
+    eng._set_frame(picture)
+    eng._device_step(True)
+    assert cooler.screen == ("jpg", 1) and cooler.flash_writes == 1
+    step(2)
+    step(2)
+    assert cooler.screen == _drawn(_eight()[2])
+    eng._set_frame(picture)                                             # the picture the cooler already holds
+    eng._device_step(True)
+    assert cooler.screen == ("jpg", 1) and cooler.flash_writes == 1
+    modes = [payload[0] for kind, cmd, payload in cooler.log if kind == "cmd" and cmd == device.CMD_MODE]
+    assert modes[-2:] == [device.MODE_SITUATIONAL, device.MODE_MOTION]
+
+    step(2)
+    step(2)
+    eng._device_step(False)                                             # paused: the user's own picture
+    assert cooler.screen == ("jpg", 0)
+
+
+def test_a_new_picture_after_drawn_frames_needs_no_detour(tmp_path, monkeypatch, cooler):
+    cooler.direct = True
+    eng, config, states, step = _book_engine(tmp_path, monkeypatch)
+    step(2)
+    step(2)
+    before = len(cooler.log)
+    monkeypatch.setattr(engine, "MIN_UPLOAD_INTERVAL", 0.0)
+    eng._set_frame(_eight()[6])
+    eng._device_step(True)
+    assert cooler.screen == ("jpg", 1) and cooler.flash_writes == 2
+    assert not [e for e in cooler.log[before:] if e[0] == "cmd" and e[1] == device.CMD_MODE]
+
+
+def test_the_model_knows_what_a_drawn_frame_needs(cooler):
+    cooler.direct = True
+    jpeg = device.encode_jpeg(_eight()[0])
+    with device.Mystique() as m:
+        assert m.can_draw()
+        m.set_mode(device.MODE_MOTION)
+        m.show_slot(0)
+        m.draw_jpeg(jpeg)
+        assert cooler.screen == ("drawn", jpeg)
+        m.show_slot(0)
+        assert cooler.screen == ("drawn", jpeg)                         # the slot it has selected: nothing happens
+        m.set_mode(device.MODE_SITUATIONAL)
+        m.draw_jpeg(jpeg)
+        m.set_mode(device.MODE_MOTION)
+        m.show_slot(0, device.TYPE_GIF)
+        m.show_slot(0)
+        m.draw_jpeg(jpeg)                                               # after an animation: this one, and no more
+        with pytest.raises(TimeoutError):
+            m.draw_jpeg(jpeg)
+    assert any("no stored still on show" in v for v in cooler.violations)
+    cooler.violations.clear()
+
+
 def test_the_model_knows_the_still_limit(cooler):
     from PIL import Image
     with device.Mystique() as m:
@@ -180,4 +324,4 @@ def test_the_model_knows_the_still_limit(cooler):
 def test_engine_loop_runs_faster_for_a_mode_that_asks(tmp_path):
     eng = engine.Engine(Config(tmp_path / "config.json"), use_device=False)
     eng._mode = visualizer.Visualizer({}, listener=FakeListener())
-    assert min(m.tick or engine.TICK for m in (eng._mode, eng._preview) if m is not None) == 0.1
+    assert min(m.tick or engine.TICK for m in (eng._mode, eng._preview) if m is not None) == 0.05

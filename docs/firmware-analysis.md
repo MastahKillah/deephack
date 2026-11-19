@@ -294,12 +294,33 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
 - **Getting the stored picture back is not as described above.** `08` for the slot that is already
   selected leaves the drawn frame on screen, and so does sending mode 2 again. `08` for another slot
   shows that slot's picture, and from there `08` for the first one works. Drawing works again after.
+  Leaving the image screen (mode 1, 0.15 s, mode 2) brings the stored picture back as well, with
+  nothing of the sensor screen left in the webcam's picture 0.4 s later; a frame sent while the sensor screen is up gets
+  "go ahead" and is dropped, as the patch is written.
 - deephack was started again afterwards and its Scene, a stored animation, came back on screen. Whether
   that took an upload was not looked at, so an upload to the patched firmware on the cooler is not
   proven yet.
 
-Not looked at on the cooler: a frame with a wrong sum, a frame the host abandons half way, a frame sent
-on another screen, and how the patched firmware behaves over hours.
+- **After an animation the patch takes one frame and no more.** Show an animation (`08`, type 1), then
+  a still, then draw: the first frame gets "go ahead", every one after it "later" (`11`), for as long as
+  was tried (3 s, a frame asked for every 50 ms). It makes no difference whether anything was drawn
+  while the animation was on. Over the animation itself it is the same, and the drawn frame is not seen:
+  the animation's next frame replaces it. Leaving the image screen (mode 1 for 0.15 s, then mode 2)
+  clears it, and frames are taken again at once, also when the slot selected is still the animation's
+  until `08` follows. *Seen, not explained.* "Later" means the last frame is still waiting to be shown
+  (phase 2) or a buffer is missing, and it is the main loop's hook that ends both; so either that call
+  site is not reached while the image screen is in this state (an inner loop that calls
+  `lv_task_handler` itself would do that), or the patch's 36 bytes of state are written over. The
+  emulator can tell which: `tests/test_direct_draw.py` has no animation in it.
+- **The engine draws with this firmware** (`deephack/engine.py`, `_draw_step`): the Visualizer's frames,
+  12 to 30 KB each at quality 85, one every 50 ms while the sound changes. With a made-up beat 164
+  frames went out in 11.7 s and none was refused in the end; between frames the cooler answers "later"
+  to about two asks in three, so 50 ms is its own pace. Before the first frame the engine leaves the
+  image screen and comes back, then shows its own still, because of the item above.
+
+Not looked at on the cooler: a frame with a wrong sum, a frame the host abandons half way, how far a
+drawn frame is behind its command (the webcam's own delay is not known), and how the patched firmware
+behaves over hours.
 
 What the emulator cannot show:
 
@@ -507,6 +528,8 @@ whether a flashed image is accepted. The emulator makes patches testable; it can
   and no sum the patch breaks. What it does check, if anything, is still unknown: a broken image may
   well be written as readily
 - Is SWD locked? (the only recovery path if a flashed image does not start)
+- Why the patched firmware stops taking frames once an animation has been on the image screen (see "On
+  the cooler"): the one known way to make direct drawing hang, worked around in the engine, not fixed
 - Why `08` for the slot already on show does not bring the stored picture back after a drawn frame
   (seen on the cooler; in the emulator test `08` after a new upload does, which is not the same case)
 - Does the firmware ever write to its own flash behind the image?
