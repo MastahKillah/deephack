@@ -107,7 +107,7 @@ AA 2E <cmd> <payload, zero padded to 39 bytes> 'H' 'I' 'D' 'C' <sum16 LE of byte
 
 | cmd | meaning | payload |
 | --- | --- | --- |
-| `01` | sensor values (ep 2, once a second) | seven 3-byte fields, see below |
+| `01` | sensor values (ep 2, once a second) | 3-byte fields, see below |
 | `02` | device options | not decoded |
 | `03` | display mode | `mode` (1 = sensor dashboard, 2 = stored images, 3 = recorder) |
 | `07` | slideshow | `duration` `animation` (0 none, 1 slide, 2 fade) |
@@ -124,15 +124,18 @@ the fraction byte is printed as-is after the decimal point.
 | offset | field | status |
 | --- | --- | --- |
 | 0 | CPU temperature | confirmed on the device |
-| 3 | probably CPU load | not confirmed |
+| 3 | CPU load % | confirmed on the device |
 | 6 | RAM usage % | confirmed on the device |
 | 9, 12, 15 | 3.3 V, 5 V, 12 V rails | confirmed on the device |
 | 18 | CPU frequency (GHz) | confirmed on the device |
-| 21 and up | unknown; fan and pump RPM are expected here | being probed |
+| 21 | CPU fan RPM | confirmed on the device (the official app left it at zero) |
+| 24 | pump RPM | confirmed on the device (the official app left it at zero) |
+| 27 and up | unknown | not shown on any layout seen so far |
 
-Command `04` picks the dashboard layout: `main` (0 frequency, 1 time, 2 pump, 3 CPU fan, 4 CPU fan + pump,
-5 temperature), `style` (frequency only), then two bytes of which one selects the bottom strip (voltage /
-system / core). The labels on every layout are fixed in the firmware.
+Command `04` picks the dashboard layout with four bytes: `main` (0 frequency, 1 time, 2 pump, 3 CPU fan,
+4 CPU fan + pump, 5 temperature), `style` (frequency only), one byte with no visible effect, and `strip`
+for the row at the bottom (0 voltage rails, 1 frequency / CPU load / RAM, 2 frequency / RAM). The labels
+and units on every layout are fixed in the firmware; only the numbers are yours.
 
 `python -m deephack.device probe-sensors` shows the dashboard with test values, and `map-dashboards` steps
 through layouts.

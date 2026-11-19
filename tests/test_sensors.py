@@ -5,7 +5,7 @@ CAPTURED = bytes.fromhex("aa2e01" "460000" "150000" "4c0000" "03001c" "040062" "
 
 
 def test_sensor_payload_matches_capture():
-    payload = device.sensor_payload(cpu_temp=70, field_1=21, ram_usage=76, v3_3=3.28, v5=4.98, v12=12.08, cpu_freq=5.50)
+    payload = device.sensor_payload(cpu_temp=70, cpu_load=21, ram_usage=76, v3_3=3.28, v5=4.98, v12=12.08, cpu_freq=5.50)
     assert device.frame(device.CMD_SENSORS, payload) == CAPTURED
 
 
@@ -21,3 +21,8 @@ def test_sensor_payload_rejects_negative():
     except ValueError:
         return
     raise AssertionError("expected ValueError")
+
+
+def test_fan_and_pump_rpm_offsets():
+    p = device.sensor_payload(fan_rpm=1111, pump_rpm=2222)
+    assert p[21:24] == bytes([0x57, 0x04, 0]) and p[24:27] == bytes([0xAE, 0x08, 0])
