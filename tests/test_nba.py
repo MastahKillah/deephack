@@ -57,3 +57,65 @@ def test_logo_refuses_foreign_hosts(tmp_path, monkeypatch):
 def test_render_with_no_games(tmp_path, monkeypatch):
     monkeypatch.setattr(nba, "config_dir", lambda: tmp_path)
     assert nba.render_games("all", [], []).size == (480, 640)
+
+
+def live_event(state="in", detail="7:32 - 3rd", period=3, clock="7:32", date="2026-11-20T01:00Z"):
+    def side(which, abbr, lines, color):
+        return {"homeAway": which, "score": str(sum(lines)), "records": [{"name": "overall", "summary": "8-7"}],
+                "linescores": [{"value": float(v)} for v in lines], "team": {"abbreviation": abbr, "color": color}}
+    return {"date": date, "status": {"period": period, "displayClock": clock, "type": {"state": state, "shortDetail": detail}},
+            "competitions": [{"competitors": [side("home", "GS", [25, 33, 20], "fdb927"), side("away", "MEM", [30, 41, 12], None)]}]}
+
+
+def test_parse_live_details():
+    g = nba.parse_event(live_event())
+    assert g.clock == "7:32" and g.period == 3
+    assert g.home.lines == (25, 33, 20) and g.home.record == "8-7" and g.home.color == "fdb927"
+    assert g.away.score == "83" and g.away.color is None
+
+
+def test_live_label():
+    assert nba.live_label(nba.parse_event(live_event())) == "Q3 · 7:32"
+    assert nba.live_label(nba.parse_event(live_event(detail="Halftime", period=2, clock="0.0"))) == "Halftime"
+    assert nba.live_label(nba.parse_event(live_event(detail="End of 3rd", clock="0.0"))) == "End of 3rd"
+    assert nba.live_label(nba.parse_event(live_event(detail="1:02 - OT", period=5, clock="1:02"))) == "OT · 1:02"
+    assert nba.period_name(6) == "2OT"
+
+
+def test_live_candidate_includes_games_that_should_have_started():
+    now = datetime(2026, 11, 20, 2, 0, tzinfo=timezone.utc)
+    started_late = nba.parse_event(scoreboard_event("2026-11-20T01:00Z", "pre"))
+    later = nba.parse_event(scoreboard_event("2026-11-21T01:00Z", "pre"))
+    assert nba.live_candidate([started_late, later], now) is started_late
+    assert nba.live_candidate([later], now) is None
+    live = nba.parse_event(scoreboard_event("2026-11-21T01:00Z", "in"))
+    assert nba.live_candidate([live], now) is live
+
+
+def test_render_live(tmp_path, monkeypatch):
+    monkeypatch.setattr(nba, "config_dir", lambda: tmp_path)
+    for event in (live_event(), live_event(detail="1:02 - 2OT", period=6, clock="1:02")):
+        assert nba.render_live("GS", nba.parse_event(event)).size == (480, 640)
+
+
+def test_mode_switches_to_the_scoreboard_while_the_team_plays(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.setattr(nba, "config_dir", lambda: tmp_path)
+    tip = datetime.now(timezone.utc) - timedelta(hours=1)
+    schedule = [nba.parse_event(scoreboard_event(tip.strftime("%Y-%m-%dT%H:%MZ"), "pre", home=("GS", None, False), away=("MEM", None, False)))]
+    feed = {"live": nba.parse_event(live_event(date=tip.strftime("%Y-%m-%dT%H:%MZ")))}
+    monkeypatch.setattr(nba, "fetch_games", lambda team: schedule)
+    monkeypatch.setattr(nba, "fetch_live", lambda team, game: feed["live"])
+
+    m = nba.Nba({"team": "GS", "live": "5"})
+    assert asyncio.run(m.frame()) is not None and m.status.startswith("LIVE MEM 83")
+    assert m._next - __import__("time").monotonic() <= 5 * 60
+    m._next = 0
+    assert asyncio.run(m.frame()) is None                     # same score: no new write
+    feed["live"] = nba.parse_event(live_event(state="post", detail="Final"))
+    m._next = 0
+    assert asyncio.run(m.frame()) is not None and not m.status.startswith("LIVE")
+
+    off = nba.Nba({"team": "GS", "live": "off"})
+    assert asyncio.run(off.frame()) is not None and not off.status.startswith("LIVE")

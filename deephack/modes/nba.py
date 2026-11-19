@@ -1,5 +1,8 @@
 """NBA: the two most recent results and the next two games, for one team or the whole league.
 
+With a team picked, its games in progress take over the screen as a big scoreboard that is redrawn every
+few minutes (never play by play: every redraw is a write to the cooler's flash).
+
 Data and logos come from ESPN's public (undocumented) scoreboard feed. Logos are downloaded on first use
 and cached in %APPDATA%\\deephack\\cache\\nba; nothing is bundled with the app.
 """
@@ -12,7 +15,7 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from PIL import Image, ImageDraw
 
@@ -50,16 +53,20 @@ class Side:
     score: str | None
     winner: bool
     logo: str | None
+    record: str | None = None          # "11-4"
+    lines: tuple[int, ...] = ()        # points per period
+    color: str | None = None           # hex, without '#'
 
 
 @dataclass(frozen=True)
 class Game:
     when: datetime          # local time
     state: str              # pre | in | post
-    detail: str             # "Final", "Final/OT", ...
+    detail: str             # "Final", "Final/OT", "7:32 - 3rd", "Halftime", ...
     period: int
     away: Side
     home: Side
+    clock: str = ""         # game clock in the current period, "7:32"
 
 
 def _get_json(url: str) -> dict:
@@ -83,12 +90,28 @@ def parse_event(event: dict) -> Game | None:
         for c in comp["competitors"]:
             team = c["team"]
             logo = team.get("logo") or next((l.get("href") for l in team.get("logos") or [] if l.get("href")), None)
-            sides[c["homeAway"]] = Side(team["abbreviation"], _score(c.get("score")), bool(c.get("winner")), logo)
+            records = c.get("records") or c.get("record") or []
+            record = next((r["summary"] for r in records if isinstance(r, dict) and r.get("summary")), None)
+            lines = tuple(int(l.get("value") or 0) for l in c.get("linescores") or [] if isinstance(l, dict))
+            sides[c["homeAway"]] = Side(team["abbreviation"], _score(c.get("score")), bool(c.get("winner")), logo,
+                                        record, lines, team.get("color"))
         when = datetime.fromisoformat(event["date"].replace("Z", "+00:00")).astimezone()
         return Game(when, status["type"]["state"], status["type"].get("shortDetail") or "", int(status.get("period") or 0),
-                    sides["away"], sides["home"])
+                    sides["away"], sides["home"], str(status.get("displayClock") or ""))
     except (KeyError, IndexError, TypeError, ValueError):
         return None
+
+
+def period_name(period: int) -> str:
+    return f"Q{period}" if period <= 4 else "OT" if period == 5 else f"{period - 4}OT"
+
+
+def live_label(game: Game) -> str:
+    """'Q3 · 7:32', or the feed's own words for breaks ('Halftime', 'End of 3rd')."""
+    if not game.period or any(w in game.detail for w in ("Half", "End", "Delayed", "Postponed")):
+        return game.detail or "Live"
+    clock = game.clock if game.clock not in ("", "0.0", "0:00") else ""
+    return period_name(game.period) + (f" · {clock}" if clock else "")
 
 
 def pick(games: list[Game]) -> tuple[list[Game], list[Game]]:
@@ -116,6 +139,23 @@ def fetch_games(team: str) -> list[Game]:
             if g:
                 games[(g.when, g.away.abbr, g.home.abbr)] = g
     return list(games.values())
+
+
+def live_candidate(upcoming: list[Game], now: datetime | None = None) -> Game | None:
+    """The game in progress, or one that should be by its start time (the schedule can lag behind tip-off)."""
+    now = now or datetime.now().astimezone()
+    return next((g for g in upcoming if g.state == "in" or (g.state == "pre" and g.when <= now)), None)
+
+
+def fetch_live(team: str, game: Game) -> Game | None:
+    """Fresh state of one team's game from the scoreboard, which carries the clock and points per period."""
+    us_date = (game.when.astimezone(timezone.utc) - timedelta(hours=5)).date()     # the feed files games by US date
+    for url in (API + "scoreboard", API + f"scoreboard?dates={us_date:%Y%m%d}"):
+        for event in _get_json(url).get("events", []):
+            g = parse_event(event)
+            if g and team in (g.away.abbr, g.home.abbr) and abs((g.when - game.when).total_seconds()) < 12 * 3600:
+                return g
+    return None
 
 
 # ------------------------------------------------------------------ logos
@@ -179,7 +219,7 @@ def _card(img: Image.Image, game: Game, y: int) -> None:
         d.text((x, y + 44), side.score or "-", font=big, fill=colour, anchor=anchor)
     d.text((mid, y + 42), "–", font=render.font(render.REGULAR, 28), fill=DIM, anchor="mm")
     if live:
-        label = "LIVE" + (f" · {'Q' + str(game.period) if game.period <= 4 else 'OT'}" if game.period else "")
+        label = "LIVE" + (f" · {period_name(game.period)}" if game.period else "")
         d.text((mid, y + 82), label, font=render.font(render.SEMIBOLD, 17), fill=LIVE, anchor="mm")
     else:
         d.text((mid, y + 82), f"{game.detail or 'Final'} · {_day_label(game.when)}", font=sub, fill=MUTED, anchor="mm")
@@ -211,6 +251,73 @@ def render_games(team: str, past: list[Game], upcoming: list[Game]) -> Image.Ima
     return img.convert("RGB")
 
 
+def _rgb(color: str | None, fallback: tuple[int, int, int]) -> tuple[int, int, int]:
+    try:
+        return tuple(int(color[i:i + 2], 16) for i in (0, 2, 4))
+    except (TypeError, ValueError, IndexError):
+        return fallback
+
+
+def _points(score: str | None) -> int:
+    try:
+        return int(score or 0)
+    except ValueError:
+        return 0
+
+
+def render_live(team: str, game: Game) -> Image.Image:
+    """Big scoreboard for a game in progress, tinted with the picked team's colour."""
+    ours = game.away if game.away.abbr == team else game.home
+    tint = _rgb(ours.color, BG_TOP)
+    img = render.vertical_gradient(tuple(round(c * 0.45 + b * 0.55) for c, b in zip(tint, BG_TOP)), BG_BOTTOM).convert("RGBA")
+    d = ImageDraw.Draw(img)
+    f = render.font
+
+    # header: LIVE pill and the game clock
+    d.rounded_rectangle([24, 24, 104, 58], radius=17, fill=LIVE)
+    d.text((64, 41), "LIVE", font=f(render.BOLD, 19), fill=(255, 255, 255), anchor="mm")
+    d.text((W - 24, 41), live_label(game), font=f(render.SEMIBOLD, 26), fill=TEXT, anchor="rm")
+
+    # teams: logo, abbreviation, record, score (the trailing team dimmed)
+    a, h = _points(game.away.score), _points(game.home.score)
+    size = 104
+    while size > 60 and max(d.textlength(s.score or "0", font=f(render.BOLD, size)) for s in (game.away, game.home)) > 172:
+        size -= 4                                   # three-digit scores must leave room for the dash
+    for side, cx, behind in ((game.away, 128, a < h), (game.home, W - 128, h < a)):
+        mark = logo(side, 132)
+        if mark is not None:
+            img.alpha_composite(mark, (cx - mark.width // 2, 96 + (132 - mark.height) // 2))
+            d = ImageDraw.Draw(img)
+        else:
+            d.ellipse([cx - 60, 102, cx + 60, 222], fill=(60, 68, 96))
+        d.text((cx, 248), side.abbr, font=f(render.BOLD, 28), fill=TEXT, anchor="ma")
+        d.text((cx, 286), side.record or "", font=f(render.REGULAR, 18), fill=MUTED, anchor="ma")
+        d.text((cx, 392), side.score or "0", font=f(render.BOLD, size), fill=DIM if behind else TEXT, anchor="mm")
+    d.text((W / 2, 162), "@", font=f(render.REGULAR, 26), fill=DIM, anchor="mm")
+    d.text((W / 2, 388), "–", font=f(render.LIGHT, 60), fill=DIM, anchor="mm")
+
+    # points per period
+    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    ImageDraw.Draw(layer).rounded_rectangle([20, 478, W - 20, H - 20], radius=16, fill=CARD)
+    img.alpha_composite(layer)
+    d = ImageDraw.Draw(img)
+    periods = max(len(game.away.lines), len(game.home.lines), 4)
+    first, last = 120, W - 112
+    step = (last - first) / (periods - 1)
+    head, num = f(render.SEMIBOLD, 15), f(render.REGULAR, 21)
+    for i in range(periods):
+        x = first + step * i
+        d.text((x, 502), period_name(i + 1), font=head, fill=MUTED, anchor="mm")
+        for side, y in ((game.away, 544), (game.home, 590)):
+            played = i < len(side.lines)
+            d.text((x, y), str(side.lines[i]) if played else "–", font=num, fill=TEXT if played else DIM, anchor="mm")
+    d.text((W - 50, 502), "T", font=head, fill=MUTED, anchor="mm")
+    for side, y in ((game.away, 544), (game.home, 590)):
+        d.text((44, y), side.abbr, font=f(render.SEMIBOLD, 19), fill=TEXT, anchor="lm")
+        d.text((W - 50, y), side.score or "0", font=f(render.BOLD, 21), fill=TEXT, anchor="mm")
+    return img.convert("RGB")
+
+
 class Nba(Mode):
     id = "nba"
     title = "NBA"
@@ -220,6 +327,11 @@ class Nba(Mode):
         Setting("team", "Team", "choice", "all", (("all", "All teams"),) + tuple((abbr, name) for abbr, name in TEAMS)),
         Setting("refresh", "Refresh every", "choice", "30", (("15", "15 minutes"), ("30", "30 minutes"), ("60", "1 hour")),
                 hint="Scores and logos come from ESPN's public feed. The display is rewritten only when something changed."),
+        Setting("live", "During your team's games", "choice", "5",
+                (("3", "Scoreboard, every 3 minutes"), ("5", "Scoreboard, every 5 minutes"),
+                 ("10", "Scoreboard, every 10 minutes"), ("off", "Keep this view")),
+                hint="With a team picked, its games in progress show as a big scoreboard. "
+                     "Each update is a write to the cooler's flash."),
     )
 
     def __init__(self, values=None):
@@ -228,20 +340,50 @@ class Nba(Mode):
         self._shown = None
         self.placeholder = ("NBA", "Fetching games…")
 
-    def _load(self) -> tuple[list[Game], list[Game], Image.Image]:
-        past, upcoming = pick(fetch_games(self.values["team"]))
-        return past, upcoming, render_games(self.values["team"], past, upcoming)
+    @property
+    def live_minutes(self) -> int | None:
+        """Scoreboard refresh while the picked team plays; None when there is no live view."""
+        if self.values["team"] == "all" or self.values["live"] == "off":
+            return None
+        return int(self.values["live"])
+
+    def _load(self) -> tuple[list[Game], list[Game], Game | None, Image.Image]:
+        team = self.values["team"]
+        past, upcoming = pick(fetch_games(team))
+        candidate = live_candidate(upcoming) if self.live_minutes else None
+        live = fetch_live(team, candidate) if candidate else None
+        if live is not None and live.state == "in":
+            return past, upcoming, live, render_live(team, live)
+        return past, upcoming, None, render_games(team, past, upcoming)
+
+    def _schedule(self, upcoming: list[Game], live: Game | None) -> None:
+        now, refresh = time.monotonic(), int(self.values["refresh"]) * 60
+        if self.live_minutes is None:
+            self._next = now + refresh
+        elif live is not None or live_candidate(upcoming):
+            self._next = now + self.live_minutes * 60       # in progress, or should have started by now
+        else:
+            # wake up at the next tip-off instead of up to a whole refresh interval later
+            starts = [(g.when - datetime.now().astimezone()).total_seconds() for g in upcoming if g.state == "pre"]
+            soon = [s for s in starts if 0 < s < refresh]
+            self._next = now + (min(soon) + 30 if soon else refresh)
 
     async def frame(self):
         if time.monotonic() < self._next:
             return None
         try:
-            past, upcoming, image = await asyncio.to_thread(self._load)
+            past, upcoming, live, image = await asyncio.to_thread(self._load)
         except (OSError, ValueError) as e:
             self.status = f"Score feed unreachable ({type(e).__name__})"
             self._next = time.monotonic() + RETRY_SECONDS
             return None
-        self._next = time.monotonic() + int(self.values["refresh"]) * 60
+        self._schedule(upcoming, live)
+        if live is not None:
+            self.status = f"LIVE {live.away.abbr} {live.away.score or 0} – {live.home.score or 0} {live.home.abbr} · {live_label(live)}"
+            if ("live", live) == self._shown:
+                return None
+            self._shown = ("live", live)
+            return image
         nxt = upcoming[0] if upcoming else None
         self.status = (f"Next: {nxt.away.abbr} @ {nxt.home.abbr}, {_day_label(nxt.when).lower()} {nxt.when:%H:%M}" if nxt
                        else "No upcoming games")
