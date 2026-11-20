@@ -1,0 +1,216 @@
+"""The Video mode, with a small video made here. Nothing is fetched from the net: the one test about a
+link gives yt-dlp's place to a stand-in."""
+import asyncio
+import sys
+import time
+import types
+
+import pytest
+from PIL import Image
+
+from deephack import device, engine
+from deephack.config import Config
+from deephack.modes import BY_ID, video
+from deephack.modes.video import Player, Video
+
+av = pytest.importorskip("av")
+FPS, SECONDS, SIZE = 20, 2, (320, 180)
+
+
+@pytest.fixture(scope="module")
+def clip(tmp_path_factory):
+    """Two seconds of video, wider than tall: red on the left, blue on the right, and brighter as it goes on."""
+    path = tmp_path_factory.mktemp("video") / "A clip.mp4"
+    with av.open(str(path), "w") as out:
+        stream = out.add_stream("mpeg4", rate=FPS)
+        stream.width, stream.height, stream.pix_fmt = *SIZE, "yuv420p"
+        for i in range(FPS * SECONDS):
+            level = 60 + 4 * i
+            img = Image.new("RGB", SIZE, (level, 0, 0))
+            img.paste((0, 0, level), (SIZE[0] // 2, 0, *SIZE))
+            for packet in stream.encode(av.VideoFrame.from_image(img)):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    return path
+
+
+def run(coroutine):
+    return asyncio.run(coroutine)
+
+
+def play(player, seconds):
+    """Ask for frames for a while, as the mode does; the numbers of the frames seen and where the video was."""
+    seen, until = [], time.monotonic() + seconds
+    while time.monotonic() < until:
+        player.ask()
+        seq, frame = player.latest()
+        if frame is not None and (not seen or seen[-1][0] != seq):
+            seen.append((seq, player.position))
+        time.sleep(0.01)
+    return seen
+
+
+def test_times_are_written_as_a_player_writes_them():
+    assert video.clock_text(0) == "0:00" and video.clock_text(754.9) == "12:34" and video.clock_text(3725) == "1:02:05"
+
+
+def test_a_frame_fills_the_screen_or_is_shown_whole(clip):
+    with av.open(str(clip)) as container:
+        frame = next(container.decode(video=0))
+    fill, fit = video.picture(frame, "fill"), video.picture(frame, "fit")
+    assert fill.size == fit.size == (480, 640)
+    r, g, b = fill.getpixel((100, 320))
+    assert r > 40 and b < 30                                   # the middle of the picture: red left of it ...
+    assert fill.getpixel((380, 320))[2] > 40 and fill.getpixel((240, 5))[0] + fill.getpixel((240, 5))[2] > 40   # ... to the edge
+    assert fit.getpixel((240, 20)) == (0, 0, 0) and fit.getpixel((240, 620)) == (0, 0, 0)      # bars above and below
+    assert fit.getpixel((20, 320))[0] > 40 and fit.getpixel((460, 320))[2] > 40                 # and all of its width
+
+
+def test_the_player_keeps_time_and_starts_again_at_the_end(clip):
+    player = Player(str(clip))
+    started = time.monotonic()
+    seen = play(player, 1.2)
+    assert player.state == "playing" and player.title == "A clip" and 1.8 < player.duration < 2.2
+    assert len(seen) >= 12                                     # 20 a second: every one of them was there to be had
+    first_at = seen[0][1]
+    assert abs((seen[-1][1] - first_at) - (time.monotonic() - started)) < 0.45     # the video moves as the clock does
+    seen += play(player, 1.6)
+    assert player.opened == 2 and seen[-1][1] < 1.0            # past its end: opened again, from the beginning
+    player.stop()
+
+
+def test_the_player_stops_when_nobody_asks_and_goes_on_where_it_was(clip, monkeypatch):
+    monkeypatch.setattr(video, "IDLE", 0.25)
+    player = Player(str(clip))
+    play(player, 0.8)
+    left_at = player.position
+    assert 0.4 < left_at < 1.1
+    time.sleep(0.7)                                            # another mode has the screen
+    assert player.state == "idle" and not player._thread.is_alive()
+    seen = play(player, 0.4)
+    assert player.opened == 2 and left_at - 0.1 <= seen[0][1] <= left_at + 0.3       # not from the beginning
+    player.stop()
+
+
+def test_a_video_that_will_not_open_is_tried_again(clip, monkeypatch):
+    monkeypatch.setattr(video, "RETRY", 0.2)
+    answers = [RuntimeError("ERROR: [youtube] abc: Video unavailable\nmore"), (str(clip), {}, "From the net")]
+
+    def resolve(source):
+        answer = answers.pop(0) if len(answers) > 1 else answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    player = Player("https://example.invalid/watch", resolve)
+    play(player, 0.15)
+    assert player.state == "failed" and player.error == "abc: Video unavailable"
+    play(player, 0.8)
+    assert player.state == "playing" and player.title == "From the net" and not player.error
+    player.stop()
+
+
+def test_a_link_is_asked_of_yt_dlp_for_a_stream_of_the_right_size(monkeypatch):
+    asked = {}
+
+    class Stand:
+        def __init__(self, options):
+            asked.update(options)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, link, download):
+            asked["link"], asked["download"] = link, download
+            return {"url": "https://stream.invalid/video", "title": "A title", "http_headers": {"User-Agent": "x", "Accept": "*/*"}}
+
+    monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=Stand))
+    address, options, title = video.resolve("https://www.youtube.com/watch?v=abc", video.LINES["fit"])
+    assert (address, title) == ("https://stream.invalid/video", "A title")
+    assert options["headers"] == "User-Agent: x\r\nAccept: */*\r\n" and options["reconnect"] == "1"
+    assert asked["download"] is False and asked["noplaylist"] and "height<=480" in asked["format"] and "720" not in asked["format"]
+
+
+def test_a_file_is_its_own_address(clip):
+    assert video.resolve(str(clip)) == (str(clip), {}, "A clip")
+    assert not video.is_file("https://www.youtube.com/watch?v=abc") and not video.is_file(str(clip) + ".nothing")
+
+
+# ---- the mode
+def test_without_a_video_the_mode_says_what_it_wants():
+    mode = Video({})
+    assert run(mode.frame()) is None and mode.placeholder == ("Video", "Paste a YouTube link or choose a file")
+    assert BY_ID["video"] is Video and Video.quality == video.QUALITY
+
+
+def test_the_mode_plays_when_pictures_are_drawn(clip):
+    async def watch():
+        mode = Video({"source": f'"{clip}"', "fit": "fit"})        # as "Copy as path" gives it
+        mode.direct = True
+        pictures, until = [], time.monotonic() + 1.0
+        while time.monotonic() < until:
+            img = await mode.frame()
+            if img is not None:
+                pictures.append(img)
+            await asyncio.sleep(mode.tick)
+        await mode.close()
+        return mode, pictures
+
+    mode, pictures = run(watch())
+    assert mode.tick == video.TICK and 8 <= len(pictures) <= 18      # one for every tick, of the clip's twenty a second
+    assert all(p.size == (480, 640) for p in pictures)
+    assert pictures[-1].getpixel((20, 320))[0] > pictures[0].getpixel((20, 320))[0] + 20      # it moved on
+    assert mode.status.startswith("A clip · 0:0") and mode.status.endswith(" of 0:02")
+
+
+def test_a_cooler_that_stores_gets_one_picture_and_the_reason(clip):
+    async def watch():
+        mode = Video({"source": str(clip)})
+        pictures = []
+        for _ in range(40):
+            img = await mode.frame()
+            if img is not None:
+                pictures.append(img)
+            await asyncio.sleep(0.02)
+        return mode, pictures
+
+    mode, pictures = run(watch())
+    assert len(pictures) == 1 and pictures[0].size == (480, 640) and mode.tick is None
+    assert "direct drawing" in mode.status
+    assert not mode._player._wanted()                          # and the reading has been stopped
+
+
+def test_a_video_that_cannot_be_played_says_why(tmp_path):
+    async def watch():
+        broken = tmp_path / "broken.mp4"
+        broken.write_bytes(b"this is no video at all" * 100)
+        mode = Video({"source": str(broken)})
+        mode.direct = True
+        for _ in range(30):
+            assert await mode.frame() is None
+            await asyncio.sleep(0.02)
+        await mode.close()
+        return mode
+
+    mode = run(watch())
+    assert mode.status.startswith("Cannot play it: ") and mode.placeholder[0] == "broken"
+
+
+def test_the_engine_draws_a_modes_pictures_at_the_quality_it_asks_for(tmp_path, monkeypatch, cooler):
+    cooler.direct = 2
+    monkeypatch.setattr(engine, "_stored_count", lambda kind: 1)
+    monkeypatch.setattr(engine, "DRAW_SETTLE", 0.0)
+    qualities, real = [], device.encode_jpeg
+    monkeypatch.setattr(device, "encode_jpeg", lambda img, quality=92: (qualities.append(quality), real(img, quality))[1])
+    eng = engine.Engine(Config(tmp_path / "config.json"))
+    eng.config.set("mode", "video")
+    eng._make_mode()
+    picture = Image.effect_noise((480, 640), 40).convert("RGB")
+    for _ in range(3):
+        eng._set_frame(picture)
+        eng._device_step(True)
+    assert cooler.draws >= 1 and qualities[-1] == video.QUALITY       # (the black ground before it is stored at 92)

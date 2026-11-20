@@ -86,7 +86,7 @@ def digest(frame: Image.Image | Animation) -> bytes:
 
 def frame_jpeg(img: Image.Image, best: int = STILL_QUALITIES[0]) -> bytes:
     """A picture as the JPEG to draw from USB: as good as what would be stored, unless that is too large."""
-    for quality in STILL_QUALITIES:
+    for quality in sorted({best, *STILL_QUALITIES}, reverse=True):
         if quality > best:
             continue
         jpeg = device.encode_jpeg(img, quality=quality)
@@ -507,7 +507,8 @@ class Engine(QThread):
         def jpeg() -> bytes:
             if self._still[0] != self._frame_seq:
                 fast = self._mode is not None and (self._mode.tick or TICK) <= FAST_TICK
-                self._still = (self._frame_seq, frame_jpeg(picture, DRAW_QUALITY if fast else STILL_QUALITIES[0]))
+                quality = self._mode is not None and self._mode.quality or (DRAW_QUALITY if fast else STILL_QUALITIES[0])
+                self._still = (self._frame_seq, frame_jpeg(picture, quality))
             return self._still[1]
 
         if self._draw(("still", self._frame_seq), jpeg, now, REDRAW_STILL) and self._frame_seq != self._uploaded_seq:

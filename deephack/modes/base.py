@@ -48,7 +48,7 @@ class Setting:
     key: str
     label: str
     kind: str                      # "choice" | "text" | "secret" (text shown as dots) | "folder" (text with a Browse button)
-                                   # | "order" (see parse_order)
+                                   # | "file" (the same, for a file) | "order" (see parse_order)
     default: str
     choices: tuple[tuple[str, str], ...] = ()   # (value, label) for kind "choice" and "order"
     placeholder: str = ""
@@ -79,6 +79,8 @@ class Mode:
     claims: str = ""               # when the mode wants the screen in Auto ("music plays"); empty: never
     reads: tuple[str, ...] = ()    # other modes whose settings `build()` reads, reloaded when those change
     tick: float | None = None      # seconds between frame() calls when the mode needs them faster than usual
+    quality: int | None = None     # JPEG quality of its drawn pictures, when the engine's own choice will not do (a
+                                   # video: smaller frames, so that the cooler takes more of them a second)
     settings: tuple[Setting, ...] = ()
 
     def __init__(self, values: dict | None = None):

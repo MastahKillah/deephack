@@ -384,11 +384,12 @@ class MainWindow(QMainWindow):
                 if s.kind == "secret":            # shown while typing, dots otherwise (and in screenshots)
                     edit.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
                 edit.editingFinished.connect(lambda e=edit, key=s.key: self._set_setting(cls.id, key, e.text().strip()))
-                if s.kind == "folder":
+                if s.kind in ("folder", "file"):
                     line = QHBoxLayout()
                     line.setSpacing(8)
                     browse = QPushButton("Browse…")
-                    browse.clicked.connect(lambda _=False, e=edit, key=s.key, label=s.label: self._browse(cls.id, key, e, label))
+                    browse.clicked.connect(lambda _=False, e=edit, key=s.key, label=s.label, kind=s.kind:
+                                           self._browse(cls.id, key, e, label, kind))
                     line.addWidget(edit, 1)
                     line.addWidget(browse)
                     lay.addLayout(line)
@@ -398,10 +399,14 @@ class MainWindow(QMainWindow):
                 lay.addWidget(_label(s.hint, "hint", wrap=True))
         self._settings_card.setVisible(bool(cls.settings))
 
-    def _browse(self, mode_id: str, key: str, edit: QLineEdit, label: str) -> None:
-        folder = QFileDialog.getExistingDirectory(self, label, edit.text().strip())
-        if folder:
-            edit.setText(QDir.toNativeSeparators(folder))
+    def _browse(self, mode_id: str, key: str, edit: QLineEdit, label: str, kind: str = "folder") -> None:
+        here = edit.text().strip()
+        if kind == "file":
+            picked = QFileDialog.getOpenFileName(self, label, here if "://" not in here else "")[0]
+        else:
+            picked = QFileDialog.getExistingDirectory(self, label, here)
+        if picked:
+            edit.setText(QDir.toNativeSeparators(picked))
             self._set_setting(mode_id, key, edit.text())
 
     def _set_setting(self, mode_id: str, key: str, value) -> None:

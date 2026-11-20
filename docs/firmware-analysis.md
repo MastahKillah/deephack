@@ -382,6 +382,14 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   one every 299 ms at the median (258 to 322; the loop has 300 ms a frame), and Claude Pet, 97 frames,
   one every 250 ms (235 to 251). Neither stored anything. Sending a frame took 23 to 26 ms, and the
   engine used 0.2 % and 1.4 % of one CPU core. How the cooler takes hours of this is not known yet.
+- **A video** (the Video mode, 20 Nov 2026; a half-hour YouTube video of 30 frames a second, read from
+  YouTube as it played): the first frame was on the cooler 2.2 s after the mode started. 627 frames in
+  38 s, 16.5 a second, one every 61 ms at the median and 69 at the longest, so about every other frame
+  of the video was shown; none had to be given up. The video's own clock and the PC's agreed to a
+  hundredth of a second over 23 s. Filling the screen (the 720-line stream, its middle cut out): frames
+  of 14 to 43 KB at JPEG quality 65, 29 at the median, 36 ms to send, and the whole of deephack took
+  13 % of one CPU core. Shown whole with bars (the 480-line stream): 15 to 31 KB, 29 ms, 10 %. At
+  quality 85 a frame of a crowd is 65 KB, and the cooler takes eleven of those a second. Nothing stored.
 - **A picture every second** (Countdown and Calendar, 20 Nov 2026): the mode asks to be called again
   when the next second begins, and the engine does. The countdown's frames (30 to 31 KB at quality 92)
   were sent 14 ms after their second began at the median, 17 at the latest; the calendar's in its last

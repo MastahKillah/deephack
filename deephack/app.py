@@ -22,6 +22,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog=APP_NAME, description="Custom content for the DeepCool MYSTIQUE cooler LCD")
     ap.add_argument("--minimized", action="store_true", help="start hidden in the system tray")
     ap.add_argument("--screenshot", metavar="PNG", help="(development) save a screenshot of the window after a few seconds and exit")
+    ap.add_argument("--screenshot-after", metavar="SECONDS", type=float, default=7.0, help="(development) ... after this many seconds")
     ap.add_argument("--no-device", action="store_true", help="(development) preview only, never touch the cooler")
     ap.add_argument("--config", metavar="JSON", help="(development) use another settings file")
     ap.add_argument("--version", action="version", version=__version__)
@@ -98,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         def grab() -> None:
             window.grab().save(args.screenshot)
             quit_app()
-        QTimer.singleShot(7000, grab)
+        QTimer.singleShot(round(args.screenshot_after * 1000), grab)
 
     def shutdown() -> None:
         engine.stop()

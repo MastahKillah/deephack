@@ -22,6 +22,8 @@ dependencies = [
     "icalendar>=6",
     "recurring-ical-events>=3",
     "tzdata",
+    "av>=14",                             # the Video mode: decodes (it is ffmpeg)
+    "yt-dlp",                             # ... and finds the stream behind a YouTube link
 ]
 
 [project.optional-dependencies]
