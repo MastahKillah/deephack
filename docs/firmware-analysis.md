@@ -337,6 +337,13 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   one every 299 ms at the median (258 to 322; the loop has 300 ms a frame), and Claude Pet, 97 frames,
   one every 250 ms (235 to 251). Neither stored anything. Sending a frame took 23 to 26 ms, and the
   engine used 0.2 % and 1.4 % of one CPU core. How the cooler takes hours of this is not known yet.
+- **A picture every second** (Countdown and Calendar, 20 Nov 2026): the mode asks to be called again
+  when the next second begins, and the engine does. The countdown's frames (30 to 31 KB at quality 92)
+  were sent 14 ms after their second began at the median, 17 at the latest; the calendar's in its last
+  minute before an event 17 ms, once 96. One frame a second cost 0.7 % of one CPU core. At zero the
+  countdown's confetti ran at 9.9 frames a second (22 to 31 KB). The calendar slid the next event up
+  in 14 frames, which began 0.34 s after the event had ended: it was only looked at twice a second
+  then (since, it asks for the moment the event ends). None stored in either run.
 - **One mode fading into the next** (Auto, Scene as the fallback and Now Playing over it, 20 Nov
   2026): Now Playing had the screen 0.05 s after it had something to show, and its picture faded in
   over 0.47 s, in which 6 mixed pictures were drawn (29 to 65 KB: two pictures on top of each other

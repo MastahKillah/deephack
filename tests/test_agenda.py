@@ -134,3 +134,88 @@ def test_mode_from_a_file_redraws_only_when_the_countdown_moves(tmp_path, monkey
 def test_mode_without_links():
     m = agenda.Calendar({})
     assert asyncio.run(m.frame()) is None and m.status == "No calendar link set" and "Paste" in m.placeholder[1]
+
+
+# ------------------------------------------------------------------ drawn pictures (the direct drawing firmware)
+def test_exact_countdown_by_the_minute_and_the_second():
+    now = datetime(2026, 11, 19, 9, 0).astimezone()
+    at = lambda **left: agenda.until_exact(_ev("x", now + timedelta(**left)), now)
+    assert [at(seconds=s) for s in (1, 0.2, 59, 59.5, 60, 119, 120)] == \
+        ["in 1 s", "in 1 s", "in 59 s", "in 1 min", "in 1 min", "in 1 min", "in 2 min"]
+    assert [at(minutes=m) for m in (12, 59, 60, 61, 135, 300)] == ["in 12 min", "in 59 min", "in 1 h", "in 1 h 1 min", "in 2 h 15 min", "in 5 h"]
+    assert at(days=1, hours=1) == "tomorrow" and at(days=3) == "in 3 days" and at(hours=10) == "in 10 h"
+    assert agenda.until_exact(_ev("x", now - timedelta(minutes=5)), now) == "now"
+    day = datetime(2026, 11, 21).astimezone()
+    assert agenda.until_exact(_ev("trip", day, 3 * 24 * 60, all_day=True), now) == "in 2 days"
+
+
+def test_progress_of_an_event_that_is_going_on():
+    now = datetime(2026, 11, 19, 9, 0).astimezone()
+    assert agenda.progress(_ev("x", now - timedelta(minutes=15), 60), now) == (0.25, 45)
+    assert agenda.progress(_ev("x", now - timedelta(minutes=59, seconds=30), 60), now)[1] == 1
+    assert agenda.progress(_ev("x", now + timedelta(minutes=5), 60), now) is None
+    assert agenda.progress(_ev("x", now - timedelta(minutes=90), 60), now) is None
+    assert agenda.progress(_ev("x", now.replace(hour=0), 24 * 60, all_day=True), now) is None
+    assert [agenda.left_text(m) for m in (1, 45, 60, 75)] == ["1 min left", "45 min left", "1 h left", "1 h 15 min left"]
+    going = [_ev("Review", now - timedelta(minutes=15), 60), _ev("Later", now + timedelta(hours=3))]
+    exact, coarse = agenda.render_calendar(going, now, True), agenda.render_calendar(going, now)
+    assert exact.size == coarse.size and exact.tobytes() != coarse.tobytes()         # the bar, and "45 min left"
+    assert exact.getpixel((60, 301)) != coarse.getpixel((60, 301)) and exact.getpixel((420, 301)) != exact.getpixel((60, 301))
+
+
+def test_slide_pushes_the_old_picture_out_at_the_top():
+    old, new = agenda.Image.new("RGB", (480, 640), "red"), agenda.Image.new("RGB", (480, 640), "blue")
+    start, middle, end = (agenda.slide(old, new, t) for t in (0.0, 0.3, 1.0))
+    assert start.getpixel((5, 600)) == (255, 0, 0) and start.getpixel((5, 10)) == (0, 0, 255)       # the header is the new one's
+    assert middle.getpixel((5, agenda.HEADER + 2)) == (255, 0, 0) and middle.getpixel((5, 630)) == (0, 0, 255)
+    assert end.tobytes() == new.tobytes()
+    edge = lambda img: next(y for y in range(agenda.HEADER, 640) if img.getpixel((5, y)) == (0, 0, 255))
+    assert edge(agenda.slide(old, new, 0.2)) > edge(middle) > edge(agenda.slide(old, new, 0.6))     # coming up
+
+
+def test_drawn_calendar_counts_runs_and_slides(monkeypatch):
+    clock = [50.0]
+    monkeypatch.setattr(agenda.time, "monotonic", lambda: clock[0])
+    now = datetime(2026, 11, 19, 9, 0).astimezone()
+    review, call = _ev("Review", now + timedelta(seconds=150), 30), _ev("Call", now + timedelta(hours=2), 30, cal=1)
+    m = agenda.Calendar({"links": "x"})
+    m.direct = True
+
+    def at(when, seconds=0.5):
+        clock[0] += seconds
+        events = agenda.upcoming([review, call], when)
+        return asyncio.run(m._drawn(events, agenda.featured(events, when), when))
+
+    assert at(now) is not None and m.tick is None                                    # "in 2 min": the usual pace
+    assert at(now + timedelta(seconds=20)) is None                                   # still "in 2 min"
+    assert at(now + timedelta(seconds=91)) is not None and m.tick is not None        # "in 59 s": by the second now
+    assert at(now + timedelta(seconds=91.2)) is None and 0.02 <= m.tick <= 1.01
+    assert at(now + timedelta(seconds=92.5)) is not None
+    assert at(now + timedelta(seconds=150)) is not None and m.tick is None           # "now", with its bar
+    assert at(now + timedelta(seconds=170)) is None
+    assert at(now + timedelta(seconds=211)) is not None                              # a minute less left
+    at(now + timedelta(minutes=32, seconds=29, milliseconds=600))
+    assert abs(m.tick - 0.41) < 1e-6                                                 # wanted again the moment it ends
+    shown = m._picture
+    first = at(now + timedelta(minutes=32, seconds=31))                              # the review is over: the call slides up
+    assert first is not None and m.tick == agenda.SLIDE_TICK and first.tobytes() != m._picture.tobytes()
+    second = at(now + timedelta(minutes=32, seconds=31), agenda.SLIDE_TICK)
+    assert second.tobytes() != first.tobytes() and m.tick == agenda.SLIDE_TICK
+    last = at(now + timedelta(minutes=32, seconds=32), agenda.SLIDE)
+    assert last.tobytes() == m._picture.tobytes() != shown.tobytes() and m.tick is None
+    assert at(now + timedelta(minutes=32, seconds=33)) is None
+
+
+def test_calendar_mode_draws_when_it_may_and_stores_when_it_must(tmp_path):
+    now = datetime.now().astimezone().replace(second=0, microsecond=0)
+    start = (now + timedelta(minutes=12, seconds=30)).astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    end = (now + timedelta(minutes=42)).astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+    path = tmp_path / "cal.ics"
+    path.write_bytes(f"BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:1\nSUMMARY:Review\nDTSTART:{start}\nDTEND:{end}\n"
+                     f"END:VEVENT\nEND:VCALENDAR\n".encode())
+    m = agenda.Calendar({"links": str(path)})
+    m.direct = True
+    assert asyncio.run(m.frame()) is not None and m.status in ("Review in 12 min", "Review in 11 min")
+    assert asyncio.run(m.frame()) is None
+    m.direct = False                                                                 # e.g. the slide show was switched on
+    assert asyncio.run(m.frame()) is not None and m.status == "Review in 20 min" and asyncio.run(m.frame()) is None
