@@ -1,18 +1,23 @@
 """Build a MYSTIQUE firmware that draws a JPEG straight from USB, without storing it (issue #14).
 
-    python tools/fw/patch.py [stock.bin] [-o patched.bin] [--list]
+    python tools/fw/patch.py [stock.bin] [-o patched.bin] [--list] [--table]
 
-This only writes a file. Nothing here talks to the cooler, and nothing in this repository flashes it:
-whether the cooler's bootloader accepts a changed image is not known (the bootloader is not in the
-update file), and a refused or broken image may leave a cooler that cannot be recovered without a
-debug probe. Try the result in the emulator (tools/emu/bench.py --firmware patched.bin).
+This only writes a file; nothing here talks to the cooler. Try the result in the emulator
+(tools/emu/bench.py --firmware patched.bin, and tests/test_direct_draw.py). Flashing is another matter
+(flash.py, and the app's own "Firmware" section): the bootloader that takes the image is not in the
+update file, and a broken image may leave a cooler that cannot be recovered without a debug probe.
+
+--table writes the patch as the bytes it changes to deephack/firmware_patch.py, which is how the app
+has it: without this assembler, and without DeepCool's image. Do that after every change here (a test
+compares the two).
 
 The stock image (v2.70 only, checked by hash) is DeepCool's and is read from the installed app. The
-patch appends under 500 bytes of code after it and redirects four places in it:
+patch appends about 500 bytes of code after it and redirects five places in it:
 
     where                         stock                         patched
     0x109A4  main, before loop    sets a "running" flag         ... and clears the patch's state
     0x109A8  main loop            lv_task_handler()             show a finished frame, then the same
+    0x64088  lv_task_handler      "start over with the tasks"   show a finished frame, then the same
     0x2F158  command dispatcher   reply(command, 0, status 0)   command 20 starts a frame, then the same
     0x34C54  USB, endpoint 1 OUT  "is this packet a command?"   while a frame is coming in, it is data
 
@@ -22,6 +27,7 @@ The new command, on endpoint 1 like the others:
         10  go ahead: send the JPEG in packets of up to 64 bytes, nothing after it
         11  not now: the last frame is not on screen yet, or the buffers are still being made. Ask again
         12  refused: size 0 or more than 128 KiB
+    The byte after the status is the patch's version (VERSION; 0 from the first patch, which had none).
     The stock firmware answers any unknown command with status 0, so 0 means "no direct drawing here".
 
 How it works. The frame is received inside the USB interrupt, into the one of two 128 KiB buffers that
@@ -31,6 +37,13 @@ of the image screen with lv_img_set_src, exactly as the stock firmware does with
 into RAM; LVGL redraws and the hardware decoder writes into the frame buffer. No file, no screen
 change. A frame that stalls for two seconds is given up, so a host that dies half way cannot leave
 the cooler taking commands for picture data.
+
+"The main loop" is two places. lv_task_handler only returns when no task is due, and it can go without
+returning for as long as the image screen's timer is faster than the screen's work: while an animation
+plays, and afterwards too, because a still inherits the animation's frame time as its timer (issue #22:
+version 1 hooked only the call in main and then took one frame and no more). So version 2 also shows a
+finished frame where lv_task_handler starts over with its task list, which it does after every task it
+has run.
 
 It needs the image screen (mode 2) with at least one stored picture: with none, the stock firmware
 hides the picture widget. A frame that arrives on another screen is dropped. The JPEG must be what
@@ -54,11 +67,17 @@ STATE = 0x2000F000                          # the patch's own RAM
 MAX_FRAME = 0x20000                         # bytes of JPEG a buffer holds
 COMMAND = 0x20
 GO, LATER, REFUSED = 0x10, 0x11, 0x12
+VERSION = 2                                 # of this patch, in every reply to the command (see CHANGES)
+CHANGES = {
+    1: "the first: draws a JPEG from USB. Answers 0 where the version is now",
+    2: "frames are also shown while lv_task_handler does not return (#22); the reply has the version",
+}
 TIMEOUT_MS = 2000
 
 # the stock firmware's own routines and data (real addresses, v2.70)
 SYMBOLS = {
     "lv_task_handler": 0x63E90,
+    "lv_ll_get_head": 0x38E5C,              # lv_ll_get_head(list): its first entry
     "lv_mem_alloc": 0x5C3C8,
     "lv_img_set_src": 0x58D34,
     "reply": 0x34D84,                       # reply(command, 0, status): builds and sends the answer
@@ -80,10 +99,11 @@ HEADER = 1 | 480 << 10 | 640 << 21          # lv_img_header_t: raw, 480 x 640
 HOOKS = [
     (0x109A4, "0121 0170", "bl init_hook"),             # movs r1, #1 ; strb r1, [r0]
     (0x109A8, None, "bl main_hook"),                    # bl lv_task_handler
+    (0x64088, None, "bl loop_hook"),                    # bl lv_ll_get_head, where lv_task_handler starts over
     (0x2F158, None, "bl command_hook"),                 # bl reply
     (0x34C54, "2078 aa28", "b.w usb_hook"),             # ldrb r0, [r4] ; cmp r0, #0xaa
 ]
-STOCK_CALLS = {0x109A8: "lv_task_handler", 0x2F158: "reply"}
+STOCK_CALLS = {0x109A8: "lv_task_handler", 0x64088: "lv_ll_get_head", 0x2F158: "reply"}
 BRANCHES = {"b", "bl", "cbz", "cbnz"} | {"b" + c for c in "eq ne hs lo mi pl vs vc hi ls ge lt gt le".split()}
 
 # state: +0 u8 phase (0 idle, 1 receiving, 2 ready to show)   +1 u8 buffers wanted   +2 u8 buffer on screen
@@ -103,7 +123,7 @@ init_clear:
     bne     init_clear
     bx      lr
 
-main_hook:
+show:                                   @ make the buffers when asked to, and show a frame that is all in
     push    {{r4, r5, r6, lr}}
     movw    r4, #{STATE & 0xFFFF}
     movt    r4, #{STATE >> 16}
@@ -160,8 +180,21 @@ main_drop:
     movs    r0, #0
     strb    r0, [r4, #0]                @ only now may the next frame start
 main_done:
-    pop.w   {{r4, r5, r6, lr}}
+    pop     {{r4, r5, r6, pc}}
+
+main_hook:
+    push    {{r4, lr}}
+    bl      show
+    pop.w   {{r4, lr}}
     b.w     lv_task_handler
+
+loop_hook:                              @ r0 = the task list, for the call this one replaced
+    push    {{r4, lr}}
+    mov     r4, r0
+    bl      show
+    mov     r0, r4
+    pop.w   {{r4, lr}}
+    b.w     lv_ll_get_head
 
 command_hook:                           @ r0 = command, r1 = 0, r2 = 0; runs in the USB interrupt
     cmp     r0, #{COMMAND}
@@ -215,10 +248,12 @@ command_out:                            @ the reply, made here: the stock routin
     movs    r0, #{COMMAND}
     strb    r0, [r4, #2]
     strb    r5, [r4, #3]                @ status
+    movs    r0, #{VERSION}
+    strb    r0, [r4, #4]
     movw    r0, #0x4948
     movt    r0, #0x4344
     str.w   r0, [r4, #42]               @ "HIDC"
-    addw    r0, r5, #{0x55 + 0x2E + COMMAND + sum(b"HIDC")}
+    addw    r0, r5, #{0x55 + 0x2E + COMMAND + VERSION + sum(b"HIDC")}
     strh    r0, [r4, #46]               @ sum16
     movs    r0, #1                      @ endpoint 1 IN
     mov     r1, r4
@@ -329,10 +364,10 @@ def _branch_target(code: bytes) -> int:
 def assemble(base: int) -> tuple[bytes, dict[str, int]]:
     """The patch's code for address `base`, and where its labels are."""
     ks = _assembler()
-    prologue = "".join(f".equ {name}, {address:#x}\n" for name, address in SYMBOLS.items())
     code, labels = b"", {}
     for routine in SOURCE.strip().split("\n\n"):        # one at a time: each starts with the label it is entered at
-        labels[routine.split(":")[0]] = base + len(code)
+        prologue = "".join(f".equ {name}, {address:#x}\n" for name, address in {**SYMBOLS, **labels}.items())
+        labels[routine.split(":")[0]] = base + len(code)   # (a routine can call the ones before it)
         part, _ = ks.asm(prologue + routine, base + len(code))
         code += bytes(part) + b"\x00" * (-len(part) % 4)
     _check_branches(code, base)
@@ -374,6 +409,45 @@ def build(stock: bytes) -> bytes:
     return bytes(image)
 
 
+TABLE = Path(__file__).resolve().parents[2] / "deephack" / "firmware_patch.py"
+TABLE_TEXT = """\"\"\"The direct drawing patch for the MYSTIQUE's firmware v2.70, as the bytes it changes.
+
+Made by `python tools/fw/patch.py --table` from the patch's source there, which is what to read (and
+what tests/test_firmware.py compares this with): do not edit. deephack.firmware applies it to DeepCool's
+own image, which is not part of deephack.
+\"\"\"
+VERSION = @VERSION@
+CHANGES = {
+@CHANGES@}
+STOCK_SHA256 = "@STOCK_SHA256@"      # MYSTIQUE_2.70.bin
+STOCK_SIZE = @STOCK_SIZE@
+SHA256 = "@SHA256@"            # the patched image
+JUMPS = {                 # offset in the file: the four bytes there afterwards
+@JUMPS@}
+CODE = bytes.fromhex(     # goes after the image's last byte
+@CODE@)
+"""
+
+
+def table(stock: bytes) -> str:
+    """The patch as a Python module of the bytes it changes (deephack/firmware_patch.py)."""
+    image = build(stock)
+    code = image[len(stock):].hex()
+    parts = {
+        "VERSION": str(VERSION),
+        "CHANGES": "".join(f'    {version}: "{text}",\n' for version, text in CHANGES.items()),
+        "STOCK_SHA256": STOCK_SHA256,
+        "STOCK_SIZE": str(len(stock)),
+        "SHA256": hashlib.sha256(image).hexdigest(),
+        "JUMPS": "".join(f'    {address - APP:#07x}: "{image[address - APP:address - APP + 4].hex()}",\n' for address, _, _ in HOOKS),
+        "CODE": "".join(f'    "{code[at:at + 96]}"\n' for at in range(0, len(code), 96)),
+    }
+    text = TABLE_TEXT
+    for name, value in parts.items():
+        text = text.replace(f"@{name}@", value)
+    return text
+
+
 def listing(stock: bytes) -> str:
     from capstone import CS_ARCH_ARM, CS_MODE_MCLASS, CS_MODE_THUMB, Cs
 
@@ -397,10 +471,15 @@ def main() -> int:
     ap.add_argument("stock", nargs="?", default=str(STOCK))
     ap.add_argument("-o", "--output", default=str(Path(__file__).resolve().parents[2] / "captures" / "MYSTIQUE_2.70_direct.bin"))
     ap.add_argument("--list", action="store_true", help="print the patch's code and stop")
+    ap.add_argument("--table", action="store_true", help=f"write the patch as a table of bytes to {TABLE.name} and stop")
     a = ap.parse_args()
     stock = Path(a.stock).read_bytes()
     if a.list:
         print(listing(stock))
+        return 0
+    if a.table:
+        TABLE.write_text(table(stock), encoding="utf8", newline="\n")
+        print(f"{TABLE}: version {VERSION}, {len(build(stock)) - len(stock)} bytes of code, {len(HOOKS)} jumps")
         return 0
     image = build(stock)
     out = Path(a.output)
@@ -408,7 +487,7 @@ def main() -> int:
     out.write_bytes(image)
     print(f"{out}: {len(image)} bytes ({len(image) - len(stock)} more than the stock image), "
           f"sha256 {hashlib.sha256(image).hexdigest()[:16]}...")
-    print("Not flashed, and not known to be accepted by the cooler's bootloader. Try it in the emulator:")
+    print("Not flashed. Try it in the emulator:")
     print(f"  python tools/emu/bench.py --firmware {out}")
     return 0
 

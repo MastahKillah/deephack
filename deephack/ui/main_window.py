@@ -3,14 +3,15 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import QDir, Qt, QTimer
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-                               QPushButton, QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+                               QProgressBar, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
-from .. import autostart
+from .. import autostart, firmware
 from ..config import Config
 from ..engine import Engine, quit_deepcool
 from ..modes import BY_ID, MODES
 from . import style
+from .firmware_dialog import FlashDialog
 from .widgets import ComboBox, ModeButton, OrderList, Preview, StatusDot, Switch
 
 
@@ -195,8 +196,89 @@ class MainWindow(QMainWindow):
         self._choice_row(dl, "Screen brightness", "", "brightness",
                          tuple((p, f"{p} %") for p in (100, 85, 70, 50, 30)))
         right.addWidget(display)
+
+        # what the cooler's screen runs, and the way to the firmware that draws straight from USB
+        fw, fl = _card()
+        fl.addWidget(_label("FIRMWARE", "section"))
+        self._fw_title = _label("")
+        self._fw_hint = _label("", "hint", wrap=True)
+        self._fw_result = _label("", "good", wrap=True)
+        self._fw_bar = QProgressBar()
+        self._fw_bar.setTextVisible(False)
+        self._fw_install = QPushButton("", objectName="primary")
+        self._fw_install.clicked.connect(lambda: self._ask_flash("direct"))
+        self._fw_restore = QPushButton("Back to DeepCool's firmware…")
+        self._fw_restore.clicked.connect(lambda: self._ask_flash("stock"))
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        buttons.addWidget(self._fw_install)
+        buttons.addWidget(self._fw_restore)
+        buttons.addStretch(1)
+        for widget in (self._fw_title, self._fw_bar, self._fw_hint, self._fw_result):
+            fl.addWidget(widget)
+        fl.addLayout(buttons)
+        right.addWidget(fw)
+        self._refresh_firmware()
         right.addStretch(1)
         return content
+
+    # ------------------------------------------------------------ firmware
+    def _ask_flash(self, which: str) -> None:
+        running = self._state.get("firmware")
+        if not running:
+            return
+        dialog = FlashDialog(which, running["bcd"], self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.engine.flash_firmware(which, dialog.stock_path)
+
+    def _refresh_firmware(self) -> None:
+        running, flash = self._state.get("firmware"), self._state.get("flash") or {}
+        stage = flash.get("stage")
+        busy = stage in ("sending", "restarting", "checking")
+        self._fw_bar.setVisible(busy)
+        self._fw_result.setVisible(stage in ("done", "failed") and not busy)
+        if stage in ("done", "failed"):
+            self._fw_result.setObjectName("good" if stage == "done" else "bad")
+            self._fw_result.setStyleSheet(f"color: {style.OK if stage == 'done' else style.ERR};")
+            self._fw_result.setText(flash.get("message", ""))
+        install = restore = False
+        if busy:
+            if stage == "sending":
+                self._fw_bar.setRange(0, 1000)
+                self._fw_bar.setValue(round(flash.get("progress", 0.0) * 1000))
+                title = f"Sending the firmware · {round(flash.get('progress', 0.0) * 100)} %"
+            else:
+                self._fw_bar.setRange(0, 0)                    # no telling how far it is: the bar just moves
+                title = ("Asking the cooler what it runs" if stage == "checking" else
+                         f"The cooler is writing its firmware · {flash.get('seconds', 0)} s" if flash.get("off") else
+                         "Waiting for the cooler to restart")
+            hint = "Do not unplug the cooler, and do not shut the PC down or let it sleep."
+        elif not running:
+            title = "The cooler is not connected"
+            hint = "Its firmware shows here once it is."
+        else:
+            patch, known = running["patch"], running["bcd"] in firmware.KNOWN
+            restore = patch > 0 and known
+            if patch == 0:
+                title = f"DeepCool's firmware {running['version']}"
+                hint = ("Every picture is written to the cooler's flash before it shows. The direct drawing firmware "
+                        "draws them straight from USB instead: nothing is written, and pictures can move.")
+                install = known
+                self._fw_install.setText("Install direct drawing…")
+            elif patch < firmware.PATCH_VERSION:
+                title = f"Direct drawing firmware, version {patch}"
+                hint = f"Pictures are drawn straight from USB. This deephack has version {firmware.PATCH_VERSION} of it, with fixes."
+                install = known
+                self._fw_install.setText(f"Update to version {firmware.PATCH_VERSION}…")
+            else:
+                title = f"Direct drawing firmware, version {patch}"
+                hint = "Pictures are drawn straight from USB: nothing is written to the cooler's flash."
+            if not known:
+                hint = f"deephack does not know firmware {running['version']} and cannot replace it."
+        self._fw_title.setText(title)
+        self._fw_hint.setText(hint)
+        self._fw_install.setVisible(install)
+        self._fw_restore.setVisible(restore)
 
     def _choice_row(self, parent: QVBoxLayout, title: str, hint: str, key: str, choices) -> ComboBox:
         parent.addWidget(_label(title))
@@ -368,7 +450,9 @@ class MainWindow(QMainWindow):
         if dev == "connected":
             self._dot.set_color(style.OK)
             self._device_title.setText("Cooler connected")
-            self._device_sub.setText("MYSTIQUE · USB")
+            running = state.get("firmware")
+            self._device_sub.setText("MYSTIQUE · USB" if not running else f"Firmware {running['version']}"
+                                     + (" · direct drawing" if running["patch"] else " · DeepCool's own"))
         elif dev == "busy":
             self._dot.set_color(style.WARN)
             self._device_title.setText("Display is in use")
@@ -393,6 +477,7 @@ class MainWindow(QMainWindow):
             now = state.get("preview_status", "") if state.get("preview") == self._viewing else ""
         self._now.setText(self._now.fontMetrics().elidedText(now, Qt.TextElideMode.ElideRight, 350))
         self._refresh_caption()
+        self._refresh_firmware()
 
     def _refresh_caption(self) -> None:
         s = self._state

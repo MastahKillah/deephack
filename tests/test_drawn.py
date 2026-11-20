@@ -183,3 +183,30 @@ def test_pictures_that_come_many_a_second_are_sent_smaller(tmp_path, monkeypatch
     eng._mode.tick = None
     _show(eng, noisy, steps=1)
     assert cooler.screen[1] == engine.frame_jpeg(noisy) and len(fast) < len(cooler.screen[1])
+
+
+def test_the_version_of_the_patch_is_read_from_the_cooler(cooler):
+    with device.Mystique() as m:
+        assert m.draw_version() == 0 and not m.can_draw()     # DeepCool's firmware
+        cooler.direct = True
+        assert m.draw_version() == 1 and m.can_draw()         # the first patch says nothing about itself
+        cooler.direct = 2
+        assert m.draw_version() == 2 and m.can_draw()
+
+
+def test_only_the_first_patch_stops_taking_frames_after_an_animation(cooler):
+    cooler.gifs.append(["loop", [device.encode_jpeg(RED)], 300])
+    jpeg = device.encode_jpeg(BLUE)
+    for version, taken in ((1, 1), (2, 3)):
+        cooler.direct, cooler.draws = version, 0
+        with device.Mystique() as m:
+            m.set_mode(device.MODE_SITUATIONAL)
+            m.set_mode(device.MODE_MOTION)
+            m.show_slot(0, device.TYPE_GIF)
+            m.show_slot(0)
+            for _ in range(3):
+                try:
+                    m.draw_jpeg(jpeg, patience=0.01)
+                except TimeoutError:
+                    pass
+        assert cooler.draws == taken

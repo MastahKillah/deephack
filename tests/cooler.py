@@ -23,12 +23,17 @@ NO_EFFECT = {0x05, 0x06, 0x0B, 0x0C, 0x0D, 0x0E, 0x10, 0x11, 0x15, 0x16, 0x17}  
 class CoolerModel:
     def __init__(self, stored_stills: int = 1, stored_gifs: int = 0, uuid: str = "0123456789ABCDEF0123456789ABCDEF"):
         self.uuid = uuid
-        self.direct = False                     # True: the direct drawing firmware (tools/fw/patch.py), command 20
+        self.bcdDevice = 0x0246                 # what USB reports of the firmware: 2.70
+        self.firmwares: dict[bytes, object] = {}    # the images a firmware update may bring: image -> `direct` with it
+        self.updates = 0                        # firmware updates taken; each restarts the cooler
+        self.off_bus = 0                        # ... which takes it off the bus for this many looks (`look`)
+        self.direct = False                     # the direct drawing firmware (tools/fw/patch.py), command 20: True
+                                                # or 1 for the first patch, 2 and up for that version of it
         self.drawn: bytes | None = None         # the JPEG drawn from USB that is on screen in place of the stored still
         self.draws = 0
         self._drawing: dict | None = None       # a frame that is coming in
         self._animated = False                  # an animation has been on the image screen since it was entered
-        self.stuck = False                      # ... and a frame was drawn after: no further frame is taken
+        self.stuck = False                      # ... and a frame was drawn after: no further frame is taken (patch 1)
         self.mode: int | None = None            # device.MODE_*; None until the first CMD_MODE
         self.stills = [[f"app-still-{i}", b""] for i in range(stored_stills)]       # [file id, jpeg] by index
         self.gifs = [[f"app-gif-{i}", [], 1000] for i in range(stored_gifs)]       # [file id, frames, ms]
@@ -66,8 +71,17 @@ class CoolerModel:
     def _violate(self, why: str) -> None:
         self.violations.append(why)
 
+    def look(self) -> int | None:
+        """What deephack.firmware.on_bus sees: bcdDevice, or None while the cooler restarts."""
+        if self.off_bus:
+            self.off_bus -= 1
+            return None
+        return self.bcdDevice
+
     # ---- the pyusb surface the driver uses
     def write(self, ep: int, data, timeout=None) -> int:
+        if self.off_bus:
+            raise usb.core.USBError("the cooler is restarting")
         data = bytes(data)
         is_command = len(data) == 48 and data[:2] == b"\xaa\x2e"
         if self._drawing is not None:           # while a frame is coming in, everything on endpoint 1 is picture data
@@ -156,12 +170,13 @@ class CoolerModel:
         elif cmd == device.CMD_DIRECT and self.direct:
             size, total = struct.unpack_from("<IH", payload)
             if not 0 < size <= device.DIRECT_MAX:
-                reply = bytes([device.DIRECT_REFUSED])
+                status = device.DIRECT_REFUSED
             elif self.stuck:
-                reply = bytes([device.DIRECT_LATER])
+                status = device.DIRECT_LATER
             else:
                 self._drawing = {"size": size, "sum": total, "data": b""}
-                reply = bytes([device.DIRECT_GO])
+                status = device.DIRECT_GO
+            reply = bytes([status, int(self.direct) if int(self.direct) > 1 else 0])    # the first patch: no version
         elif cmd not in NO_EFFECT and cmd not in (device.CMD_FACTORY_RESET, device.CMD_DELETE_ALL):
             self._reply(ep, cmd, known=False)
             return
@@ -176,7 +191,9 @@ class CoolerModel:
         if len(frame["data"]) < frame["size"]:
             return
         self._drawing = None
-        self.stuck = self._animated             # seen on the cooler: one frame is taken, then "later" for good
+        # Patch 1, seen on the cooler: after an animation one frame is taken, then "later" for good (the
+        # frame is never shown, issue #22). Patch 2 shows frames in that state too.
+        self.stuck = self._animated and int(self.direct) < 2
         if device.sum16(frame["data"]) != frame["sum"]:
             self._violate("a drawn frame does not match its sum16: the firmware does not show it")
         elif device.jpeg_size(frame["data"]) != (device.WIDTH, device.HEIGHT):
@@ -189,7 +206,17 @@ class CoolerModel:
     # ---- uploads: 0F, then a 64 byte header and the data in 64 byte packets per file, then dcldfinish
     def _upload_packet(self, data: bytes) -> None:
         up = self._upload
-        if data.startswith(b"dcldfinish"):
+        cur = up.get("current") if up["stage"] == "data" else None
+        if cur is not None and cur["type"] == device.FILE_FIRMWARE and data.startswith(b"dcldfinish"):
+            # A firmware update that is given up. The firmware counts the packet as data first (seen in the
+            # emulator): with under 55 bytes missing it completes the file, and a matching sum flashes it.
+            cur["data"] += data[:cur["size"] - len(cur["data"])]
+            if len(cur["data"]) == cur["size"] and device.sum16(cur["data"]) == cur["sum"] & 0xFFFF:
+                self._flashed(cur["data"])
+            else:
+                self._upload = None
+                self.log.append(("update given up", len(cur["data"])))
+        elif data.startswith(b"dcldfinish"):
             self._finish(data)
         elif len(data) > 64:
             self._violate(f"{len(data)} byte packet in an upload (at most 64)")
@@ -212,8 +239,23 @@ class CoolerModel:
             if len(cur["data"]) >= cur["size"]:
                 if device.sum16(cur["data"]) != cur["sum"] & 0xFFFF:
                     self._violate("upload data does not match the header's sum16: the firmware waits forever")
+                elif cur["type"] == device.FILE_FIRMWARE:      # stored and restarted at once, without dcldfinish
+                    self._flashed(cur["data"])
+                    return
                 up["files"].append(cur)
                 up["stage"] = "header"
+
+    def _flashed(self, image: bytes) -> None:
+        """A whole firmware image with the right sum: the firmware stores it and restarts into its bootloader."""
+        self._upload = None
+        if image not in self.firmwares:
+            self._violate("a firmware update with an image that is not a known one: that can kill the cooler for good")
+            return
+        self.direct = self.firmwares[image]
+        self.updates, self.off_bus = self.updates + 1, 3
+        self.mode = self.shown = self.drawn = self._drawing = None
+        self._animated = self.stuck = False
+        self.log.append(("flashed", len(image)))
 
     def _finish(self, data: bytes) -> None:
         up, self._upload = self._upload, None

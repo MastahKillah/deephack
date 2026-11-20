@@ -137,9 +137,24 @@ sum, then writes it to the filesystem in 4 KiB chunks. This is true for every fi
   - still: `SD:IMG/NNN_<id>/angle_0.jpg`
   - animation: `SD:GIF/NNN_<id>/angle_0/indexNNN.jpg` plus a `config.cfg` holding `gifrate` (frame
     count) and `gifalltime` (total ms). Per-frame time = total / count, default 100 ms.
-- **Suspected cause of the upload-hang:** the data-receive state has no timeout and only advances when
-  both the byte count and the sum16 match. An unfinished/mismatched upload can leave it stuck.
-  *Inferred, not confirmed.*
+- **An upload that does not finish leaves the firmware waiting.** The receive state (`FUN_000200ec`,
+  state byte at `0x200006D4`: 0 waits for a header, 1 takes data) only moves on when the byte count is
+  reached **and** the sum16 matches. With a wrong sum it stays in state 1 with nothing left to take;
+  with bytes missing it takes whatever comes next for them, the header and the JPEG of the next
+  picture upload included. *Seen in the emulator:* a firmware update stopped 200 packets short, then a
+  picture upload: the picture is not stored (its bytes went into the unfinished file), and the one
+  after it is. Nothing was flashed in any of this: the file never became whole.
+- **`dcldfinish` calls an upload off.** Every packet is compared with it, in every state: it sets the
+  flag that ends the upload loop and frees the staging buffer, and the state is 0 afterwards. But in
+  state 1 the packet is **counted as data first**. With fewer than its 55 bytes missing it completes
+  the file, and if the sum then matched, a file with a wrong end would be stored (for a firmware
+  update: flashed). `deephack.firmware.end_upload` sends it only where that cannot be, and for both
+  images that can be sent it never can, wherever the upload stops (`tests/test_firmware.py`).
+- **A firmware update that arrives wrong is not flashed.** *Seen in the emulator*
+  (`tests/test_flash.py`), with the first 68 KiB of the stock image standing in: a header that
+  announces another sum, one byte changed on the way, and an upload the sender stops half way. In each
+  case nothing is stored, nothing restarts, the firmware answers commands, and after `dcldfinish` the
+  next upload is a picture again.
 
 ## Display path
 
@@ -214,12 +229,16 @@ operations: confirm SWD access → dump → understand update verification → o
 to `captures/`, which is not in the repository). **It runs in the emulator, and since 19 Nov 2026 on the
 cooler** (see "On the cooler" below).
 
-It appends 472 bytes of code after the image and changes sixteen bytes of it: four 4-byte jumps.
+It appends 504 bytes of code after the image and changes twenty bytes of it: five 4-byte jumps. (This
+is version 2. Version 1, which the cooler ran from 19 Nov 2026, was 472 bytes and four jumps: it had no
+hook in `lv_task_handler` and reported no version.) The app carries it as a table of those bytes,
+`deephack/firmware_patch.py`, written by `python tools/fw/patch.py --table`; a test compares the two.
 
 | where | stock | patched |
 | --- | --- | --- |
 | `0x109A4`, `main` before its loop | sets a "running" flag | the same, and clears the patch's state |
 | `0x109A8`, the main loop | `lv_task_handler()` | shows a finished frame, then the same |
+| `0x64088`, in `lv_task_handler` | starts over with the first task (`lv_ll_get_head`) | shows a finished frame, then the same |
 | `0x2F158`, end of the command dispatcher | sends the reply | command `20` starts a frame and sends its own reply; anything else as before |
 | `0x34C54`, USB interrupt, endpoint 1 OUT | "does this packet start `AA 2E`?" | while a frame is coming in the packet is picture data; otherwise as before |
 
@@ -232,6 +251,9 @@ to 64 bytes. The reply's status byte says what to do:
 | `11` | not now: the last frame is not on screen yet, or the buffers are still being made. Ask again |
 | `12` | refused: size 0 or more than 128 KiB |
 | `00` | what the **stock** firmware answers to every command it does not know. `deephack.device` takes it for "no direct drawing here" and sends no picture data (data without an upload in progress would be left in the endpoint's buffer, and the endpoint would stay shut) |
+
+The byte after the status is the **version of the patch** (2 now; version 1 leaves it 0). A command
+with size 0 is the way to ask for it: `draw_version()` in the driver.
 
 How it works:
 
@@ -257,6 +279,20 @@ What was needed to know for it, all seen in the emulator:
 - **The main loop is `for (;;) lv_task_handler();`** (`0x109A8`). Everything else, the screen logic
   included, is an LVGL task: the screen selector and the image screen's logic both run from the screen's
   timer, every 100 ms. A frame handed over there would wait up to 100 ms, so the patch sits in the loop.
+- **`lv_task_handler` (`0x63E90`) does not return while a task is due.** It is LVGL 7's: after every
+  task it has run it starts over with the first one (`0x6407E`: it clears its "created" and "deleted"
+  flags and calls `lv_ll_get_head`, `0x38E5C`, at `0x64088`), and it only returns after a pass in which
+  none ran. A task that is due again before its own work is done keeps it in there for good. The image
+  screen's timer is such a task whenever its period is short: it reads the next file and redraws on
+  every tick. Its period is 100 ms when the screen is entered; **showing an animation sets it to the
+  animation's frame time** (`gifalltime / gifrate`, in `FUN_00062b40`, which deletes the timer and makes
+  a new one), **and showing a still afterwards does not set it back**. So after a fast animation the
+  main loop's call site is not reached again until the image screen is left and entered. *Seen in the
+  emulator:* with a 4-frame animation of 20 ms a frame, `0x109A8` is passed 82 times in the 1.5 s after
+  "show" and not once after that, also not after a still is shown; with 100 ms a frame it comes back
+  with the still. That is what version 1 of the patch ran into on the cooler ("On the cooler", below),
+  and why version 2 has its second hook where the handler starts over: that place is passed after every
+  task, and no task is half done there.
 - **The heap** (`lv_mem_alloc`, `0x5C3C8`) is 8 MiB at the start of the SDRAM, `0x80000000`; the frame
   buffers come from it too (`0x800061A0` and `0x8009C1C0`). After an upload about 4 MiB of it had ever
   been in use, 2 MiB of that the upload's staging buffer.
@@ -301,7 +337,9 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   that took an upload was not looked at, so an upload to the patched firmware on the cooler is not
   proven yet.
 
-- **After an animation the patch takes one frame and no more.** Show an animation (`08`, type 1), then
+- **After an animation the patch takes one frame and no more** (version 1; explained and fixed since,
+  see "`lv_task_handler` does not return while a task is due" above. The fix runs in the emulator,
+  `tests/test_direct_draw.py`; on the cooler it has yet to be tried). Show an animation (`08`, type 1), then
   a still, then draw: the first frame gets "go ahead", every one after it "later" (`11`), for as long as
   was tried (3 s, a frame asked for every 50 ms). It makes no difference whether anything was drawn
   while the animation was on. Over the animation itself it is the same, and the drawn frame is not seen:
@@ -437,6 +475,7 @@ How far the stock firmware gets (v2.70), and what each step needed:
 | an upload | the upload screen and the image screen in `ui.bin`, with the widgets their code uses |
 | drawing at all | widgets marked visible in `ui.bin` (a screen that is not is made hidden, and nothing is redrawn) |
 | a stored picture on screen | a model of the JPEG decoder (`tools/emu/jpegdec.py`) |
+| a stored animation | the debug port's "sent" flag (`UART0.CTRL` bit 0): after storing an animation the firmware prints `add_one_gifpath_to_giflist,path_temp=` and waits for each byte to go out |
 
 It then runs its **main loop**: the logo screen for 4 s, then the screen for its mode, USB commands
 answered, the tilt sensor polled over I2C. The frame buffer is saved as a picture after every run
@@ -599,8 +638,9 @@ whether a flashed image is accepted. The emulator makes patches testable; it can
   and no sum the patch breaks. What it does check, if anything, is still unknown: a broken image may
   well be written as readily
 - Is SWD locked? (the only recovery path if a flashed image does not start)
-- Why the patched firmware stops taking frames once an animation has been on the image screen (see "On
-  the cooler"): the one known way to make direct drawing hang, worked around in the engine, not fixed
+- Version 2 of the patch on the cooler: it has only run in the emulator
+- How long the cooler stays in its upload loop by itself when an upload stops (the 15.7 million rounds);
+  `dcldfinish` ends it at once, so nothing depends on it any more
 - Why `08` for the slot already on show does not bring the stored picture back after a drawn frame
   (seen on the cooler; in the emulator test `08` after a new upload does, which is not the same case)
 - Does the firmware ever write to its own flash behind the image?

@@ -18,12 +18,15 @@ uploads. There is no image of v2.71, which some coolers come with (docs/firmware
 firmware"): for those, flashing either image is a downgrade that cannot be undone.
 
 Quit the DeepCool app and deephack first: only one program can have the cooler.
+
+The sending itself is deephack.firmware, which is also what the app's "Firmware" section uses; this
+tool is for trying an image that the app does not carry yet ("patched" is assembled from patch.py's
+source here, the app sends the table made from it).
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
-import struct
 import sys
 import time
 from pathlib import Path
@@ -32,86 +35,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import patch  # noqa: E402
 
-from deephack import device  # noqa: E402
-
-LIMIT = 2 * 1024 * 1024                     # the firmware's staging buffer; it refuses 2 MiB and more
-RAM = range(0x2000_0000, 0x2001_0001)       # where a stack pointer can be
-
-
-def version(bcd: int) -> str:
-    """bcdDevice as the version DeepCool means: the low byte is the minor version as a number (0x0246: 2.70)."""
-    return f"{bcd >> 8}.{bcd & 0xFF:02d}"
-
-
-def check_image(image: bytes) -> None:
-    """Refuse what cannot be a firmware for this chip, or would not arrive whole."""
-    if not 0x10000 < len(image) < LIMIT:
-        raise ValueError(f"{len(image)} bytes is not a plausible firmware size")
-    stack, reset = struct.unpack_from("<II", image, 0)
-    if stack not in RAM or not reset & 1 or not patch.APP <= reset < patch.APP + len(image):
-        raise ValueError(f"no vector table at the start (stack {stack:#x}, reset {reset:#x})")
-    eaten = [at for at in range(0, len(image), 64) if image[at:at + 2] == b"\xaa\x2e"]
-    if eaten:
-        raise ValueError(f"the packet at {eaten[0]:#x} starts AA 2E: the firmware would take it for a command")
-
-
-def update_header(image: bytes) -> bytes:
-    """The upload header for a firmware update: type 0, size, sum16. The firmware reads nothing else of it."""
-    h = bytearray(64)
-    h[0:4] = b"DCLd"
-    h[4] = device.FILE_FIRMWARE
-    struct.pack_into("<II", h, 5, len(image), device.sum16(image))
-    h[20:52] = b"0" * 32
-    struct.pack_into("<H", h, 62, device.sum16(h[:62]))
-    return bytes(h)
-
-
-def send_update(driver, image: bytes, progress=None) -> None:
-    """Hand the image to the running firmware. After the last packet it stores the file and restarts."""
-    check_image(image)
-    # The firmware takes an upload while it changes from the upload screen to its mode's screen: with no
-    # mode set (a fresh emulated cooler) it never does. Image mode is what every upload here ran under.
-    driver.set_mode(device.MODE_MOTION)
-    driver.command(device.CMD_START_DOWNLOAD)
-    driver.dev.write(1, update_header(image), 5000)
-    for at in range(0, len(image), 64):
-        driver.dev.write(1, image[at:at + 64], 5000)
-        if progress and at % 0x4000 == 0:
-            progress(at)
-
-
-def find():
-    import libusb_package
-
-    return libusb_package.find(idVendor=device.VID, idProduct=device.PID)
-
-
-def wait_for_restart(before: int, patience: float = 300.0) -> int | None:
-    """Watch the cooler leave the bus and come back; its bcdDevice then, or None if it does not come back."""
-    import usb.util
-
-    started, gone = time.monotonic(), None
-    while time.monotonic() - started < patience:
-        time.sleep(0.5)
-        dev = find()
-        elapsed = time.monotonic() - started
-        if dev is None:
-            if gone is None:
-                gone = elapsed
-                print(f"  {elapsed:5.1f} s: the cooler left the bus")
-            continue
-        bcd = dev.bcdDevice
-        usb.util.dispose_resources(dev)
-        if gone is not None:
-            print(f"  {elapsed:5.1f} s: the cooler is back, firmware {version(bcd)}")
-            return bcd
-        if bcd != before:                    # restarted faster than we looked
-            print(f"  {elapsed:5.1f} s: the cooler answers as firmware {version(bcd)}")
-            return bcd
-        if elapsed > 60 and gone is None:
-            print(f"  {elapsed:5.1f} s: the cooler never left the bus: it did not restart")
-            return bcd
-    return None
+from deephack import device, firmware  # noqa: E402
+from deephack.firmware import check_image, send_update, update_header, version  # noqa: E402,F401
 
 
 def main() -> int:
@@ -121,18 +46,17 @@ def main() -> int:
     ap.add_argument("--i-accept-the-risk", action="store_true", help="really flash: the cooler may not survive it")
     a = ap.parse_args()
 
-    dev = find()
-    if dev is None:
+    before = firmware.on_bus()
+    if before is None:
         sys.exit("MYSTIQUE (3633:0009) not found on USB")
-    before = dev.bcdDevice
     print(f"the cooler runs firmware {version(before)} (bcdDevice {before:#06x})")
     if a.what == "check":
         with device.Mystique() as m:
-            print("it answers: uuid", m.uuid(), "| direct drawing:", "yes" if m.can_draw() else "no")
+            print("it answers: uuid", m.uuid(), "| direct drawing patch:", m.draw_version() or "none")
         return 0
 
     stock = Path(a.stock).read_bytes()
-    if hashlib.sha256(stock).hexdigest() != patch.STOCK_SHA256:
+    if not firmware.is_stock(stock):
         sys.exit(f"{a.stock} is not the MYSTIQUE_2.70.bin this was made for")
     image = patch.build(stock) if a.what == "patched" else stock
     check_image(image)
@@ -144,18 +68,28 @@ def main() -> int:
         print("sending (do not unplug, do not switch off) ...")
         try:
             send_update(m, image, progress=lambda at: print(f"  {at * 100 // len(image):3d} %", end="\r", flush=True))
-        except Exception as e:                                      # noqa: BLE001
-            sys.exit(f"\nsending failed before the end ({e}): the firmware has not been given a whole file, "
-                     "so nothing is flashed. It may sit in its upload screen for a while.")
+        except firmware.SendFailed as e:
+            sys.exit(f"\nsending failed after {e.sent} bytes ({e}): the firmware has not been given a whole file, so nothing "
+                     "is flashed. " + ("It was told that the upload is over." if e.ended else
+                                       "It could NOT be told that the upload is over: send it nothing until it was off and on."))
         print("  100 %: sent. The firmware stores it and restarts into its bootloader.")
-    after = wait_for_restart(before)
-    if after is None:
+    seen = {"state": "waiting"}
+
+    def report(seconds: float, state: str) -> None:
+        if state != seen["state"]:
+            seen["state"] = state
+            print(f"  {seconds:5.1f} s: the cooler {'left the bus' if state == 'off' else 'is back'}")
+
+    outcome, after = firmware.wait_for_restart(report=report)
+    if outcome == "gone":
         print("The cooler has not come back in five minutes. Leave it powered a while longer, then power-cycle the PC.")
         return 1
+    if outcome == "stayed":
+        print("The cooler never left the bus: it did not restart.")
     time.sleep(3.0)
     try:
         with device.Mystique() as m:
-            print("it answers: uuid", m.uuid(), "| direct drawing:", "yes" if m.can_draw() else "no")
+            print(f"firmware {version(after)}; it answers: uuid", m.uuid(), "| direct drawing patch:", m.draw_version() or "none")
     except Exception as e:                                          # noqa: BLE001
         print(f"it is on the bus but does not answer yet: {e}")
         return 1

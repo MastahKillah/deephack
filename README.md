@@ -73,6 +73,9 @@ autostart entry.
   [Protocol](#protocol)) deephack draws its pictures straight from USB instead, and Claude Pet
   and Scene, which are stored animations otherwise, are drawn anew whenever something in them moves:
   nothing is stored but one plain black picture, once, for the frames to go over.
+  The "Firmware" section at the bottom of the window says which firmware the cooler runs and can install
+  that one, or DeepCool's own again. **Read what it says first: a firmware update that goes wrong can
+  leave the cooler's screen dead for good.**
   A slide show of the stored pictures is the exception: with that switched on, ours is stored as before.
   Where it does store, deephack rate-limits
   writes (at most one every 8 seconds, tracks have to settle before they are drawn), but the flash
@@ -268,7 +271,10 @@ second at most.
 
 **Drawing without storing** is not something the stock firmware can do. `tools/fw/patch.py` builds a
 firmware that can: one new command (`20`, size and sum16, then the JPEG) puts a frame on screen straight
-from RAM, and the driver has `can_draw()` and `draw_jpeg()` for it. It runs in the emulator
+from RAM, and the driver has `draw_version()` and `draw_jpeg()` for it. The app installs it from its
+"Firmware" section (`deephack/firmware.py`: the patch as a table of some 500 bytes, put on DeepCool's
+v2.70 image, which is read from the installed DeepCool app and checked by its hash; deephack does not
+carry DeepCool's firmware). It runs in the emulator
 (`python tools/emu/bench.py --firmware ...`, and `tests/test_direct_draw.py`) and, since 19 Nov 2026,
 **on one cooler**: `tools/fw/flash.py patched` sent it through the cooler's update channel, the cooler
 was off the bus for 12 seconds and came back drawing. Measured there, from the host: a 41 KB frame 16
@@ -287,14 +293,24 @@ Two things the engine works around, both seen on the cooler:
   selected: the drawn frame stays. Showing a different slot works, and so does leaving the image screen
   (mode `1`, 0.15 s, mode `2`), which is what the engine does.
 - Frames are drawn over a stored **still**. Over an animation the next animation frame takes the screen
-  back, and worse: once an animation has been on the image screen, the firmware takes one frame and
-  answers "later" to every one after it, also when a still is shown again. Leaving the image screen and
-  coming back clears that, so the engine does it every time before it starts to draw.
+  back. And with the first version of the patch, once a fast animation had been on the image screen the
+  firmware took one frame and answered "later" to every one after it, also when a still was shown
+  again: the still keeps the animation's frame time as its timer, the firmware's task loop never comes
+  round, and the patch was only called from there. Version 2 of the patch is also called from inside
+  that loop. Leaving the image screen and coming back clears it on either, so the engine still does
+  that every time before it starts to draw.
 
-**A flash that goes wrong cannot be undone from USB.** That it worked once, on a cooler that already ran
-DeepCool's v2.70, says nothing certain about another unit: read "Which firmware" and "Direct drawing" in
+The patch has a version, which the cooler reports in its answer to `20` (`draw_version()`; the first
+patch reports none and counts as 1). The app offers an update when it carries a newer one.
+
+**A flash that goes wrong cannot be undone from USB.** That it worked on one cooler says nothing certain
+about another unit: read "Which firmware" and "Direct drawing" in
 [docs/firmware-analysis.md](docs/firmware-analysis.md) first. A cooler that reports 2.71 would be
-downgraded by it, and there is no 2.71 image to go back to.
+downgraded by it, and there is no 2.71 image to go back to. What can be tested without a cooler is: the
+sender against the stock firmware in the emulator (the image arrives byte for byte and the firmware
+restarts; an image that arrives damaged or short is not stored, and "dcldfinish" calls such an upload
+off), and the app's part against a model of the cooler. What cannot be is the bootloader, which does
+the flashing: it is not in the update file.
 
 `python -m deephack.device --help` exposes the driver on the command line.
 

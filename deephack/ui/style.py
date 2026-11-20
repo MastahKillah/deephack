@@ -47,6 +47,19 @@ QPushButton:hover {{ border-color: {ACCENT}; }}
 QPushButton:pressed {{ background: {ACCENT_SOFT}; }}
 QPushButton#primary {{ background: {ACCENT}; border: none; color: white; font-weight: 600; }}
 QPushButton#primary:hover {{ background: #8e80ff; }}
+QPushButton#danger {{ background: {ERR}; border: none; color: white; font-weight: 600; }}
+QPushButton#danger:hover {{ background: #f47a84; }}
+QPushButton:disabled, QPushButton#danger:disabled {{ background: {CARD}; border: 1px solid {BORDER}; color: {MUTED}; }}
+
+QDialog {{ background: {BG}; }}
+#risk {{ background: #3a1d22; border: 1px solid #6b2a33; border-radius: 8px; padding: 10px 12px; color: #ffd5d9; }}
+#good {{ color: {OK}; font-size: 9pt; }}
+#bad {{ color: {ERR}; font-size: 9pt; }}
+QCheckBox {{ spacing: 8px; }}
+QCheckBox::indicator {{ width: 15px; height: 15px; border-radius: 4px; border: 1px solid {MUTED}; background: transparent; }}
+QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; image: url("@CHECK@"); }}
+QProgressBar {{ background: {BG}; border: 1px solid {BORDER}; border-radius: 4px; max-height: 6px; min-height: 6px; }}
+QProgressBar::chunk {{ background: {ACCENT}; border-radius: 3px; }}
 
 QLineEdit, QComboBox {{
     background: {BG}; border: 1px solid {BORDER}; border-radius: 8px; padding: 7px 10px; selection-background-color: {ACCENT};

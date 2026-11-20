@@ -23,6 +23,7 @@ import patch  # noqa: E402
 
 pytestmark = pytest.mark.skipif(not boot.DEFAULT_IMAGE.exists(), reason="DeepCool's firmware image is not installed")
 STORED_ID = "0123456789abcdef0123456789abcdef"
+LOOP_ID = "fedcba9876543210fedcba9876543210"
 
 
 def card(colour, box, quality=80) -> bytes:
@@ -88,8 +89,9 @@ def cooler(stock_image, tmp_path_factory):
     return cooler
 
 
-def test_patch_only_adds_code_and_four_jumps(stock_image):
+def test_patch_only_adds_code_and_five_jumps(stock_image):
     patched = patch.build(stock_image)
+    assert len(patch.HOOKS) == 5
     assert patched[len(stock_image):] == patch.assemble(patch.APP + len(stock_image))[0]
     changed = [at for at in range(len(stock_image)) if patched[at] != stock_image[at]]
     hooks = {address - patch.APP + i for address, _, _ in patch.HOOKS for i in range(4)}
@@ -108,7 +110,7 @@ def test_stock_firmware_is_not_sent_a_frame():
     """The stock firmware answers the unknown command with 'ok': the driver must not take that for a yes."""
     cooler = bench.EmulatedCooler()
     driver = cooler.driver()
-    assert driver.can_draw() is False
+    assert driver.can_draw() is False and driver.draw_version() == 0
     sent = cooler.machine.usb.delivered
     with pytest.raises(RuntimeError, match="cannot draw"):
         driver.draw_jpeg(card("#802020", (10, 10, 50, 50)))
@@ -125,7 +127,7 @@ def test_patched_firmware_still_does_what_the_stock_one_does(cooler, tmp_path):
 
 def test_frames_are_drawn_from_ram_without_a_file(cooler, tmp_path):
     driver, decoder = cooler.driver(), cooler.machine.jpeg
-    assert driver.can_draw()
+    assert driver.can_draw() and driver.draw_version() == patch.VERSION == max(patch.CHANGES)
     sources = []
     for colour, box in (("#802020", (200, 100, 400, 300)), ("#208020", (50, 400, 250, 600)), ("#202080", (300, 300, 460, 620))):
         jpeg = card(colour, box)
@@ -186,3 +188,32 @@ def test_stored_pictures_still_work_after_direct_frames(cooler, tmp_path):
     driver.draw_jpeg(frame)
     cooler.run_for(0.3)
     assert on_screen(cooler, frame, tmp_path)
+
+
+def test_frames_are_shown_while_the_task_handler_never_returns(cooler, stock_image, tmp_path):
+    """Issue #22. A still inherits the frame time of the animation shown before it as its screen timer.
+    With a fast animation that timer is always due, lv_task_handler does not return, and the hook in the
+    main loop is not reached: the first patch took one frame then and answered "later" for good."""
+    driver, blocks = cooler.driver(), cooler.machine.blocks
+    main_hook = patch.assemble(patch.APP + len(stock_image))[1]["main_hook"]
+    loop = [card(colour, (100, 100 + 60 * i, 380, 160 + 60 * i), quality=60)
+            for i, colour in enumerate(("#600000", "#006000", "#000060", "#606000"))]
+    driver.upload_gif(LOOP_ID, loop, 80)                      # 20 ms a frame
+    cooler.run_for(1.0)
+    driver.show_slot(0, device.TYPE_GIF)
+    cooler.run_for(1.5)
+    shown, passes = state(cooler)["shown"], blocks[main_hook]
+    over = card("#804000", (60, 60, 200, 200))
+    driver.draw_jpeg(over)                                    # over the animation: taken, and replaced by its next frame
+    cooler.run_for(0.3)
+    assert state(cooler)["shown"] == shown + 1 and state(cooler)["phase"] == 0
+
+    driver.show_slot(0)
+    cooler.run_for(0.5)
+    for colour, box in (("#802020", (200, 100, 400, 300)), ("#208020", (50, 400, 250, 600))):
+        jpeg = card(colour, box)
+        driver.draw_jpeg(jpeg)
+        cooler.run_for(0.3)
+        assert on_screen(cooler, jpeg, tmp_path)
+    assert state(cooler)["shown"] == shown + 3
+    assert blocks[main_hook] == passes                        # all of it without the main loop coming round once

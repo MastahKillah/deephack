@@ -96,6 +96,8 @@ MODELS = {
     "RTC.CFGABLE": lambda m, v: 1,              # the real-time clock can always be configured
     "I2C0.MCR": lambda m, v: 0,                 # an I2C start / read / write / stop is over at once (nothing answers)
     "LCD.CR": lambda m, v: v & ~0x8000,         # a new frame buffer address is taken over at once (bit 15: reload at vblank)
+    "UART0.CTRL": lambda m, v: v | 1,           # the debug port has sent its byte (bit 0): the firmware waits for that
+                                                # after each one, and it prints after storing an animation
     # the hardware divider: the UI loader divides with it and hangs on purpose when the answer is wrong
     "DIV.QUO": lambda m, v: m.register("DIV.DIVIDEND") // (m.register("DIV.DIVISOR") or 1),
     "DIV.REMAIN": lambda m, v: m.register("DIV.DIVIDEND") % (m.register("DIV.DIVISOR") or 1),

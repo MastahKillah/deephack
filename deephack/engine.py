@@ -20,7 +20,7 @@ from PIL import Image
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
-from . import device, render
+from . import device, firmware, render
 from .config import GIF_SLOT_ID, SLOT_ID, Config, book_id
 from .modes import BY_ID, MODES, Mode
 from .modes.base import Animation, Dashboard, Flipbook
@@ -45,6 +45,8 @@ REDRAW_STILL = 10.0         # ... and a picture that may stay for hours this oft
                             # have loaded late and taken its place)
 BACK_PAUSE = 0.15           # on the sensor screen, when the image screen has to be left and entered again
 DRAW_STUCK = 2.0            # frames refused for this long: start over (see _draw)
+FLASH_SETTLE = 3.0          # after a firmware update the cooler is on the bus some seconds before it answers
+FLASH_ANSWER = 60.0         # ... and if it has not answered by then, the update is called failed
 DEEPCOOL_EXE = "DeepCool.exe"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -148,6 +150,9 @@ class Engine(QThread):
         self._book_room = True                   # False: the cooler is too full for a flipbook
         self._flipped = 0.0                      # when the last stored frame of a flipbook was shown
         self._can_draw = False                   # the cooler's firmware draws frames straight from USB (tools/fw)
+        self._firmware: dict | None = None       # what the cooler runs: {"bcd", "version", "patch"}; None: not connected
+        self._flash: dict | None = None          # the last firmware update: {"which", "stage", ...} (see _flash_firmware)
+        self._flash_since = 0.0                  # when its wait for the cooler's answer began
         self._drawing = False                    # ... and that is how pictures get there now (not during a slide show)
         self._still: tuple[int, bytes] = (-1, b"")   # frame seq of the picture last drawn, and its JPEG
         self._play: tuple[int, list[bytes], float] = (-1, [], 0.0)   # frame seq of the animation played from here,
@@ -180,6 +185,11 @@ class Engine(QThread):
 
     def retry_device(self) -> None:
         self._commands.put(lambda: setattr(self, "_next_open", 0.0))
+
+    def flash_firmware(self, which: str, stock_path: str | None = None) -> None:
+        """Send the cooler another firmware: "direct" (draws from USB) or "stock" (DeepCool's own). This can
+        kill its screen: see deephack.firmware. The state's "flash" says how it goes."""
+        self._commands.put(lambda: self._flash_firmware(which, stock_path))
 
     def stop(self) -> None:
         self._stop = True
@@ -291,14 +301,18 @@ class Engine(QThread):
                 self._dev = device.Mystique()
                 self._dev.set_mode(device.MODE_MOTION)
                 self._display = device.MODE_MOTION
-                self._can_draw = self._dev.can_draw()
+                patch, bcd = self._dev.draw_version(), getattr(self._dev.dev, "bcdDevice", 0)
+                self._firmware = {"bcd": bcd, "version": firmware.version(bcd), "patch": patch}
+                self._can_draw = patch > 0
                 self._veiled = self._can_draw     # a deephack that was killed may have left a drawn frame up
             except device.DeviceBusy:
                 self._dev, self._dev_state = None, "busy"
                 return
             except (RuntimeError, usb.core.USBError):
                 self._drop_device()
+                self._flash_checked(now)
                 return
+            self._flash_checked(now)
             self._dev_state = "connected"
             self._on_screen = None
             self._slideshow_applied = None
@@ -433,9 +447,9 @@ class Engine(QThread):
         sent again every `again` seconds. Needs the direct drawing firmware (tools/fw). It draws over a
         stored still that is on show (an animation would take the screen back with its next frame), so
         ours is shown first. And the image screen is entered afresh for it: once an animation has been on
-        that screen, the firmware takes one frame and answers "later" to every one after it, also over a
-        still (seen on the cooler, cause not known). Should it stop taking frames all the same, the whole
-        start is done again."""
+        that screen, the first patch takes one frame and answers "later" to every one after it, also over
+        a still (issue #22; the patch's version 2 does not). Should it stop taking frames all the same, the
+        whole start is done again."""
         if self._on_screen != "drawn":
             self._show_stored(self._ground(), device.TYPE_JPG, afresh=True)
             self._on_screen, self._drawn, self._draw_from, self._refused = "drawn", None, now + DRAW_SETTLE, None
@@ -563,7 +577,86 @@ class Engine(QThread):
                 self._dev.close()
             except Exception:
                 pass
-        self._dev, self._dev_state = None, "missing"
+        self._dev, self._dev_state, self._firmware = None, "missing", None
+
+    # ---- firmware updates (deephack.firmware)
+    def _flash_stage(self, which: str, stage: str, **more) -> None:
+        self._flash = {"which": which, "stage": stage, **more}
+        self._emit_state(bool(self.config.get("enabled")))
+
+    def _flash_firmware(self, which: str, stock_path: str | None) -> None:
+        """Send a firmware and see the cooler through its restart. Blocks the engine until the cooler is
+        back on the bus (or has not come back): nothing else may talk to it meanwhile.
+
+        Stages, in the state's "flash": "sending" (with "progress", 0 to 1), "restarting" (with "seconds"
+        and "off": the cooler has left the bus), "checking" (it is back; _flash_checked asks what it runs),
+        then "done" or "failed" with a "message". "failed" with "sent": the whole file went out, so the
+        cooler may have been flashed all the same."""
+        if self._dev is None or self._firmware is None:
+            return self._flash_stage(which, "failed", message="The cooler is not connected. Nothing was sent.")
+        bcd = self._firmware["bcd"]
+        if bcd not in firmware.KNOWN:
+            return self._flash_stage(which, "failed", message=f"The cooler reports firmware {firmware.version(bcd)}, which "
+                                     "deephack does not know. Nothing was sent.")
+        try:
+            image = firmware.image_for(which, firmware.read_stock(stock_path))
+            firmware.check_image(image)
+        except ValueError as e:
+            return self._flash_stage(which, "failed", message=f"{e} Nothing was sent.")
+
+        def progress(sent: int) -> None:
+            if self._stop:
+                raise InterruptedError("deephack is closing")
+            self._flash_stage(which, "sending", progress=sent / len(image))
+
+        self._flash_stage(which, "sending", progress=0.0)
+        try:
+            firmware.send_update(self._dev, image, progress)
+        except (firmware.SendFailed, usb.core.USBError, RuntimeError) as e:
+            traceback.print_exc()
+            ended = getattr(e, "ended", True)
+            self._drop_device()
+            self._next_open = time.monotonic() + REOPEN_INTERVAL
+            return self._flash_stage(which, "failed", message="Sending stopped before the end, so nothing was flashed. "
+                                     + ("The cooler may show \"Loading\" for a while." if ended else
+                                        "Shut the PC down and switch it on again before anything else is sent to the cooler."))
+        self._drop_device()
+
+        def report(seconds: float, state: str) -> None:
+            if self._stop:
+                raise InterruptedError("deephack is closing")
+            self._flash_stage(which, "restarting", seconds=int(seconds), off=state != "waiting")
+
+        self._flash_stage(which, "restarting", seconds=0, off=False)
+        try:
+            outcome, _ = firmware.wait_for_restart(report=report)
+        except InterruptedError:
+            return                             # the cooler goes on by itself; the next start finds what it runs
+        if outcome == "gone":
+            return self._flash_stage(which, "failed", sent=True, message="The cooler has not come back. Leave the PC on for "
+                                     "a few more minutes; then shut it down, switch it on again and start deephack.")
+        self._flash_since = time.monotonic()
+        self._next_open = self._flash_since + FLASH_SETTLE
+        self._flash_stage(which, "checking", restarted=outcome == "back")
+
+    def _flash_checked(self, now: float) -> None:
+        """After a firmware update, once the cooler has been opened (or could not be): what does it run?"""
+        if self._flash is None or self._flash["stage"] != "checking":
+            return
+        which, restarted = self._flash["which"], self._flash.get("restarted")
+        if self._firmware is None:
+            if now - self._flash_since > FLASH_ANSWER:
+                self._flash = {"which": which, "stage": "failed", "sent": True, "message": "The cooler is on USB again but "
+                               "does not answer. Shut the PC down, switch it on again and start deephack."}
+            return
+        patch = self._firmware["patch"]
+        if patch == (firmware.PATCH_VERSION if which == "direct" else 0):
+            self._flash = {"which": which, "stage": "done", "message": "The cooler draws pictures straight from USB now."
+                           if which == "direct" else "The cooler runs DeepCool's own firmware again."}
+        else:
+            self._flash = {"which": which, "stage": "failed", "sent": True, "message":
+                           ("The cooler restarted, but it runs the firmware it had before." if restarted else
+                            "The cooler did not restart: it has not taken the file.") + " Nothing was changed."}
 
     def _emit_state(self, enabled: bool) -> None:
         state = {
@@ -583,6 +676,8 @@ class Engine(QThread):
             "no_room": isinstance(self._frame, Flipbook) and not self._book_room,
             "pending": enabled and self._frame is not None and not isinstance(self._frame, (Dashboard, Flipbook))
                        and self._frame_seq != self._uploaded_seq,
+            "firmware": self._firmware,
+            "flash": self._flash,
         }
         if state != self._last_state:
             self._last_state = state

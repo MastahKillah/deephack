@@ -250,18 +250,28 @@ class Mystique:
         time.sleep(1.0)
 
     # -- direct drawing (patched firmware only) ---------------------------
-    def _direct(self, size: int, checksum: int) -> int:
-        """Ask to send a frame; the firmware's answer (DIRECT_*, or 0 from a stock firmware)."""
+    def _ask_direct(self, size: int, checksum: int) -> tuple[int, int]:
+        """Ask to send a frame; the firmware's answer (DIRECT_*, or 0 from a stock firmware) and the byte
+        after it, which is the version of the patch (0 from the first one and from a stock firmware)."""
         self.dev.write(1, frame(CMD_DIRECT, struct.pack("<IH", size, checksum)), self.timeout)
         r = bytes(self.dev.read(0x81, 64, self.timeout))
         if len(r) != 48 or r[0] != 0x55 or sum16(r[:46]) != struct.unpack_from("<H", r, 46)[0]:
             raise RuntimeError(f"unexpected reply to cmd {CMD_DIRECT:#04x}: {r.hex()}")
-        return r[3]
+        return r[3], r[4]
+
+    def _direct(self, size: int, checksum: int) -> int:
+        return self._ask_direct(size, checksum)[0]
+
+    def draw_version(self) -> int:
+        """Which direct drawing patch the cooler's firmware has: 0 for none (DeepCool's firmware), else the
+        patch's version (tools/fw/patch.py, CHANGES). Asks for an impossible frame: a patched firmware
+        refuses it, the stock one says 'ok' as it does to anything it does not know."""
+        status, version = self._ask_direct(0, 0)
+        return max(1, version) if status == DIRECT_REFUSED else 0
 
     def can_draw(self) -> bool:
-        """True when the cooler runs a firmware that draws without storing (asks for an impossible frame:
-        the patched firmware refuses it, the stock one says 'ok' as it does to anything it does not know)."""
-        return self._direct(0, 0) == DIRECT_REFUSED
+        """True when the cooler runs a firmware that draws without storing."""
+        return self.draw_version() > 0
 
     def draw_jpeg(self, jpeg: bytes, patience: float = 0.5) -> None:
         """Show a 480x640 baseline JPEG now, without storing it: no flash write. Needs the patched firmware
