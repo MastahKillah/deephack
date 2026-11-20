@@ -61,6 +61,39 @@ def test_read_limits(tmp_path):
     assert cu.read_limits(tmp_path / "missing.json") is None
 
 
+def test_limits_are_the_highest_of_the_newest_window(tmp_path, monkeypatch):
+    now = 1_000_000.0
+    reset, later = now + 3600, now + 3600 + 7 * 86400
+    limits = cu.Limits()
+    seen = [limits.update({"seven_day": (pct, reset)}, now)["seven_day"][0] for pct in (56, 65, 51, 63, 52, 59, 60)]
+    assert seen == [56, 65, 65, 65, 65, 65, 65]                       # seven sessions, each with its own number
+    assert limits.update(None, now) == {"seven_day": (65, reset)}     # the file was being written just then
+    assert limits.update({"seven_day": (0, None)}, now) == {"seven_day": (65, reset)}    # a session from last week
+    assert limits.update({"seven_day": (66, reset + 30)}, now) == {"seven_day": (66, reset)}
+    assert limits.update({"seven_day": (3, later)}, now) == {"seven_day": (3, later)}    # a new window
+    assert limits.update({"seven_day": (70, reset)}, now) == {"seven_day": (3, later)}   # ... and a session from the old one
+    assert limits.update({"five_hour": (40, now + 60), "seven_day": (3, later)}, now)["five_hour"] == (40, now + 60)
+    assert limits.update({"seven_day": (4, later)}, now + 61) == {"seven_day": (4, later)}    # its window ran out
+    # without reset times there is nothing to go by but the latest
+    limits = cu.Limits()
+    assert [limits.update({"seven_day": (pct, None)}, now) for pct in (40, 43, 41)][-1] == {"seven_day": (41, None)}
+    assert limits.update(None, now) is None
+
+    # reading: a look that lasts while the sessions take turns
+    p = tmp_path / "usage.json"
+    turns = iter((51, 63, 65, 52, 59))
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(time.time() + 3600))
+
+    def write(seconds=0):
+        p.write_text(json.dumps({"seven_day": {"used_percentage": next(turns, 56), "resets_at": stamp}}))
+
+    monkeypatch.setattr(cu.time, "sleep", write)
+    write()
+    assert cu.Limits().read(p, watch=0.0)["seven_day"][0] == 51
+    assert cu.Limits().read(p, watch=0.05)["seven_day"][0] == 65
+    assert cu.Limits().read(tmp_path / "missing.json", watch=5.0) is None      # nobody writes: no waiting
+
+
 def test_formatting():
     assert [cu.compact(n) for n in (0, 999, 1500, 2_323_932, 980_179_058, 3_000_000_000)] == ["0", "999", "1.5K", "2.3M", "980M", "3B"]
     assert cu.model_name("claude-opus-5-5") == "Opus 5.5"

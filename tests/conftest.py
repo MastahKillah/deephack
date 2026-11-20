@@ -1,8 +1,16 @@
 import pytest
 
 from deephack import device
+from deephack.modes import claude_usage
 
 from cooler import CoolerModel   # tests/ is on sys.path (pytest rootdir-relative imports)
+
+
+@pytest.fixture(autouse=True)
+def no_watching(monkeypatch):
+    """Modes read the usage snapshot for some seconds when it was written lately, which the real one on a
+    developer's PC always was. Not in tests."""
+    monkeypatch.setattr(claude_usage, "WATCH_SECONDS", 0.0)
 
 
 @pytest.fixture

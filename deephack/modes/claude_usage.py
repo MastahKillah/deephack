@@ -4,6 +4,8 @@ Two local sources, no network and no credentials:
 
 * Plan limits (5-hour and weekly) come from a snapshot file written by the claude-hud status line plugin
   (its `display.externalUsageWritePath` option). Claude Code hands those numbers to status line plugins.
+  Every open session writes that file with the numbers it heard last, so it is read through Limits, which
+  makes one steady number of them.
 * Today's tokens and requests are summed from Claude Code's session logs in ~/.claude/projects. Those
   logs get large, so they are read from the end on the first pass and incrementally afterwards.
 """
@@ -197,6 +199,58 @@ def read_limits(path: Path, now: float | None = None) -> dict | None:
     return out or None
 
 
+SAME_WINDOW = 120            # reset times this many seconds apart are the same window
+WATCH_SECONDS, WATCH_STEP = 6.0, 0.25
+WRITTEN_LATELY = 15.0
+
+
+def _written_lately(path: Path) -> bool:
+    try:
+        return time.time() - path.stat().st_mtime < WRITTEN_LATELY
+    except OSError:
+        return False
+
+
+class Limits:
+    """The plan limits from the snapshot, steadied.
+
+    Each Claude Code session's status line writes the snapshot, every few seconds, with the numbers that
+    session heard with its last answer. With several sessions open the file flips between their values
+    (seen with seven of them: 51, 52, 56, 59, 60, 63 and 65 % within five seconds), and one look at it
+    gets any of them. Usage only grows until its window resets, so the highest number for the newest
+    window is the one that is true; a session that has been idle for hours has an old, lower one."""
+
+    def __init__(self):
+        self._held: dict[str, tuple[int, float | None]] = {}
+
+    def update(self, reading: dict | None, now: float | None = None) -> dict | None:
+        """Take in what read_limits() returned; the steadied limits, in its form."""
+        now = now or time.time()
+        reading = reading or {}
+        for key, (pct, reset) in reading.items():
+            held = self._held.get(key)
+            if held is None or held[1] is None or (reset is not None and reset > held[1] + SAME_WINDOW):
+                self._held[key] = (pct, reset)             # nothing to compare it with, or a newer window
+            elif reset is not None and reset >= held[1] - SAME_WINDOW and pct > held[0]:
+                self._held[key] = (pct, held[1])
+        for key, (_, reset) in list(self._held.items()):
+            if (reset is None and key not in reading) or (reset is not None and reset <= now):
+                del self._held[key]                        # gone from the snapshot, or its window ran out
+        return dict(self._held) or None
+
+    def read(self, path: Path, watch: float | None = None, read=None) -> dict | None:
+        """Read the snapshot. While sessions are writing it, keep reading for `watch` seconds, so that each
+        of them has had its say (they take turns within about five). Blocks that long: call it in a thread.
+        Without a watch the number may start low and rises as the reads add up."""
+        read = read or read_limits
+        out = self.update(read(path))
+        end = time.perf_counter() + (WATCH_SECONDS if watch is None else watch)
+        while time.perf_counter() < end and _written_lately(path):
+            time.sleep(WATCH_STEP)
+            out = self.update(read(path))
+        return out
+
+
 # ------------------------------------------------------------------ rendering
 def compact(n: int) -> str:
     for limit, div, suffix in ((1e9, 1e9, "B"), (1e6, 1e6, "M"), (1e3, 1e3, "K")):
@@ -330,6 +384,7 @@ class ClaudeUsage(Mode):
         self.snapshot = config_dir() / SNAPSHOT_NAME
         self.placeholder = ("Claude Code", "Reading today's session logs…")
         self._activity = Activity()
+        self._limits = Limits()
 
     def _collect(self) -> tuple[dict | None, dict]:
         midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -337,7 +392,7 @@ class ClaudeUsage(Mode):
         if self._day is None or self._day.start_utc != start_utc:
             self._day = Day(start_utc)
         self._day.refresh(claude_dir() / "projects", midnight.timestamp())
-        return read_limits(self.snapshot), self._day.totals()
+        return self._limits.read(self.snapshot), self._day.totals()
 
     async def frame(self):
         self.active = await self._activity.busy()

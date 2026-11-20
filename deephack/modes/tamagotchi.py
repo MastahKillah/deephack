@@ -36,7 +36,7 @@ from ..config import config_dir
 from ..render import H, W
 from . import nba
 from .base import Animation, Mode, Setting, parse_order
-from .claude_usage import CHECK_SECONDS, SNAPSHOT_NAME, Activity, read_limits
+from .claude_usage import CHECK_SECONDS, SNAPSHOT_NAME, Activity, Limits, read_limits
 from .now_playing import Playback
 
 FRAMES = 8
@@ -70,7 +70,7 @@ FAST_TICK, SLOW_TICK = 0.05, 0.125   # seconds between two looks: while it dance
 MUSIC_CHECK_DRAWN = 0.5
 MUSIC_LINGER_DRAWN = 1.5             # a track change may look like a pause for a moment
 BUSY_CHECK_DRAWN = 5.0               # seconds between looks at Claude Code's logs
-LIMITS_CHECK_DRAWN = 5.0             # ... and at the usage snapshot
+LIMITS_CHECK_DRAWN = 1.0             # ... and at the usage snapshot (often: see claude_usage.Limits)
 NBA_LIVE_CHECK = 60.0                # ... and at the score, while the picked team plays
 BEAT_RISE, BEAT_LEVEL, BEAT_GAP = 0.1, 0.3, 0.3      # a beat: a level jumps this much, to at least this, and
                                                      # the last one was this many seconds ago
@@ -535,6 +535,7 @@ class Tamagotchi(Mode):
         self._music = Debounce(MUSIC_SETTLE, MUSIC_LINGER)
         self._next_limits = self._next_music = self._next_nba = 0.0
         self._limits: dict | None = None
+        self._steady = Limits()
         self._past: list[nba.Game] = []
         self._live: nba.Game | None = None                 # the team's game that is on, while pictures are drawn
         self._shown = None
@@ -635,7 +636,8 @@ class Tamagotchi(Mode):
         self.active = busy
         if now >= self._next_limits:
             self._next_limits = now + (LIMITS_CHECK_DRAWN if self.direct else int(self.values["refresh"]) * 60)
-            self._limits = await asyncio.to_thread(read_limits, self.snapshot)
+            # (stored pictures: one look has to be right, so it watches the snapshot for a few seconds)
+            self._limits = await asyncio.to_thread(self._steady.read, self.snapshot, 0.0 if self.direct else None, read_limits)
         result = await self._result(now) if "nba" in self.reactions else None
         flags = {
             "working": busy,
