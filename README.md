@@ -297,14 +297,14 @@ Two things the engine works around, both seen on the cooler:
   firmware took one frame and answered "later" to every one after it, also when a still was shown
   again: the still keeps the animation's frame time as its timer, the firmware's task loop never comes
   round, and the patch was only called from there. Version 2 of the patch is also called from inside
-  that loop. Leaving the image screen and coming back clears it on either, so the engine still does
+  that loop, and takes its frames after the same animation on the cooler. Leaving the image screen and coming back clears it on either, so the engine still does
   that every time before it starts to draw.
 
 The patch has a version, which the cooler reports in its answer to `20` (`draw_version()`; the first
 patch reports none and counts as 1). The app offers an update when it carries a newer one.
 
-**A flash that goes wrong cannot be undone from USB.** That it worked on one cooler says nothing certain
-about another unit: read "Which firmware" and "Direct drawing" in
+**A flash that goes wrong cannot be undone from USB.** That it worked on one cooler (four times: both
+images twice, the last two from the app, 19 seconds each) says nothing certain about another unit: read "Which firmware" and "Direct drawing" in
 [docs/firmware-analysis.md](docs/firmware-analysis.md) first. A cooler that reports 2.71 would be
 downgraded by it, and there is no 2.71 image to go back to. What can be tested without a cooler is: the
 sender against the stock firmware in the emulator (the image arrives byte for byte and the firmware

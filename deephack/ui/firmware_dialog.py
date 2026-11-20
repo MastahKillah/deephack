@@ -17,12 +17,12 @@ WHAT = {
 }
 RISK = ("<b>It can go wrong for good.</b> The cooler writes the new firmware itself after a restart, and nothing "
         "can be done from the PC while it does. If the new firmware does not start, the screen stays dark and "
-        "there is no way to bring it back over USB. This has worked every time on the one cooler it was tried "
-        "on; nobody knows how it goes on another.")
+        "there is no way to bring it back over USB. It has worked every time on the one cooler it was tried on, "
+        "four times in all; nobody knows how it goes on another.")
 NO_WAY_BACK = ("<b>Your cooler runs firmware {version}, and this is 2.70.</b> There is no file of {version} anywhere, "
                "and no way to read it out of the cooler: once this is done you can never go back to {version}.")
-MEANWHILE = ("It takes about a minute. Until deephack says it is done: do not unplug the cooler, and do not shut "
-             "the PC down or let it sleep.")
+MEANWHILE = ("It takes about 20 seconds, and the screen is dark for most of them. Until deephack says it is "
+             "done: do not unplug the cooler, and do not shut the PC down or let it sleep.")
 
 
 class FlashDialog(QDialog):

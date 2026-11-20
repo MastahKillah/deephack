@@ -233,7 +233,7 @@ cooler** (see "On the cooler" below).
 
 It appends 504 bytes of code after the image and changes twenty bytes of it: five 4-byte jumps. (This
 is version 2. Version 1, which the cooler ran from 19 Nov 2026, was 472 bytes and four jumps: it had no
-hook in `lv_task_handler` and reported no version.) The app carries it as a table of those bytes,
+hook in `lv_task_handler` and reported no version; version 2 is on the cooler since 20 Nov 2026.) The app carries it as a table of those bytes,
 `deephack/firmware_patch.py`, written by `python tools/fw/patch.py --table`; a test compares the two.
 
 | where | stock | patched |
@@ -345,8 +345,8 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   proven yet.
 
 - **After an animation the patch takes one frame and no more** (version 1; explained and fixed since,
-  see "`lv_task_handler` does not return while a task is due" above. The fix runs in the emulator,
-  `tests/test_direct_draw.py`; on the cooler it has yet to be tried). Show an animation (`08`, type 1), then
+  see "`lv_task_handler` does not return while a task is due" above, and "From the app" below for
+  version 2 on the cooler). Show an animation (`08`, type 1), then
   a still, then draw: the first frame gets "go ahead", every one after it "later" (`11`), for as long as
   was tried (3 s, a frame asked for every 50 ms). It makes no difference whether anything was drawn
   while the animation was on. Over the animation itself it is the same, and the drawn frame is not seen:
@@ -433,6 +433,20 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   upper bound and a rough one. Now Playing drew a frame a second (59 to 78 KB) for the progress bar; a
   skipped track was announced by Spotify 0.7 s after the command and was on screen 0.45 s after that,
   faded in over five frames about 90 ms apart.
+
+- **From the app** (20 Nov 2026, `Engine.flash_firmware`, the code behind the window's "Firmware"
+  section; the cooler ran version 1 of the patch). Two updates, one after the other, each filmed:
+  **to DeepCool's own image**, then **to the patched one, version 2**. Both went the same way: the
+  451 KB were sent in 1.3 s (110 progress reports), the screen showed "Loading...", the cooler left the
+  bus half a second later and was back after 11.3 and 11.8 s, with the DeepCool logo and then the
+  stored picture on screen, and it answered 5 s after that: no patch after the first, version 2 after
+  the second. 18.5 and 19.0 s from the click to "done". On DeepCool's image the engine stored its
+  pictures again (2 in 12 s); on the patched one it drew (13 frames in 12 s, a countdown) and stored
+  only its black ground. So the way back works from a patched firmware, and both images have now been
+  taken twice by this cooler's bootloader.
+- **Version 2 takes frames after the animation that stopped version 1.** The same four animations as
+  above, each for 2 s, then the still, then eight frames: all eight taken after each, the 33 ms one
+  included.
 
 Not looked at on the cooler: a frame with a wrong sum, a frame the host abandons half way, how far a
 drawn frame is behind its command with the camera's delay taken out, and how the patched firmware
@@ -645,7 +659,6 @@ whether a flashed image is accepted. The emulator makes patches testable; it can
   and no sum the patch breaks. What it does check, if anything, is still unknown: a broken image may
   well be written as readily
 - Is SWD locked? (the only recovery path if a flashed image does not start)
-- Version 2 of the patch on the cooler: it has only run in the emulator
 - How long the cooler stays in its upload loop by itself when an upload stops (the 15.7 million rounds);
   `dcldfinish` ends it at once, so nothing depends on it any more
 - Why `08` for the slot already on show does not bring the stored picture back after a drawn frame

@@ -18,7 +18,9 @@ staying installed.
 
 What is known (docs/firmware-analysis.md has the details):
 
-- On the one cooler this was done on, the bootloader took both images, 12 seconds off the bus each time.
+- On the one cooler this was done on, the bootloader took both images, four times in all (twice from
+  the app, 20 Nov 2026): a second and a half to send, 11 to 12 seconds off the bus, 19 seconds until the
+  cooler answered with its new firmware.
 - That cooler came with v2.71. There is no image of v2.71 anywhere: for a cooler that reports 2.71,
   either image is a downgrade that cannot be undone.
 - The running firmware checks the size and a 16 bit sum before it stores the file. A file that arrives
