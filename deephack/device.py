@@ -54,6 +54,8 @@ CMD_DIRECT = 0x20           # <size:u32> <sum16:u16>: show a JPEG without storin
                             # only one patched with tools/fw/patch.py has it (the stock one answers status 0)
 DIRECT_GO, DIRECT_LATER, DIRECT_REFUSED = 0x10, 0x11, 0x12
 DIRECT_MAX = 128 * 1024     # bytes of JPEG the patched firmware takes for one frame
+DIRECT_ASK = 0.004          # seconds between two asks while it says "later": it needs some 50 ms for a frame, and
+                            # asking every 2 ms was 120 commands a second for 18 frames
 
 TYPE_JPG, TYPE_GIF = 0, 1   # slot type in the show / delete commands
 FILE_JPG, FILE_GIF = 1, 2   # file type in the upload header
@@ -270,14 +272,14 @@ class Mystique:
             raise ValueError(f"need a {WIDTH}x{HEIGHT} baseline JPEG")
         if len(jpeg) > DIRECT_MAX:
             raise ValueError(f"frame too large: {len(jpeg)} bytes, the firmware takes {DIRECT_MAX}")
-        for _ in range(max(1, round(patience / 0.002))):
+        for _ in range(max(1, round(patience / DIRECT_ASK))):
             status = self._direct(len(jpeg), sum16(jpeg))
             if status == DIRECT_GO:
                 break
             if status != DIRECT_LATER:
                 raise RuntimeError("this firmware cannot draw without storing" if status == 0
                                    else f"the cooler refused the frame (status {status:#04x})")
-            time.sleep(0.002)
+            time.sleep(DIRECT_ASK)
         else:
             raise TimeoutError("the cooler did not take the frame")
         self.dev.write(1, jpeg, self.timeout)       # the host controller cuts it into 64 byte packets

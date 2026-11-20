@@ -20,7 +20,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **Claude Code** | Plan limits (5-hour and weekly) and today's tokens, requests, hourly activity and model split. All from local files, see below. |
 | **Claude Pet** | An animated pixel pet with your plan limit percentages. It works along while Claude Code is busy, dances while music plays, sleeps at night and celebrates or sulks after your NBA team's games; you pick which of these count and which wins. Otherwise its mood follows the fullest limit: happy, fine, stressed, exhausted. |
 | **Scene** | A little pixel-art city under your real sky: dawn, day, dusk and night follow the sunrise and sunset, and clouds, fog, rain, snow or a thunderstorm follow the current weather in the Weather page's city. Windows light up in the evening, street lamps glow, a car drives by. An 8-frame animation, rewritten only when the time of day or the kind of weather changes. Also a fallback for Auto. |
-| **Visualizer** | An orb that pulses with whatever the PC is playing (the bass counts most). With the [direct drawing firmware](#protocol) on the cooler its frames are drawn straight from USB, about twenty a second, and nothing is stored. On DeepCool's own firmware it is a flipbook: up to seven frames from silence to full blast are stored once and the mode says which one to show, which wears nothing but trails the music by a quarter of a second. The sound is read from the PC's output (nothing is recorded or sent anywhere). |
+| **Visualizer** | Whatever the PC is playing, as a picture. With the [direct drawing firmware](#protocol) on the cooler it is a spectrum: a bar for each of 24 pitches, bass on the left, treble on the right, with a mark where each last peaked, drawn anew about eighteen times a second, and nothing is stored. Or an orb that pulses with the bass, which is also what DeepCool's own firmware gets: there it is a flipbook, up to seven frames from silence to full blast stored once, the mode saying which one to show, which wears nothing but trails the music by a quarter of a second. The sound is read from the PC's output (nothing is recorded or sent anywhere). |
 | **Countdown** | Days until a date you set, with a title. On the last day it counts hours, then minutes. |
 | **Photo Frame** | Pictures from a folder you pick, changing every 15 minutes to once a day, shuffled or by file name. Portrait photos fill the screen, wider ones are shown whole. |
 | **Game Cover** | The cover art of the game you are playing, for games started through Steam (Steam notes the running game in the registry; covers come from its image server). |
@@ -252,7 +252,7 @@ times a second, a 72 KB one 10 times, an 8 KB one 20 times. The engine uses it f
 mode returns (one frame of 27 to 68 KB, on screen 36 to 88 ms after it was ready; nothing is stored and
 there is no wait between two; the System page is redrawn every second that way, 39 to 44 KB a frame,
 for 2 % of one CPU core), for animations (Scene and Claude Pet: a frame of 18 KB every 300 or 250
-ms, under 2 % of one CPU core) and for the Visualizer, which gets a frame every 50 ms (12 to 30 KB each).
+ms, under 2 % of one CPU core) and for the Visualizer, which gets a frame every 50 ms (the spectrum 20 to 37 KB each, drawn and encoded in a millisecond; 9 % of one CPU core, half of it the USB traffic).
 A picture over the firmware's 128 KiB is sent at a lower JPEG quality.
 
 Two things the engine works around, both seen on the cooler:

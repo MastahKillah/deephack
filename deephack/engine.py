@@ -32,7 +32,9 @@ REOPEN_INTERVAL = 3.0
 TICK = 0.5
 CLOCK_SYNC = 3600.0         # the sensor screens' clock is set when shown and then hourly
 FLIP_INTERVAL = 0.1         # stored pictures: the firmware shows ten a second and drops what comes faster
-DRAW_QUALITY = 85           # JPEG quality of a flipbook's drawn frames: the smaller the frame, the sooner it is on screen
+DRAW_QUALITY = 85           # JPEG quality of frames that come many a second (a flipbook's, or the pictures of a
+                            # mode with a short tick): the smaller the frame, the sooner it is on screen
+FAST_TICK = 0.1             # a mode that asks to be called this often or more is such a mode
 STILL_QUALITIES = (92, 85, 75, 60, 40, 20)   # a drawn picture: the best of these that fits the firmware's 128 KiB
 PLAY_QUALITY = 88           # an animation's frames, drawn one after the other: what they are stored with
 DRAW_RETRY = 0.05           # the device step is run again this soon while a picture is waiting to be drawn
@@ -92,8 +94,10 @@ def frame_jpeg(img: Image.Image, best: int = STILL_QUALITIES[0]) -> bytes:
 
 
 def to_qimage(img: Image.Image) -> QImage:
-    rgba = img.convert("RGBA")
-    return QImage(rgba.tobytes(), rgba.width, rgba.height, QImage.Format.Format_RGBA8888).copy()
+    """A mode's picture for the window. Straight from the RGB bytes: a mode may hand over twenty a second,
+    and going through RGBA first took three times as long."""
+    rgb = img if img.mode == "RGB" else img.convert("RGB")
+    return QImage(rgb.tobytes(), rgb.width, rgb.height, rgb.width * 3, QImage.Format.Format_RGB888).copy()
 
 
 def _qt_frames(img: Image.Image | Animation | Dashboard | Flipbook) -> tuple[list[QImage], int]:
@@ -488,7 +492,8 @@ class Engine(QThread):
         """Draw a mode's picture instead of storing it: no flash write, and no wait between two of them."""
         def jpeg() -> bytes:
             if self._still[0] != self._frame_seq:
-                self._still = (self._frame_seq, frame_jpeg(picture))
+                fast = self._mode is not None and (self._mode.tick or TICK) <= FAST_TICK
+                self._still = (self._frame_seq, frame_jpeg(picture, DRAW_QUALITY if fast else STILL_QUALITIES[0]))
             return self._still[1]
 
         if self._draw(("still", self._frame_seq), jpeg, now, REDRAW_STILL) and self._frame_seq != self._uploaded_seq:

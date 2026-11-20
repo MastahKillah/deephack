@@ -313,3 +313,137 @@ def test_engine_loop_runs_faster_for_a_mode_that_asks(tmp_path):
     eng = engine.Engine(Config(tmp_path / "config.json"), use_device=False)
     eng._mode = visualizer.Visualizer({}, listener=FakeListener())
     assert min(m.tick or engine.TICK for m in (eng._mode, eng._preview) if m is not None) == 0.05
+
+
+# ------------------------------------------------------------------ the spectrum
+def _window(*tones, rate=48000, volume=0.4):
+    return [sum(volume * math.sin(2 * math.pi * hz * i / rate) for hz in tones) for i in range(audio.WINDOW)]
+
+
+def test_spectrum_puts_a_tone_in_its_band():
+    sp = audio.Spectrum()
+    assert len(sp.frequencies) == audio.BANDS and sp.frequencies[0] == audio.BAND_LOW
+    assert abs(sp.frequencies[-1] - audio.BAND_HIGH) < 1e-6
+    for hz in (63, 440, 3000, 9000):
+        strengths = audio.Spectrum().strengths(_window(hz), 48000)
+        loudest = max(range(audio.BANDS), key=strengths.__getitem__)
+        nearest = min(range(audio.BANDS), key=lambda i: abs(math.log(sp.frequencies[i] / hz)))
+        assert abs(loudest - nearest) <= 1, hz
+        far = [s for i, s in enumerate(strengths) if abs(i - loudest) > 4]
+        assert max(far) < 0.1 * strengths[loudest], hz              # and not everywhere else
+    assert audio.Spectrum().strengths(_window(440, rate=44100), 44100)[9] > 0.2      # the tables follow the rate
+
+
+def test_spectrum_levels_rise_at_once_fall_quickly_and_leave_a_mark():
+    sp = audio.Spectrum()
+    levels, peaks = sp.feed(_window(440), 48000, 0.05)
+    band = max(range(audio.BANDS), key=levels.__getitem__)
+    assert levels[band] == 1.0 and peaks[band] == 1.0               # the first sound sets what "loud" means
+    levels, peaks = sp.feed([0.0] * audio.WINDOW, 48000, audio.FALL_SECONDS)
+    assert 0.4 < levels[band] < 0.6 and peaks[band] > 0.8           # the bar has halved, its mark hardly moved
+    for _ in range(100):
+        levels, peaks = sp.feed([0.0] * audio.WINDOW, 48000, 0.1)
+    assert not any(levels) and not any(peaks)
+    assert audio.Spectrum().feed([], 48000, 0.05) == ([0.0] * audio.BANDS, [0.0] * audio.BANDS)   # nothing heard yet
+
+
+def test_spectrum_shows_quiet_bands_next_to_a_loud_one():
+    sp = audio.Spectrum()
+    loud_and_quiet = [a + 0.1 * b for a, b in zip(_window(100), _window(3000))]
+    levels, _ = sp.feed(loud_and_quiet, 48000, 0.05)
+    treble = max(range(12, audio.BANDS), key=levels.__getitem__)
+    assert max(levels[:6]) == 1.0 and 0.25 < levels[treble] < 0.9   # a tenth as loud, but well in sight
+
+
+def test_the_dot_product_without_python_312():
+    from operator import mul
+    a, b = [0.5, -1.0, 2.0], [4.0, 0.25, 1.5]
+    assert audio._dot(a, b) == sum(map(mul, a, b)) == 4.75
+
+
+class ToneCapture:
+    rate = 48000
+    playing = True
+
+    def read(self):
+        return _tone(100, 0.02, rate=48000) if ToneCapture.playing else []
+
+    def close(self):
+        pass
+
+
+def test_listener_gives_the_spectrum_and_silence_after_the_player_stops(monkeypatch):
+    import time
+    monkeypatch.setattr(audio, "IDLE_SECONDS", 0.5)
+    ToneCapture.playing = True
+    listener = audio.Listener(capture=ToneCapture)
+    deadline = time.monotonic() + 3
+    while max(listener.spectrum()[0]) < 0.9 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    levels, peaks = listener.spectrum()
+    assert max(levels[:6]) > 0.9 and max(levels[12:]) < 0.2 and listener.available
+    ToneCapture.playing = False                                      # a paused player sends no samples at all
+    deadline = time.monotonic() + 3
+    while any(listener.spectrum()[0]) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not any(listener.spectrum()[0])
+
+
+# ------------------------------------------------------------------ the mode: bars when it can draw
+class SpectrumListener(FakeListener):
+    def __init__(self):
+        self.bars = ([0.0] * audio.BANDS, [0.0] * audio.BANDS)
+
+    def spectrum(self):
+        return self.bars
+
+
+def _lit(img, band, above):
+    """Is the bar of this band lit that many pixels above the floor?"""
+    x = visualizer.BARS_LEFT + band * (visualizer.BAR_W + visualizer.BAR_GAP) + visualizer.BAR_W // 2
+    return max(img.getpixel((x, visualizer.FLOOR - above))) > 120
+
+
+def test_the_spectrum_is_drawn_anew_for_every_change_when_the_cooler_can_draw():
+    from PIL import Image
+    listener = SpectrumListener()
+    m = visualizer.Visualizer({}, listener=listener)
+    m.direct = True
+    quiet = asyncio.run(m.frame())
+    assert isinstance(quiet, Image.Image) and quiet.size == (device.WIDTH, device.HEIGHT) and m.status == "Nothing is playing"
+    assert asyncio.run(m.frame()) is None                               # the same sound: nothing to draw
+    levels = [0.0] * audio.BANDS
+    levels[2], levels[20] = 1.0, 0.5
+    marks = list(levels)
+    marks[20] = 0.9
+    listener.bars = (levels, marks)
+    loud = asyncio.run(m.frame())
+    assert m.status == "Following the music"
+    reach = visualizer.REACH
+    assert _lit(loud, 2, reach - 10) and _lit(loud, 20, reach // 2 - 10) and not _lit(loud, 20, reach // 2 + 30)
+    assert _lit(loud, 20, round(0.9 * reach) + 1)                       # its peak mark, above the bar
+    assert not _lit(loud, 10, 20) and not _lit(quiet, 2, 20)
+    assert loud.resize((1, 1)).getpixel((0, 0)) > quiet.resize((1, 1)).getpixel((0, 0))    # the glow follows the bass
+
+
+def test_the_orb_when_the_cooler_cannot_draw_or_the_orb_is_asked_for():
+    listener = SpectrumListener()
+    stored = visualizer.Visualizer({}, listener=listener)
+    assert isinstance(asyncio.run(stored.frame()), Flipbook)
+    orb = visualizer.Visualizer({"style": "orb"}, listener=listener)
+    orb.direct = True
+    assert isinstance(asyncio.run(orb.frame()), Flipbook)
+    both = visualizer.Visualizer({}, listener=listener)                 # a cooler that is plugged in later
+    assert isinstance(asyncio.run(both.frame()), Flipbook)
+    both.direct = True
+    assert not isinstance(asyncio.run(both.frame()), Flipbook)
+    both.direct = False
+    assert isinstance(asyncio.run(both.frame()), Flipbook)
+
+
+def test_every_palette_draws_bars():
+    for palette in visualizer.PALETTES:
+        grounds = visualizer.bar_grounds(palette)
+        assert len(grounds) == visualizer.GLOWS
+        img = visualizer.render_bars(grounds[3], palette, [100] * audio.BANDS, [150] * audio.BANDS)
+        assert img.size == (device.WIDTH, device.HEIGHT) and _lit(img, 0, 50) and _lit(img, audio.BANDS - 1, 50)

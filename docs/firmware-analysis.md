@@ -340,6 +340,15 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
 - **A page redrawn every second** (System, live): 44 frames in 44 s, 39 to 44 KB, 50 ms to send, none
   stored. The engine took 1.95 % of one CPU core for it, half of that drawing the page (before the
   page's fixed parts were cached; 6 ms a frame instead of 11 since).
+- **Every frame a new picture** (the Visualizer's spectrum, with Spotify playing, 20 Nov 2026): 185
+  frames in 10.1 s, 18.4 a second, one every 51 ms, 20 to 37 KB at quality 85, 45 ms to send. Between
+  two frames the cooler was asked about five times before it said "go ahead" (asking every 4 ms). The
+  whole of deephack took 9 % of one CPU core for it: about 5 % in its own work (encoding 1.4, the
+  window's copy of the picture 1.2, the spectrum 1.0, reading the sound 0.9, drawing 0.5), the rest in
+  the USB transfers and the loop around them. The orb, which only picks ready-made frames, took 5 %.
+  The webcam's picture followed the frames best 175 ms after they were made (correlation 0.74), with
+  the camera's own delay in it and 7.7 pictures a second: too coarse to say more than "about a tenth of
+  a second or two".
 - **With real music** (Spotify playing, 19 Nov 2026): the Visualizer sent 255 frames in 15 s, 17 a
   second, using 22 of its 24 loudness steps. The webcam's picture followed the frames sent best 125 ms
   later (correlation 0.86 between the step drawn and the screen's brightness). That figure has the

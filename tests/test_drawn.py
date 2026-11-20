@@ -170,3 +170,16 @@ def test_deepcools_own_firmware_gets_its_pictures_stored(tmp_path, monkeypatch, 
 @pytest.mark.parametrize("quality", engine.STILL_QUALITIES)
 def test_every_quality_gives_a_frame_the_driver_takes(quality):
     assert device.jpeg_size(device.encode_jpeg(RED, quality=quality)) == (device.WIDTH, device.HEIGHT)
+
+
+def test_pictures_that_come_many_a_second_are_sent_smaller(tmp_path, monkeypatch, cooler):
+    cooler.direct = True
+    eng = _engine(tmp_path, monkeypatch)
+    noisy = Image.radial_gradient("L").resize((480, 640)).convert("RGB")
+    eng._mode.tick = 0.05                                                 # a mode that draws twenty times a second
+    _show(eng, noisy)
+    fast = cooler.screen[1]
+    assert fast == engine.frame_jpeg(noisy, engine.DRAW_QUALITY)
+    eng._mode.tick = None
+    _show(eng, noisy, steps=1)
+    assert cooler.screen[1] == engine.frame_jpeg(noisy) and len(fast) < len(cooler.screen[1])
