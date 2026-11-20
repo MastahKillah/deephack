@@ -390,6 +390,12 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   of 14 to 43 KB at JPEG quality 65, 29 at the median, 36 ms to send, and the whole of deephack took
   13 % of one CPU core. Shown whole with bars (the 480-line stream): 15 to 31 KB, 29 ms, 10 %. At
   quality 85 a frame of a crowd is 65 KB, and the cooler takes eleven of those a second. Nothing stored.
+- **Videos one after the other** (the TikTok mode, 20 Nov 2026; videos of 576 x 1024 at 30 frames a
+  second, read from TikTok as they played): the first frame was on the cooler 3.4 to 4.6 s after the
+  mode started (TikTok's page, its list, then the video). 700 frames in 44 s over three videos, 15.9 a
+  second, 16 to 45 KB each, 36 ms to send, 11 % of one CPU core. Between two videos the picture stood
+  for 0.76 s. After "next" or "previous" the other video was on the cooler 0.65 to 0.81 s later (four
+  presses). Nothing stored.
 - **A picture every second** (Countdown and Calendar, 20 Nov 2026): the mode asks to be called again
   when the next second begins, and the engine does. The countdown's frames (30 to 31 KB at quality 92)
   were sent 14 ms after their second began at the median, 17 at the latest; the calendar's in its last

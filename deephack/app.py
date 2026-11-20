@@ -53,6 +53,7 @@ def main(argv: list[str] | None = None) -> int:
     config = Config(Path(args.config) if args.config else None)
     engine = Engine(config, use_device=not args.no_device)
     window = MainWindow(config, engine)
+    app.installNativeEventFilter(window.hotkeys)     # keys that work in any window (hotkeys.py)
 
     def show_window() -> None:
         window.show()
@@ -102,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         QTimer.singleShot(round(args.screenshot_after * 1000), grab)
 
     def shutdown() -> None:
+        window.hotkeys.clear()
         engine.stop()
         engine.wait(8000)
         tray.hide()

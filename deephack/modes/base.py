@@ -49,10 +49,12 @@ class Setting:
     label: str
     kind: str                      # "choice" | "text" | "secret" (text shown as dots) | "folder" (text with a Browse button)
                                    # | "file" (the same, for a file) | "order" (see parse_order)
+                                   # | "shortcut" (a key that works in any window, for `action`; see hotkeys.py)
     default: str
     choices: tuple[tuple[str, str], ...] = ()   # (value, label) for kind "choice" and "order"
     placeholder: str = ""
     hint: str = ""
+    action: str = ""               # kind "shortcut": which of the mode's `actions` the key is for
 
 
 def parse_order(value: str, ids: list[str]) -> list[tuple[str, bool]]:
@@ -82,6 +84,8 @@ class Mode:
     quality: int | None = None     # JPEG quality of its drawn pictures, when the engine's own choice will not do (a
                                    # video: smaller frames, so that the cooler takes more of them a second)
     settings: tuple[Setting, ...] = ()
+    actions: tuple[tuple[str, str], ...] = ()    # (name, label) of what the user can tell the mode to do ("next"):
+                                                 # buttons on its page, and keys (settings of kind "shortcut")
 
     def __init__(self, values: dict | None = None):
         values = values or {}
@@ -99,6 +103,9 @@ class Mode:
 
     async def frame(self) -> Image.Image | Animation | Dashboard | Flipbook | None:
         raise NotImplementedError
+
+    def act(self, action: str) -> None:
+        """One of `actions` was asked for. Called between two frame() calls."""
 
     async def close(self) -> None:
         pass

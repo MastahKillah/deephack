@@ -14,11 +14,12 @@ from .scene import Scene
 from .system import SystemMonitor
 from .tamagotchi import Tamagotchi
 from .ticker import Ticker
+from .tiktok import TikTok
 from .video import Video
 from .visualizer import Visualizer
 from .weather import Weather
 
-MODES: tuple[type[Mode], ...] = (Auto, NowPlaying, Weather, Calendar, Nba, ClaudeUsage, Tamagotchi, Countdown, PhotoFrame, GameCover, Ticker, SystemMonitor, Live, GitHub, Scene, Visualizer, Video)
+MODES: tuple[type[Mode], ...] = (Auto, NowPlaying, Weather, Calendar, Nba, ClaudeUsage, Tamagotchi, Countdown, PhotoFrame, GameCover, Ticker, SystemMonitor, Live, GitHub, Scene, Visualizer, Video, TikTok)
 BY_ID = {m.id: m for m in MODES}
 
 __all__ = ["Animation", "Mode", "Setting", "MODES", "BY_ID"]

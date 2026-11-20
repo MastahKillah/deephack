@@ -3,12 +3,14 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import QDir, Qt, QTimer
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-                               QProgressBar, QPushButton, QScrollArea, QVBoxLayout, QWidget)
+                               QKeySequenceEdit, QProgressBar, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 
 from .. import autostart, firmware
 from ..config import Config
 from ..engine import Engine, quit_deepcool
+from ..hotkeys import Hotkeys
 from ..modes import BY_ID, MODES
 from . import style
 from .firmware_dialog import FlashDialog
@@ -51,6 +53,8 @@ class MainWindow(QMainWindow):
         self._state: dict = {}
         self._viewing = ""                       # the mode whose page is open; config "mode" is the one on the cooler
         self._live_frames: tuple | None = None   # last frames of the mode on the cooler, to show again
+        self.hotkeys = Hotkeys()                 # the keys of the mode on the cooler (app.py lets it hear them)
+        self._keys_refused: set[str] = set()     # ... and the ones Windows would not give us
         self.setWindowTitle("deephack")
         self.setFixedSize(960, 620)
 
@@ -68,7 +72,19 @@ class MainWindow(QMainWindow):
         if config.get("mode") not in BY_ID:
             config.set("mode", MODES[0].id)
         self._mark_live()
+        self.sync_hotkeys()
         self.view_mode(config.get("mode"))
+
+    # ------------------------------------------------------------ keys
+    def sync_hotkeys(self) -> None:
+        """Register the keys of the mode that is on the cooler (its settings of kind "shortcut"), and no others."""
+        cls = BY_ID[self._live]
+        values, keys = self.config.mode_settings(cls.id), {}
+        for s in cls.settings:
+            text = values.get(s.key, s.default) if s.kind == "shortcut" else ""
+            if text and text not in keys:
+                keys[text] = lambda mode_id=cls.id, action=s.action: self.engine.mode_action(mode_id, action)
+        self._keys_refused = self.hotkeys.set(keys)
 
     # ------------------------------------------------------------ layout
     def _build_sidebar(self) -> QWidget:
@@ -342,6 +358,7 @@ class MainWindow(QMainWindow):
             self._live_frames = None
             self.engine.reload_mode()
             self._mark_live()
+            self.sync_hotkeys()
         self._viewing = ""                       # rebuild the page as the live one
         self.view_mode(mode_id)
 
@@ -360,11 +377,37 @@ class MainWindow(QMainWindow):
                     clear(item.layout())
         clear(lay)
         values = self.config.mode_settings(cls.id)
+        if cls.actions:                          # what the mode can be told to do: a button each
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            for action, label in cls.actions:
+                button = QPushButton(label)
+                button.setCursor(Qt.CursorShape.PointingHandCursor)
+                button.clicked.connect(lambda _=False, a=action: self.engine.mode_action(cls.id, a))
+                row.addWidget(button, 1)
+            lay.addLayout(row)
         lay.addWidget(_label("SETTINGS", "section"))
         for s in cls.settings:
             lay.addWidget(_label(s.label))
             current = values.get(s.key, s.default)
-            if s.kind == "order":
+            if s.kind == "shortcut":
+                line = QHBoxLayout()
+                line.setSpacing(8)
+                keys = QKeySequenceEdit(QKeySequence(current))
+                keys.setMaximumSequenceLength(1)
+                keys.editingFinished.connect(lambda k=keys, key=s.key: self._set_setting(
+                    cls.id, key, k.keySequence().toString(QKeySequence.SequenceFormat.PortableText)))
+                none = QPushButton("None")
+                none.clicked.connect(lambda _=False, k=keys, key=s.key: (k.clear(), self._set_setting(cls.id, key, "")))
+                line.addWidget(keys, 1)
+                line.addWidget(none)
+                lay.addLayout(line)
+                if cls.id == self._live and current in self._keys_refused:
+                    note = _label("Windows will not give deephack this key: another program has it, or it is no single key.",
+                                  "hint", wrap=True)
+                    note.setStyleSheet(f"color: {style.WARN};")
+                    lay.addWidget(note)
+            elif s.kind == "order":
                 order = OrderList(s.choices, current)
                 order.changed.connect(lambda value, key=s.key: self._set_setting(cls.id, key, value))
                 lay.addWidget(order)
@@ -419,6 +462,9 @@ class MainWindow(QMainWindow):
 
         if uses(self._live):
             self.engine.reload_mode()
+        if mode_id == self._live and any(s.key == key and s.kind == "shortcut" for s in BY_ID[mode_id].settings):
+            self.sync_hotkeys()
+            QTimer.singleShot(0, lambda: self._viewing == mode_id and self._build_settings(BY_ID[mode_id]))
         if self._viewing != self._live and uses(self._viewing):
             self.engine.reload_preview()
 

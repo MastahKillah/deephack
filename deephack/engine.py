@@ -183,6 +183,15 @@ class Engine(QThread):
         """Call after the previewed mode's settings changed."""
         self._commands.put(lambda: self._make_preview(self._preview.id if self._preview else None))
 
+    def mode_action(self, mode_id: str, action: str) -> None:
+        """One of a mode's `actions` ("next"): for the mode on the cooler, and for its preview if that is it."""
+        def act() -> None:
+            for mode in (self._mode, self._preview):
+                if mode is not None and mode.id == mode_id:
+                    mode.act(action)
+
+        self._commands.put(act)
+
     def retry_device(self) -> None:
         self._commands.put(lambda: setattr(self, "_next_open", 0.0))
 

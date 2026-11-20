@@ -39,6 +39,7 @@ QUALITY = 65                # JPEG quality of its pictures. A frame of a crowd i
 IDLE = 3.0                  # seconds without anybody asking for a frame: the stream is closed
 BEHIND = 0.3                # a frame this late means the reading cannot keep up: the clock is set anew, nothing is skipped
 RETRY = 5.0                 # seconds before a video that would not open is tried again
+RETRY_NEXT = 1.0            # ... and before the next one is tried, where there is a next one (`on_error`)
 OPEN_TIMEOUT = (15.0, 15.0)     # seconds to open the address, and to wait for more of it
 # what to ask YouTube for: H.264 when there is one (every ffmpeg decodes it, fast), and no more lines than needed
 FORMATS = "bestvideo[height<={0}][vcodec^=avc1]/bestvideo[height<={0}]/best[height<={0}]/best"
@@ -130,10 +131,15 @@ class Player:
     """Reads a video in a thread of its own and keeps the frame that belongs on screen now.
 
     `ask()` whenever a frame is wanted (it starts the reading, and keeps it going); `latest()` is the
-    newest frame and its number. `state`: "idle", "opening", "playing" or "failed" (then `error` says why)."""
+    newest frame and its number. `state`: "idle", "opening", "playing" or "failed" (then `error` says why).
 
-    def __init__(self, source: str, resolve=resolve, clock=time.monotonic):
+    By itself it plays one video over and over. For a list of them: `resolve` is asked where the video
+    is every time one is opened, so it can name another; `on_end` is called at a video's end and
+    `on_error` when one would not play, before the next is opened; `skip()` opens the next at once."""
+
+    def __init__(self, source: str, resolve=resolve, clock=time.monotonic, on_end=None, on_error=None):
         self.source, self._resolve, self._clock = source, resolve, clock
+        self._on_end, self._on_error, self._skipped = on_end, on_error, False
         self.title, self.duration, self.position = "", 0.0, 0.0
         self.state, self.error = "idle", ""
         self.opened = 0                          # times the video was opened: 1, and one more for every new start
@@ -153,6 +159,10 @@ class Player:
     def stop(self) -> None:
         self._asked = float("-inf")
 
+    def skip(self) -> None:
+        """Leave the video that is playing and open what `resolve` names now, from its beginning."""
+        self._skipped = True
+
     def latest(self):
         return self._seq, self._frame
 
@@ -163,23 +173,35 @@ class Player:
         import av
 
         while self._wanted():
+            wait = RETRY
             try:
                 self.state = "opening"
+                if self._skipped:
+                    self._skipped, self._resume = False, 0.0
                 address, options, title = self._resolve(self.source)
                 self.title = title or self.title
-                with av.open(address, options=options, timeout=OPEN_TIMEOUT) as container:
-                    self.opened += 1
-                    if self._play(container):
-                        self._resume = 0.0                   # its end: from the beginning again
+                try:
+                    with av.open(address, options=options, timeout=OPEN_TIMEOUT) as container:
+                        self.opened += 1
+                        if self._play(container):
+                            self._resume = 0.0               # its end: from the beginning again, or the next one
+                            if self._on_end:
+                                self._on_end()
+                except Exception:                            # noqa: BLE001
+                    if self._on_error:                       # this one will not play: on to the next
+                        self._on_error()
+                        self._resume, wait = 0.0, RETRY_NEXT
+                    raise
             except Exception as e:                           # noqa: BLE001  (whatever a site or a file can do wrong)
                 self.state, self.error = "failed", brief(e)
-                until = self._clock() + RETRY
-                while self._wanted() and self._clock() < until:
-                    time.sleep(0.1)
+                until = self._clock() + wait
+                while self._wanted() and not self._skipped and self._clock() < until:
+                    time.sleep(0.05)
         self.state = "idle"
 
     def _play(self, container) -> bool:
-        """Play from where we were. True at the video's end, False when nobody wants frames any more."""
+        """Play from where we were. True at the video's end, False when nobody wants frames any more or
+        another video was asked for."""
         video = container.streams.video[0]
         video.thread_type = "AUTO"
         self.duration = float(container.duration or 0) / 1_000_000
@@ -188,7 +210,7 @@ class Player:
             container.seek(int(start * 1_000_000))           # lands on the key frame before; the frames up to
         base = None                                          # `start` are decoded and not shown
         for frame in container.decode(video):
-            if not self._wanted():
+            if not self._wanted() or self._skipped:
                 return False
             at = frame.time
             if at is None or at < start - 0.05:
@@ -201,6 +223,8 @@ class Player:
                 base = (now, at)
             elif wait > 0:
                 time.sleep(min(wait, 1.0))
+            if self._skipped:
+                return False
             self._frame, self._seq = frame, self._seq + 1
             self.position = self._resume = at
             self.state, self.error = "playing", ""
@@ -217,8 +241,8 @@ class Video(Mode):
         Setting("source", "Video", "file", "", placeholder="https://www.youtube.com/watch?v=…",
                 hint="A YouTube link (most other video sites work too), or a video file on this PC. It is read as it "
                      "plays, not downloaded, and starts again at its end."),
-        Setting("fit", "Picture", "choice", "fill", (("fill", "Fill the screen: the middle of a wide picture"),
-                                                    ("fit", "The whole picture, with bars"))),
+        Setting("fit", "Picture", "choice", "fill", (("fill", "Fill the screen"), ("fit", "The whole picture, with bars")),
+                hint="A wide picture fills the screen with its middle."),
     )
 
     def __init__(self, values: dict | None = None, player=Player):
@@ -228,21 +252,33 @@ class Video(Mode):
         self._shown = 0                          # number of the frame handed over last
         self._still = False                      # the one picture for a cooler that cannot be drawn on has been made
 
-    async def frame(self) -> Image.Image | None:
+    def _source(self) -> str:
+        """What to play; nothing: the mode says what it wants instead."""
         source = self.values["source"].strip().strip('"')
-        self.tick = TICK if self.direct else None
         if not source:
             self.status, self.placeholder = "No video chosen", ("Video", "Paste a YouTube link or choose a file")
+        return source
+
+    def _new_player(self, source: str) -> Player:
+        lines = LINES.get(self.values["fit"], 720)
+        return self._make_player(source, lambda address: resolve(address, lines))
+
+    def _name(self, source: str) -> str:
+        return self._player.title or ("Video" if "://" in source else Path(source).stem)
+
+    async def frame(self) -> Image.Image | None:
+        source = self._source()
+        self.tick = TICK if self.direct else None
+        if not source:
             return None
         if self._player is None:
-            lines = LINES.get(self.values["fit"], 720)
-            self._player = self._make_player(source, lambda address: resolve(address, lines))
+            self._player = self._new_player(source)
         player = self._player
         if not self.direct and self._still:
             return None
         player.ask()
         seq, frame = player.latest()
-        name = player.title or ("Video" if "://" in source else Path(source).stem)
+        name = self._name(source)
         if player.state == "failed" and (frame is None or seq == self._shown):
             self.status, self.placeholder = f"Cannot play it: {player.error}", (name, f"Cannot play it: {player.error}")
             return None
