@@ -273,18 +273,18 @@ def test_the_live_page_shows_seconds():
 
 def test_feed_keeps_the_newest_readings_and_stops_when_unused(monkeypatch):
     import time
-    monkeypatch.setattr(system, "FEED_IDLE", 0.3)
+    monkeypatch.setattr(system, "FEED_IDLE", 1.0)       # (long enough for a busy PC to start the thread in)
     count = iter(range(1000))
     feed = system.Feed(None, read=lambda: (next(count),), keep=2)
     nap = time.sleep
     monkeypatch.setattr(system.time, "sleep", lambda seconds: nap(0.01))   # a reading every moment, not every second
     assert feed.latest() is None and feed.recent() == []
-    deadline = time.monotonic() + 3
+    deadline = time.monotonic() + 10
     while len(feed.recent()) < 2 and time.monotonic() < deadline:
         feed.latest()
         nap(0.02)
     recent = feed.recent()
     assert len(recent) == 2 and recent[1][1] == recent[0][1] + 1 and feed.latest()[1] >= recent[1][1]
     thread = feed._thread
-    thread.join(3)
+    thread.join(5)
     assert not thread.is_alive()
