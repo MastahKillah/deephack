@@ -337,6 +337,16 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   one every 299 ms at the median (258 to 322; the loop has 300 ms a frame), and Claude Pet, 97 frames,
   one every 250 ms (235 to 251). Neither stored anything. Sending a frame took 23 to 26 ms, and the
   engine used 0.2 % and 1.4 % of one CPU core. How the cooler takes hours of this is not known yet.
+- **A scene drawn as it is right now** (Scene since it is no loop any more, 20 Nov 2026): the slow
+  parts (sky, city, street) are drawn small and kept, and cars, rain and snow are put on the scaled-up
+  picture at real pixels. While a car passed: a frame every 55 ms or so, and the car 7 to 9 pixels
+  further in each (8 at the median, 358 steps; at 36 small pixels a second it would be 7.2 in 50 ms).
+  Frames of 17 to 22 KB by day, 21 to 26 KB in rain or snow, 32 to 37 ms to send. Cost, with nothing
+  else running: a clear day over two minutes, a car in the picture 39 % of the time, 7.3 frames a
+  second, 2.6 % of one CPU core; rain at night, 11.8 frames a second, 3.5 %; a clear night, 3.2 frames
+  a second (stars, the mast's light, a car now and then), 1.7 %. The mode's own work was 0.3 to 0.7 %
+  of that. 1215 frames in the filmed run, none stored. Since this, no mode hands the engine an
+  animation to play when it can draw (`_draw_animation` is still there for one that would).
 - **A pet drawn whenever it moves** (Claude Pet since it makes its own pictures instead of handing over
   a loop; with Spotify, 20 Nov 2026): dancing 0.06 and 0.55 s after "play" was asked of Spotify (it
   asks Windows whether music plays twice a second), back at work 1.75 and 1.97 s after "pause". While

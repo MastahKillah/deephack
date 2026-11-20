@@ -19,7 +19,7 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **NBA** | The last two results and the next two games, with team logos, for one team or the whole league. From ESPN's public feed; tip-off times in your local time zone. While your team plays, a big scoreboard with points per quarter takes over, updated every few minutes. |
 | **Claude Code** | Plan limits (5-hour and weekly) and today's tokens, requests, hourly activity and model split. All from local files, see below. |
 | **Claude Pet** | An animated pixel pet with your plan limit percentages. It works along while Claude Code is busy, dances while music plays, sleeps at night and celebrates or sulks after your NBA team's games; you pick which of these count and which wins. Otherwise its mood follows the fullest limit: happy, fine, stressed, exhausted. With the [direct drawing firmware](#protocol) on the cooler it is drawn anew whenever it moves, and nothing is stored: it dances to the music itself (a step and a hop for every beat, and the background and the cooler's light pulse with the bass), starts and stops within a second or two, blinks and waves now and then, yawns before it sleeps, and the percentages follow the usage snapshot within seconds. |
-| **Scene** | A little pixel-art city under your real sky: dawn, day, dusk and night follow the sunrise and sunset, and clouds, fog, rain, snow or a thunderstorm follow the current weather in the Weather page's city. Windows light up in the evening, street lamps glow, a car drives by. An 8-frame animation, rewritten only when the time of day or the kind of weather changes. Also a fallback for Auto. |
+| **Scene** | A little pixel-art city under your real sky: dawn, day, dusk and night follow the sunrise and sunset, and clouds, fog, rain, snow or a thunderstorm follow the current weather in the Weather page's city. Windows light up in the evening, street lamps glow, cars drive by. With the [direct drawing firmware](#protocol) on the cooler it is the city as it is right now, drawn anew and never stored: the sky's colours, the sun and the moon move all the time, windows come on one by one through dusk and go out as the night goes on, clouds drift, lightning strikes at odd moments, rain and snow fall without repeating, and cars, taxis, vans and buses pass at odd times, more of them at rush hour, gliding by a pixel of the screen at a time. On DeepCool's own firmware it is an 8-frame animation, rewritten only when the time of day or the kind of weather changes. Also a fallback for Auto. |
 | **Visualizer** | Whatever the PC is playing, as a picture. With the [direct drawing firmware](#protocol) on the cooler it is a spectrum: a bar for each of 24 pitches, bass on the left, treble on the right, with a mark where each last peaked, drawn anew about eighteen times a second, and nothing is stored. Or an orb that pulses with the bass, which is also what DeepCool's own firmware gets: there it is a flipbook, up to seven frames from silence to full blast stored once, the mode saying which one to show, which wears nothing but trails the music by a quarter of a second. The sound is read from the PC's output (nothing is recorded or sent anywhere). |
 | **Countdown** | Days until a date you set, with a title. On the last day it counts hours, then minutes. |
 | **Photo Frame** | Pictures from a folder you pick, changing every 15 minutes to once a day, shuffled or by file name. Portrait photos fill the screen, wider ones are shown whole. |
@@ -63,9 +63,9 @@ autostart entry.
 - **On DeepCool's own firmware every update is a write to the cooler's flash**, except in Live, which
   uses the cooler's own sensor screens, and in Visualizer, which flips between pictures stored once: that
   firmware has no way to show a picture without storing it first. With the direct drawing firmware (see
-  [Protocol](#protocol)) deephack draws its pictures straight from USB instead, and plays the
-  animations of Claude Pet and Scene from the PC, frame by frame: nothing is stored but one plain black
-  picture, once, for the frames to go over.
+  [Protocol](#protocol)) deephack draws its pictures straight from USB instead, and Claude Pet
+  and Scene, which are stored animations otherwise, are drawn anew whenever something in them moves:
+  nothing is stored but one plain black picture, once, for the frames to go over.
   A slide show of the stored pictures is the exception: with that switched on, ours is stored as before.
   Where it does store, deephack rate-limits
   writes (at most one every 8 seconds, tracks have to settle before they are drawn), but the flash
@@ -74,7 +74,7 @@ autostart entry.
   no write.
 - **deephack adds files the DeepCool app does not know about:** one image (a black one on the direct
   drawing firmware), one animation once you use
-  Claude Pet or Scene, and up to seven more images once you use Visualizer on DeepCool's own firmware
+  Claude Pet or Scene on DeepCool's own firmware, and up to seven more images once you use Visualizer there
   (the cooler keeps about nine in all, so it takes whatever room your own pictures leave). They are stored after the JPGs / GIFs you uploaded with the official app. If you later add
   files there, its numbering will be off by one. `python -m deephack.device delete <index>` (add `--gif`
   for the animation) removes them; the indexes are `slot_index` and `gif_slot_index` in
@@ -251,8 +251,9 @@ was off the bus for 12 seconds and came back drawing. Measured there, from the h
 times a second, a 72 KB one 10 times, an 8 KB one 20 times. The engine uses it for every picture a
 mode returns (one frame of 27 to 68 KB, on screen 36 to 88 ms after it was ready; nothing is stored and
 there is no wait between two; the System page is redrawn every second that way, 39 to 44 KB a frame,
-for 2 % of one CPU core), for animations (Scene: a frame of 18 KB every 300 ms, under 2 % of one CPU
-core), for Claude Pet (a frame of 15 to 19 KB whenever it moves: four a second for 2 % of one CPU core,
+for 2 % of one CPU core), for Scene (a frame of 17 to 25 KB: eighteen a second while a car passes, ten
+while rain or snow falls, a few otherwise; 2.6 % of one CPU core over a clear day, 3.5 % in rain), for
+Claude Pet (a frame of 15 to 19 KB whenever it moves: four a second for 2 % of one CPU core,
 eighteen a second while it dances for 7 %) and for the Visualizer, which gets a frame every 50 ms (the spectrum 20 to 37 KB each, drawn and encoded in a millisecond; 9 % of one CPU core, half of it the USB traffic).
 A picture over the firmware's 128 KiB is sent at a lower JPEG quality.
 
