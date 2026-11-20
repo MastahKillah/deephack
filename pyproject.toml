@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deephack"
-version = "0.1.0"
+dynamic = ["version"]                    # deephack.__version__: the one place it is written
 description = "Custom content (now playing, weather, ...) for the DeepCool MYSTIQUE cooler LCD"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -26,6 +26,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+package = ["pyinstaller>=6", "build"]    # for the standalone app and the wheel, see packaging/
 emu = ["unicorn>=2.1", "capstone>=5",     # for tools/emu: running the stock firmware in an emulator
        "keystone-engine>=0.9.2"]          # for tools/fw: assembling the direct drawing patch
 
@@ -34,6 +35,9 @@ deephack = "deephack.app:main"
 
 [tool.setuptools.packages.find]
 include = ["deephack*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "deephack.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

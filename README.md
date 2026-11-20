@@ -41,10 +41,17 @@ stored on it (the cooler's own slideshow).
 
 ## Install and run
 
-Windows 10/11 and Python 3.11+.
+Windows 10/11.
+
+**The app, ready to run:** download `deephack-<version>-windows-x64.zip` from the
+[latest release](https://github.com/a7ex-turcan/deephack/releases/latest), unpack it anywhere and start
+`deephack.exe`. It needs no Python. It is not signed, so Windows may ask before it runs it the first time
+("More info", then "Run anyway").
+
+**From source,** with Python 3.11+:
 
 ```powershell
-git clone <this repo> deephack
+git clone https://github.com/a7ex-turcan/deephack
 cd deephack
 python -m venv .venv
 .\.venv\Scripts\pip install -e .
@@ -126,6 +133,23 @@ a stored image, never the erase commands) and fails any test that breaks one.
 To let Auto pick the mode, set `claims` to a few words saying when it has something to show
 (`claims = "music playing"`), keep `self.active` up to date in `frame()`, and add the class to
 `CANDIDATES` in `auto.py`.
+
+## Releasing
+
+Releases are built by GitHub (`.github/workflows/release.yml`): the tests run, then the standalone app is
+built with PyInstaller (`packaging/deephack.spec`), started once to see that it comes up, and published
+with the wheel, the source archive and their checksums. To make one, set `__version__` in
+`deephack/__init__.py` (the only place the version is written), commit, and push a tag of that version:
+
+```powershell
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+A tag that does not match the version fails the run before anything is built. "Run workflow" on the
+repository's Actions page is a trial run: the same tests and builds, kept with the run, nothing published.
+To build the app on your own PC: `pip install -e .[package]`, then
+`pyinstaller --noconfirm packaging/deephack.spec` makes `dist\deephack\`.
 
 ## Protocol
 
