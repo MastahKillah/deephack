@@ -337,6 +337,12 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   one every 299 ms at the median (258 to 322; the loop has 300 ms a frame), and Claude Pet, 97 frames,
   one every 250 ms (235 to 251). Neither stored anything. Sending a frame took 23 to 26 ms, and the
   engine used 0.2 % and 1.4 % of one CPU core. How the cooler takes hours of this is not known yet.
+- **One mode fading into the next** (Auto, Scene as the fallback and Now Playing over it, 20 Nov
+  2026): Now Playing had the screen 0.05 s after it had something to show, and its picture faded in
+  over 0.47 s, in which 6 mixed pictures were drawn (29 to 65 KB: two pictures on top of each other
+  make a large JPEG, and a large one takes longer to send). Scene was back 5.02 s after Now Playing
+  went quiet, fading in over 0.44 s with 8 pictures (18 to 48 KB). The webcam caught one or two of
+  the mixed pictures of each. 225 frames in the run, none stored.
 - **A scene drawn as it is right now** (Scene since it is no loop any more, 20 Nov 2026): the slow
   parts (sky, city, street) are drawn small and kept, and cars, rain and snow are put on the scaled-up
   picture at real pixels. While a car passed: a frame every 55 ms or so, and the car 7 to 9 pixels

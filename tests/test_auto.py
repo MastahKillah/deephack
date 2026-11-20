@@ -6,7 +6,7 @@ from PIL import Image
 from deephack import engine
 from deephack.config import Config
 from deephack.modes import auto, nba
-from deephack.modes.base import Animation, Mode, parse_order
+from deephack.modes.base import Animation, Dashboard, Mode, parse_order
 
 
 class Fake(Mode):
@@ -85,6 +85,61 @@ def test_new_frames_of_the_chosen_mode_pass_through(monkeypatch):
     a.children["b"].pending = Image.new("RGB", (480, 640), "white")  # b is not showing: ignored
     assert colour(step(a, clock, monkeypatch)) == (255, 255, 0)
     assert step(a, clock, monkeypatch) is None
+
+
+# ------------------------------------------------------------------ drawn pictures (the direct drawing firmware)
+def test_drawn_auto_gives_the_screen_up_after_seconds(monkeypatch):
+    a, clock = make(), [0.0]
+    a.direct = True
+    a.children["a"].active = True
+    assert colour(step(a, clock, monkeypatch)) == (255, 0, 0)
+    a.children["a"].active = False
+    assert step(a, clock, monkeypatch, auto.LINGER_DRAWN - 1) is None and a.chosen == "a"      # against flicker
+    assert step(a, clock, monkeypatch, 2) is not None and a.chosen == "weather"
+    assert auto.LINGER_DRAWN < auto.LINGER / 10
+
+
+def test_drawn_auto_fades_from_one_mode_to_the_next(monkeypatch):
+    a, clock = make(), [0.0]
+    a.direct = True
+    assert colour(step(a, clock, monkeypatch)) == (128, 128, 128) and a.tick is None            # the first: no fade
+    assert step(a, clock, monkeypatch) is None
+    a.children["a"].active = True
+    reds = []
+    while (img := step(a, clock, monkeypatch, auto.FADE_TICK)) is not None:
+        reds.append(colour(img)[0])
+        assert a.tick == auto.FADE_TICK or colour(img) == (255, 0, 0)
+    assert reds[0] > 128 and reds == sorted(reds) and reds[-1] == 255 and len(set(reds)) >= 8   # grey into red, in steps
+    assert abs(len(reds) * auto.FADE_TICK - auto.FADE) <= auto.FADE_TICK and a.tick is None      # and done
+    # the mode fading in keeps moving; the one fading out is the picture it left
+    a.children["a"].active = False
+    step(a, clock, monkeypatch, auto.LINGER_DRAWN + 1)
+    first = step(a, clock, monkeypatch, auto.FADE_TICK)
+    a.children["weather"].pending = Image.new("RGB", (480, 640), "blue")
+    second = step(a, clock, monkeypatch, auto.FADE_TICK)
+    assert colour(first)[2] < colour(second)[2] and colour(second)[0] > 0                        # blue coming, red going
+    # a switch while it fades goes on from the mixed picture, not from a clean one
+    a.children["a"].active = True
+    third = step(a, clock, monkeypatch, auto.FADE_TICK)
+    assert a.chosen == "a" and 0 < colour(third)[2] < colour(second)[2]
+    last = [img for img in (step(a, clock, monkeypatch, auto.FADE_TICK) for _ in range(12)) if img is not None][-1]
+    assert colour(last) == (255, 0, 0)
+
+
+def test_no_fade_on_stock_firmware_or_with_a_sensor_screen(monkeypatch):
+    a, clock = make(), [0.0]
+    step(a, clock, monkeypatch)
+    a.children["a"].active = True
+    assert colour(step(a, clock, monkeypatch)) == (255, 0, 0) and a.tick is None                # stored: at once, whole
+    a, clock = make(), [0.0]
+    a.direct = True
+    gauges = Dashboard("dashboard", (0, 0, 0), {}, Image.new("RGB", (480, 640), "white"))
+    a.children["weather"].pending = gauges                                                       # e.g. Live as the fallback
+    assert step(a, clock, monkeypatch) is gauges
+    a.children["a"].active = True
+    assert colour(step(a, clock, monkeypatch)) == (255, 0, 0) and a.tick is None                # nothing of ours to fade from
+    a.children["a"].active = False
+    assert step(a, clock, monkeypatch, auto.LINGER_DRAWN + 1) is gauges and a.tick is None      # nor to
 
 
 def test_auto_builds_children_with_their_own_settings():
