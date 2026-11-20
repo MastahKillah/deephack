@@ -146,3 +146,31 @@ def test_an_update_that_goes_wrong_is_not_flashed_and_can_be_called_off(stock):
     cooler.run_for(1.0)
     assert {name.lower(): content for name, content in cooler.files().items()} == {f"img/000_{'f' * 32}/angle_0.jpg": picture}
     assert not any(value & 1 for value in machine.writes[WDT_CR])
+
+
+def test_the_patched_firmware_takes_an_update_too(stock, tmp_path):
+    """An update of the patch, or the way back to DeepCool's image, goes to a cooler that runs the patched
+    firmware and has drawn frames."""
+    from PIL import Image
+
+    running = tmp_path / "patched.bin"
+    running.write_bytes(patch.build(stock))
+    cooler = bench.EmulatedCooler(firmware=running)
+    driver = cooler.driver()
+    driver.set_mode(device.MODE_MOTION)
+    driver.upload_jpeg("0" * 32, device.encode_jpeg(Image.new("RGB", (480, 640), "#203060")))
+    cooler.run_for(1.0)
+    driver.show_slot(0)
+    cooler.run_for(0.5)
+    driver.draw_jpeg(device.encode_jpeg(Image.new("RGB", (480, 640), "#802020")))
+    cooler.run_for(0.3)
+    image = stock[:68 * 1024]
+    real_sleep, time.sleep = time.sleep, lambda seconds: cooler.run_for(seconds)
+    try:
+        firmware.send_update(driver, image)
+    finally:
+        time.sleep = real_sleep
+    cooler.run_for(1.0)
+    files = {name.lower(): content for name, content in cooler.files().items()}
+    assert files.get("fw_update.bin") == image
+    assert any(value & 1 for value in cooler.machine.writes[WDT_CR])

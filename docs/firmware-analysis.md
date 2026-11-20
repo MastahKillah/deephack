@@ -155,6 +155,8 @@ sum, then writes it to the filesystem in 4 KiB chunks. This is true for every fi
   announces another sum, one byte changed on the way, and an upload the sender stops half way. In each
   case nothing is stored, nothing restarts, the firmware answers commands, and after `dcldfinish` the
   next upload is a picture again.
+- **The patched firmware takes an update like the stock one** (emulator: versions 1 and 2 of the patch
+  running, a frame drawn, then the update: stored whole, restarted).
 
 ## Display path
 
@@ -292,7 +294,12 @@ What was needed to know for it, all seen in the emulator:
   "show" and not once after that, also not after a still is shown; with 100 ms a frame it comes back
   with the still. That is what version 1 of the patch ran into on the cooler ("On the cooler", below),
   and why version 2 has its second hook where the handler starts over: that place is passed after every
-  task, and no task is half done there.
+  task, and no task is half done there. *On the cooler* (20 Nov 2026, version 1, nothing flashed for
+  it): four stored animations, of 33, 50, 100 and 300 ms a frame by the DeepCool app's own record
+  (`metadata.json` next to each in `%APPDATA%\DeepCool\Pictures`) and deephack's. Each was shown for
+  2 s, then the still, then eight frames were drawn. After the 33 ms one: "go ahead" once, then "later"
+  seven times. After each of the others: all eight taken. So the cooler needs between 33 and 50 ms for
+  one round of the image screen's work, which is also the pace at which it takes drawn frames.
 - **The heap** (`lv_mem_alloc`, `0x5C3C8`) is 8 MiB at the start of the SDRAM, `0x80000000`; the frame
   buffers come from it too (`0x800061A0` and `0x8009C1C0`). After an upload about 4 MiB of it had ever
   been in use, 2 MiB of that the upload's staging buffer.
