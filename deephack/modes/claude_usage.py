@@ -160,12 +160,13 @@ class Activity:
     """Throttled check of whether Claude Code is busy, for the modes' `active` flag."""
 
     def __init__(self):
+        self.every = CHECK_SECONDS       # seconds between two looks at the logs
         self._next = 0.0
         self._last = 0.0
 
     async def busy(self) -> bool:
         if time.monotonic() >= self._next:
-            self._next = time.monotonic() + CHECK_SECONDS
+            self._next = time.monotonic() + self.every
             self._last = await asyncio.to_thread(last_activity)
         return time.time() - self._last < BUSY_SECONDS
 

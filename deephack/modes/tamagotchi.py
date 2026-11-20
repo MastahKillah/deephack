@@ -4,30 +4,44 @@ Left alone, its mood follows your Claude Code plan limits: the fuller they are, 
 It also reacts to what is going on, in an order you set: it works along while Claude Code is busy, dances
 while music plays, sleeps at night and celebrates or sulks after your NBA team's games.
 
-Every state is a short looping animation stored on the cooler, so it is rewritten only when the state,
-a percentage or the score it shows changes. Music has to play for a few seconds before the pet dances
-and stop for a while before it stops, so skipping or pausing a track does not cost a write.
+On DeepCool's own firmware every state is a short looping animation stored on the cooler, so it is
+rewritten only when the state, a percentage or the score it shows changes. Music has to play for a few
+seconds before the pet dances and stop for a while before it stops, so skipping or pausing a track does
+not cost a write.
+
+With the direct drawing firmware (`direct`, set by the engine) pictures cost nothing, and the pet is drawn
+anew whenever it moves:
+
+- it dances to the music itself: a step and a hop for every beat (see Beat), and the background lights up
+  with the bass, which the cooler's light follows
+- states start at once: no waiting for the music to settle, Claude Code's logs are looked at every few
+  seconds, and while the picked NBA team plays the score is asked for every minute
+- it does things that are not part of a loop: a blink now and then, a wave, a yawn before it sleeps
+- the percentages follow the usage snapshot within seconds, and count to their new value
 """
 from __future__ import annotations
 
 import asyncio
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from functools import lru_cache
 
 from PIL import Image, ImageDraw
 
 from .. import render
+from ..audio import LISTENER
 from ..config import config_dir
 from ..render import H, W
 from . import nba
 from .base import Animation, Mode, Setting, parse_order
-from .claude_usage import SNAPSHOT_NAME, Activity, read_limits
+from .claude_usage import CHECK_SECONDS, SNAPSHOT_NAME, Activity, read_limits
 from .now_playing import Playback
 
 FRAMES = 8
 LOOP_MS = 2000
+STEP = LOOP_MS / FRAMES / 1000       # seconds a frame of a loop is up
 
 BG_TOP, BG_BOTTOM = (36, 29, 27), (18, 15, 15)
 BODY, BODY_TIRED, EYE = (217, 119, 87), (150, 112, 100), (30, 22, 20)
@@ -37,9 +51,12 @@ ACCENT, AMBER, RED = (217, 119, 87), (240, 180, 70), (236, 96, 96)
 MOON, CLOUD, SCREEN = (244, 234, 196), (98, 104, 122), (24, 21, 21)
 BACKGROUNDS = {
     "sleeping": ((22, 26, 50), (9, 10, 22)),
+    "yawning": ((22, 26, 50), (9, 10, 22)),
     "sulking": ((34, 37, 46), (15, 16, 21)),
     "dancing": ((44, 27, 48), (19, 13, 22)),
 }
+DANCE_LOUD = ((118, 54, 130), (54, 27, 64))      # the dance's background at the loudest bass
+GLOWS = 8                                        # steps from the quiet background to that one
 
 REACTIONS = (("working", "Claude working"), ("music", "Music playing"), ("night", "Bedtime"), ("nba", "NBA result"))
 DEFAULT_REACTIONS = "working,music,night,nba"
@@ -47,6 +64,20 @@ MUSIC_CHECK = 2.0                    # seconds between looks at the media sessio
 MUSIC_SETTLE, MUSIC_LINGER = 8.0, 90.0
 NBA_CHECK, NBA_RETRY = 20 * 60, 5 * 60
 RESULT_HOURS = 12                    # how long the pet celebrates or sulks after the final
+
+# When pictures are drawn instead of stored (the direct drawing firmware), nothing has to be saved up:
+FAST_TICK, SLOW_TICK = 0.05, 0.125   # seconds between two looks: while it dances or counts, and otherwise
+MUSIC_CHECK_DRAWN = 0.5
+MUSIC_LINGER_DRAWN = 1.5             # a track change may look like a pause for a moment
+BUSY_CHECK_DRAWN = 5.0               # seconds between looks at Claude Code's logs
+LIMITS_CHECK_DRAWN = 5.0             # ... and at the usage snapshot
+NBA_LIVE_CHECK = 60.0                # ... and at the score, while the picked team plays
+BEAT_RISE, BEAT_LEVEL, BEAT_GAP = 0.1, 0.3, 0.3      # a beat: a level jumps this much, to at least this, and
+                                                     # the last one was this many seconds ago
+BEATLESS = 1.5                       # no beat for this long: music without one, and the pet dances its old loop
+HOP, HOP_FALL = 44, 0.1              # pixels off the ground on the loudest beat; it is half as high this much later
+NOTE_SPEED = 140                     # pixels a second the notes rise while it dances to the beat
+BLINK, WAVE = 0.15, 1.0              # seconds a blink and a wave last
 
 CELL = 20
 BASE_Y = 150
@@ -161,6 +192,29 @@ def pick_state(reactions: list[str], flags: dict[str, bool], result: Result | No
     return None
 
 
+class Beat:
+    """Finds the beats in audio.Listener's two levels: one each time the bass or the rest jumps up.
+
+    The bass alone is not enough: under a bass note held for bars the drums do not show in it (tried with
+    Spotify: 50 beats a minute found that way, 126 to 150 with both, 0.4 s from one to the next mostly)."""
+
+    def __init__(self):
+        self.count = 0
+        self.at = float("-inf")            # when the last one was
+        self.hop = 0.0                     # how far off the ground it still has the pet, 1.0 to 0.0
+        self._was = (0.0, 0.0)
+        self._fed: float | None = None
+
+    def feed(self, bass: float, rest: float, now: float) -> int:
+        jump, level = max((bass - self._was[0], bass), (rest - self._was[1], rest))
+        if self._fed is not None:
+            self.hop *= 0.5 ** ((now - self._fed) / HOP_FALL)
+        if jump >= BEAT_RISE and level >= BEAT_LEVEL and now - self.at >= BEAT_GAP:
+            self.count, self.at, self.hop = self.count + 1, now, level
+        self._was, self._fed = (bass, rest), now
+        return self.count
+
+
 class Debounce:
     """A flag that turns on once seen for `settle` seconds and off after `linger` seconds unseen."""
 
@@ -211,6 +265,7 @@ class Pose:
     lift: tuple[int, ...] = ()                 # columns of the feet that are off the ground
     squash: bool = False                       # top row missing: breathing out, slumped
     body: tuple[int, int, int] = field(default=BODY)
+    mouth: int = 0                             # open this many rows (it has none otherwise)
 
 
 def _draw_pet(d: ImageDraw.ImageDraw, x: int, y: int, pose: Pose) -> None:
@@ -231,9 +286,32 @@ def _draw_pet(d: ImageDraw.ImageDraw, x: int, y: int, pose: Pose) -> None:
         if (pose.eyes == "closed" and r == 2) or (pose.eyes == "up" and r == 3):
             continue                            # closed: only the lower pixel stays dark; up: only the upper
         cell(c + (pose.eyes == "right"), r, EYE)
+    for r in range(6 - pose.mouth, 6):
+        cell(7, r, EYE)
+        cell(8, r, EYE)
 
 
-def _pose(state: str, f: int, body: tuple[int, int, int]) -> Pose:
+# A yawn before sleep, a frame for every STEP: (eyes, mouth, how far the arms are up, how far it stretches)
+YAWN = (("open", 1, 0, 0), ("closed", 2, 1, -4), ("closed", 2, 2, -8), ("closed", 2, 2, -8), ("closed", 2, 2, -8),
+        ("closed", 2, 1, -4), ("closed", 1, 0, 0), ("open", 0, 0, 0), ("closed", 0, -1, 0))
+
+
+def yawn_pose(i: int, body: tuple[int, int, int]) -> Pose:
+    eyes, mouth, arms, dy = YAWN[i]
+    return Pose(dy=dy, eyes=eyes, arms=(arms, arms), body=body, mouth=mouth)
+
+
+def dance_pose(beats: int, hop: float, body: tuple[int, int, int]) -> Pose:
+    """The dance to the music itself: a step for every beat, and `hop` (Beat's) off the ground."""
+    step = beats % 8
+    return Pose(dx=(0, -10, -16, -10, 0, 10, 16, 10)[step], dy=-2 * round(hop * HOP / 2),
+                eyes="closed" if step in (3, 7) else "open", arms=(2, 0) if step % 4 < 2 else (0, 2),
+                lift=(2, 11) if step % 2 else (4, 13), body=body)
+
+
+def _pose(state: str, f: int, body: tuple[int, int, int], live: bool = False) -> Pose:
+    """The pet in frame `f` of a state's loop. `live`: without the loop's blink and wave, which then come
+    at times of their own."""
     if state == "exhausted":
         return Pose(eyes="closed", body=BODY_TIRED)
     if state == "sleeping":
@@ -252,8 +330,8 @@ def _pose(state: str, f: int, body: tuple[int, int, int]) -> Pose:
         return Pose(dy=dy, eyes="closed" if dy <= -44 else "open", arms=(2, 2) if dy else (1, 1), body=body)
     # the moods: a gentle bob, a blink, and a wave when happy
     step = f in (1, 2, 5, 6)
-    return Pose(dy=(0, -8, -14, -8, 0, -8, -14, -8)[f], eyes="closed" if f == 4 else "open",
-                arms=(0, 2) if state == "happy" and f in (5, 6) else (0, 0),
+    return Pose(dy=(0, -8, -14, -8, 0, -8, -14, -8)[f], eyes="closed" if f == 4 and not live else "open",
+                arms=(0, 2) if state == "happy" and f in (5, 6) and not live else (0, 0),
                 lift=(2, 11) if step else (4, 13) if f in (3, 7) else (), body=body)
 
 
@@ -307,11 +385,25 @@ def _terminal(d: ImageDraw.ImageDraw, f: int) -> None:
         d.rectangle([cursor[0], cursor[1] - 3, cursor[0] + 7, cursor[1] + 10], fill=ACCENT)
 
 
-def _notes(d: ImageDraw.ImageDraw, f: int) -> None:
-    span = 280                                   # risen per loop, so the loop repeats seamlessly
+NOTE_SPAN = 280                                  # risen per loop, so the loop repeats seamlessly
+
+
+def _notes(d: ImageDraw.ImageDraw, f: int, risen: int | None = None) -> None:
+    """`risen`: how far up the notes are, in pixels, when that does not go by the frame."""
+    risen = f * NOTE_SPAN // 8 if risen is None else risen
     for x, colour, phase in ((14, SPARK, 0), (428, SWEAT, 70), (14, (240, 140, 200), 140), (428, SPARK, 210)):
-        rise = (f * span // 8 + phase) % span
+        rise = (risen + phase) % NOTE_SPAN
         _pixels(d, NOTE, x + (6 if (f * 2 + phase // 70) % 4 < 2 else 0), 390 - rise, 7, colour)
+
+
+@lru_cache(maxsize=GLOWS)
+def _dance_floor(glow: int) -> Image.Image:
+    """The dance's background, lit up by the bass in GLOWS steps. The cooler's light takes its colour from
+    the picture's edges, so it pulses along."""
+    t = glow / (GLOWS - 1)
+    top, bottom = (tuple(round(q + (l - q) * t) for q, l in zip(quiet, loud))
+                   for quiet, loud in zip(BACKGROUNDS["dancing"], DANCE_LOUD))
+    return render.vertical_gradient(top, bottom)
 
 
 def _confetti(d: ImageDraw.ImageDraw, f: int, team: tuple[int, int, int]) -> None:
@@ -335,23 +427,30 @@ def _rain(d: ImageDraw.ImageDraw, f: int) -> None:
         d.rectangle([x, y, x + 3, y + 11], fill=SWEAT)
 
 
-def render_frame(frame: int, limits: dict | None, state: str | None = None, result: Result | None = None) -> Image.Image:
-    """One frame of the pet. `state` is an activity (working, dancing, sleeping, cheering, sulking);
-    without one the pet shows the mood of the fullest plan limit."""
+def render_frame(frame: int, limits: dict | None, state: str | None = None, result: Result | None = None, *,
+                 pose: Pose | None = None, risen: int | None = None, glow: int = 0) -> Image.Image:
+    """One frame of the pet. `state` is an activity (working, dancing, sleeping, cheering, sulking, and
+    yawning, which has no loop of its own); without one the pet shows the mood of the fullest plan limit.
+
+    A pet that is drawn anew for every picture is not bound to its loops: `pose` is the pet itself when it
+    is not the loop's, `risen` how far up the dance's notes are and `glow` how lit its background is."""
     windows = [(label, limits[key][0]) for key, label in (("five_hour", "5H"), ("seven_day", "WEEK")) if limits and key in limits]
     worst = max((p for _, p in windows), default=None)
     mood = mood_for(worst)
     state = state or mood
-    img = render.vertical_gradient(*BACKGROUNDS.get(state, (BG_TOP, BG_BOTTOM)))
+    if state == "dancing" and glow:
+        img = _dance_floor(glow).copy()
+    else:
+        img = render.vertical_gradient(*BACKGROUNDS.get(state, (BG_TOP, BG_BOTTOM)))
     d = ImageDraw.Draw(img)
 
-    pose = _pose(state, frame, BODY_TIRED if mood == "exhausted" else BODY)
+    pose = pose or _pose(state, frame, BODY_TIRED if mood == "exhausted" else BODY)
     px, py = (W - SPRITE_W) // 2 + pose.dx, BASE_Y + pose.dy
     ground = BASE_Y + SPRITE_H + 14
     shrink = min(-pose.dy, 50) if pose.dy < 0 else 0      # the shadow tightens as the pet lifts off
     d.ellipse([px + 40 + shrink, ground, px + SPRITE_W - 40 - shrink, ground + 16], fill=(12, 10, 10))
 
-    if state == "sleeping":
+    if state in ("sleeping", "yawning"):
         _night_sky(d, frame)
     elif state == "working":
         _terminal(d, frame)
@@ -375,7 +474,7 @@ def render_frame(frame: int, limits: dict | None, state: str | None = None, resu
     elif state == "sleeping":
         _zeds(d, px, py, frame)
     elif state == "dancing":
-        _notes(d, frame)
+        _notes(d, frame, risen)
     elif state == "cheering" and result:
         _confetti(d, frame, result.color)
 
@@ -417,15 +516,18 @@ class Tamagotchi(Mode):
         Setting("bedtime", "Bedtime", "choice", "23-7",
                 (("22-6", "22:00 to 6:00"), ("23-7", "23:00 to 7:00"), ("0-8", "0:00 to 8:00"), ("1-9", "1:00 to 9:00"))),
         Setting("refresh", "Check limits every", "choice", "15", (("5", "5 minutes"), ("15", "15 minutes"), ("30", "30 minutes"), ("60", "1 hour")),
-                hint="Each state is an 8-frame animation stored on the cooler, rewritten only when the state, a "
-                     "percentage or a score changes. Limits come from the claude-hud usage snapshot, like the "
+                hint="On DeepCool's own firmware each state is an 8-frame animation stored on the cooler, rewritten "
+                     "only when the state, a percentage or a score changes. With the direct drawing firmware nothing "
+                     "is stored: the pet reacts at once, dances to the beat, and the percentages follow within "
+                     "seconds whatever is picked here. Limits come from the claude-hud usage snapshot, like the "
                      "Claude Code mode."),
     )
 
-    def __init__(self, values=None, team: str = "all"):
+    def __init__(self, values=None, team: str = "all", listener=None):
         super().__init__(values)
         self.reactions = [r for r, on in parse_order(self.values["reacts"], [r for r, _ in REACTIONS]) if on]
         self.team = team
+        self.listener = listener or LISTENER
         self.snapshot = config_dir() / SNAPSHOT_NAME
         self.placeholder = ("Claude Pet", "Waking up…")
         self._activity = Activity()
@@ -434,7 +536,17 @@ class Tamagotchi(Mode):
         self._next_limits = self._next_music = self._next_nba = 0.0
         self._limits: dict | None = None
         self._past: list[nba.Game] = []
+        self._live: nba.Game | None = None                 # the team's game that is on, while pictures are drawn
         self._shown = None
+        # for drawn pictures:
+        self._rng = random.Random()
+        self._beat = Beat()
+        self._look = None                                  # what the last picture showed
+        self._scene: str | None = None                     # what the pet is doing, and since when
+        self._since = 0.0
+        self._yawn: float | None = None                    # when it started to yawn
+        self._counted: dict | None = None                  # the percentages as shown, on their way to the real ones
+        self._blink = self._wave = float("-inf")           # when the next blink and wave start
 
     @classmethod
     def build(cls, settings) -> Tamagotchi:
@@ -442,7 +554,8 @@ class Tamagotchi(Mode):
 
     async def _music_on(self, now: float) -> bool:
         if now >= self._next_music:
-            self._next_music = now + MUSIC_CHECK
+            self._next_music = now + (MUSIC_CHECK_DRAWN if self.direct else MUSIC_CHECK)
+            self._music.settle, self._music.linger = (0.0, MUSIC_LINGER_DRAWN) if self.direct else (MUSIC_SETTLE, MUSIC_LINGER)
             self._music.update(await self._playback.playing(), now)
         return self._music.on
 
@@ -451,18 +564,77 @@ class Tamagotchi(Mode):
             return None
         if now >= self._next_nba:
             try:
-                self._past, _ = await asyncio.to_thread(lambda: nba.pick(nba.fetch_games(self.team)))
-                self._next_nba = now + NBA_CHECK
+                if self.direct and self._live is not None:        # the team is playing: wait for the final
+                    game = await asyncio.to_thread(nba.fetch_live, self.team, self._live)
+                    if game is None or game.state == "post":
+                        self._live = None
+                    if game is not None and game.state == "post":
+                        self._past = [*self._past, game][-2:]
+                else:
+                    self._past, upcoming = await asyncio.to_thread(lambda: nba.pick(nba.fetch_games(self.team)))
+                    self._live = nba.live_candidate(upcoming)
+                self._next_nba = now + (NBA_LIVE_CHECK if self.direct and self._live is not None else NBA_CHECK)
             except (OSError, ValueError):
                 self._next_nba = now + NBA_RETRY
         return team_result(self.team, self._past)
 
+    def _blinking(self, now: float) -> bool:
+        if now >= self._blink + BLINK:                 # that one is over: sometimes two in a row
+            self._blink = now + (0.2 if self._rng.random() < 0.2 else self._rng.uniform(2.5, 7.0))
+        return now >= self._blink
+
+    def _waving(self, now: float) -> int:
+        """How far up the waving arm is; 0 while the pet is not waving."""
+        if now >= self._wave + WAVE:
+            self._wave = now + self._rng.uniform(8.0, 20.0)
+        return 0 if now < self._wave else 2 - int((now - self._wave) / SLOW_TICK) % 2
+
+    def _drawn_frame(self, state: str | None, result: Result | None, now: float) -> Image.Image | None:
+        """The pet as it is right now, when that is not what the last picture showed."""
+        real = {key: value[0] for key, value in (self._limits or {}).items()}
+        if self._counted is None or self._counted.keys() != real.keys():
+            self._counted = dict(real)
+        for key, value in real.items():                # a step towards the real ones with every picture
+            self._counted[key] += (value > self._counted[key]) - (value < self._counted[key])
+        mood = mood_for(max(self._counted.values(), default=None))
+        scene = state or mood
+        if scene != self._scene:
+            self._yawn = now if scene == "sleeping" and self._scene is not None else None
+            self._scene, self._since = scene, now
+        f = int((now - self._since) / STEP) % FRAMES   # every state starts with its loop's first frame
+        body = BODY_TIRED if mood == "exhausted" else BODY
+        pose, risen, glow = None, None, 0
+        yawned = len(YAWN) if self._yawn is None else int((now - self._yawn) / STEP)
+        if scene == "sleeping" and yawned < len(YAWN):
+            scene, pose = "yawning", yawn_pose(yawned, body)
+        elif scene == "dancing":
+            bass, rest = self.listener.levels()
+            beats = self._beat.feed(bass, rest, now)
+            if now - self._beat.at <= BEATLESS:        # (else: no beat to go by, and it dances its loop)
+                pose, risen = dance_pose(beats, self._beat.hop, body), int(now * NOTE_SPEED) % NOTE_SPAN
+                glow = min(GLOWS - 1, int(bass * GLOWS))
+        elif scene in ("happy", "fine", "stressed"):
+            pose = _pose(scene, f, body, live=True)
+            if self._blinking(now):
+                pose = replace(pose, eyes="closed")
+            if scene == "happy" and (up := self._waving(now)):
+                pose = replace(pose, arms=(0, up))
+        self.tick = FAST_TICK if scene == "dancing" or self._counted != real else SLOW_TICK
+        look = (scene, f, pose, risen, glow, tuple(sorted(self._counted.items())),
+                result.line if result and scene in ("cheering", "sulking") else None)
+        if look == self._look:
+            return None
+        self._look = look
+        limits = {key: (value, None) for key, value in self._counted.items()} or None
+        return render_frame(f, limits, scene, result, pose=pose, risen=risen, glow=glow)
+
     async def frame(self):
         now = time.monotonic()
+        self._activity.every = BUSY_CHECK_DRAWN if self.direct else CHECK_SECONDS
         busy = await self._activity.busy()
         self.active = busy
         if now >= self._next_limits:
-            self._next_limits = now + int(self.values["refresh"]) * 60
+            self._next_limits = now + (LIMITS_CHECK_DRAWN if self.direct else int(self.values["refresh"]) * 60)
             self._limits = await asyncio.to_thread(read_limits, self.snapshot)
         result = await self._result(now) if "nba" in self.reactions else None
         flags = {
@@ -483,6 +655,10 @@ class Tamagotchi(Mode):
             doing = f"Feeling {mood_for(max(shown.values(), default=None))}"
         self.status = doing + (" · " + ", ".join(parts) if parts else " · no limits reported")
 
+        if self.direct:
+            self._shown = None
+            return self._drawn_frame(state, result, now)
+        self._look, self._scene, self._counted, self.tick = None, None, None, None
         key = (state, result.line if state in ("cheering", "sulking") else None, tuple(sorted(shown.items())))
         if key == self._shown:
             return None

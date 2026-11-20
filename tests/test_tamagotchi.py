@@ -126,3 +126,194 @@ def test_pet_writes_only_when_its_state_changes(monkeypatch):
 def test_pet_in_auto_knows_the_nba_team():
     a = auto.Auto({"order": "tamagotchi", "fallback": "weather"}, lambda mode_id: {"nba": {"team": "GS"}}.get(mode_id, {}))
     assert a.children["tamagotchi"].team == "GS"
+
+
+# ------------------------------------------------------------------ drawn pictures (the direct drawing firmware)
+import random
+from types import SimpleNamespace
+
+
+class _Sound:
+    bass = rest = 0.0
+
+    def levels(self):
+        return self.bass, self.rest
+
+
+def _drawn_pet(monkeypatch, reacts="working,music,night,-nba", team="all"):
+    """A pet whose pictures are drawn, in a world the test controls. Its pictures are (state, frame, limits, how)."""
+    world = SimpleNamespace(busy=False, playing=False, night=False, clock=100.0, limits={"seven_day": (40, None)}, sound=_Sound())
+
+    async def is_busy(self):
+        return world.busy
+
+    async def is_playing(self):
+        return world.playing
+
+    monkeypatch.setattr(pet.Activity, "busy", is_busy)
+    monkeypatch.setattr(pet.Playback, "playing", is_playing)
+    monkeypatch.setattr(pet, "read_limits", lambda path: world.limits)
+    monkeypatch.setattr(pet, "asleep", lambda hour, bedtime: world.night)
+    monkeypatch.setattr(pet, "render_frame", lambda f, limits, state, result, **how: (state, f, limits, how))
+    monkeypatch.setattr(pet.time, "monotonic", lambda: world.clock)
+    m = pet.Tamagotchi({"reacts": reacts}, team=team, listener=world.sound)
+    m.direct = True
+    m._rng = random.Random(1)
+
+    def step(seconds=pet.FAST_TICK):
+        world.clock += seconds
+        return asyncio.run(m.frame())
+
+    def run(seconds, tick=pet.FAST_TICK):
+        return [p for p in (step(tick) for _ in range(round(seconds / tick))) if p is not None]
+
+    return m, world, step, run
+
+
+def test_beats_are_jumps_of_a_level():
+    beat = pet.Beat()
+    heard = [beat.feed(bass, 0.0, i * 0.1) for i, bass in enumerate((0.0, 1.0, 0.75, 0.56, 0.42, 0.9, 0.95, 0.7, 0.1, 0.25, 0.2))]
+    assert heard == [0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2]        # 0.1 to 0.25 is a jump, but not to a beat's level
+    assert beat.at == 5 * 0.1
+    beat = pet.Beat()
+    assert [beat.feed(bass, 0.0, i * 0.1) for i, bass in enumerate((1.0, 0.4, 1.0, 0.4, 0.4, 1.0))] == [1, 1, 1, 1, 1, 2]   # too soon
+    beat = pet.Beat()                                         # a held bass note, and the drums above it
+    assert [beat.feed(0.8, rest, i * 0.2) for i, rest in enumerate((0.2, 0.2, 0.7, 0.4, 0.3, 0.3, 0.6))] == [1, 1, 2, 2, 2, 2, 3]
+    assert beat.hop == 0.6
+    beat.feed(0.8, 0.5, 1.2 + pet.HOP_FALL)
+    assert abs(beat.hop - 0.3) < 1e-9                         # and down again, whatever the levels do
+
+
+def test_drawn_pet_reacts_at_once(monkeypatch):
+    m, world, step, run = _drawn_pet(monkeypatch)
+    assert step()[0] == "happy" and m.tick == pet.SLOW_TICK
+    world.playing = True
+    assert run(pet.MUSIC_CHECK_DRAWN + 0.1)[-1][0] == "dancing"        # no waiting for the music to settle
+    assert m.tick == pet.FAST_TICK and m.status.startswith("Dancing")
+    world.playing = False
+    assert run(0.5)[-1][0] == "dancing"                                # a short pause is not the end of it
+    assert run(pet.MUSIC_LINGER_DRAWN + pet.MUSIC_CHECK_DRAWN)[-1][0] == "happy"
+    world.busy = True
+    assert step()[0] == "working" and m.active
+    assert m._activity.every == pet.BUSY_CHECK_DRAWN
+
+
+def test_drawn_pet_dances_to_the_beat(monkeypatch):
+    m, world, step, run = _drawn_pet(monkeypatch)
+    world.playing = True
+    looped = run(1.0)
+    assert looped[-1][0] == "dancing" and looped[-1][3]["pose"] is None   # nothing heard yet: the loop
+    world.sound.bass = 1.0
+    state, _, _, how = step()
+    first = how["pose"]
+    assert first.dy == -pet.HOP and how["glow"] == pet.GLOWS - 1 and how["risen"] is not None
+    world.sound.bass = 0.95                                           # the note is held: the pet comes down all the same
+    falling = step(pet.HOP_FALL)[3]
+    assert falling["pose"].dy == -22 and falling["pose"].dx == first.dx and falling["glow"] == how["glow"]
+    world.sound.bass = 0.0
+    assert step()[3]["glow"] == 0
+    run(pet.BEAT_GAP)
+    world.sound.rest = 0.9                                            # a beat in the rest of the sound counts too
+    assert step()[3]["pose"].dx != first.dx                           # the next beat is the next step
+    world.sound.bass = world.sound.rest = 0.0
+    assert run(pet.BEATLESS + 0.5)[-1][3]["pose"] is None             # music without a beat: the loop again
+
+
+def test_drawn_percentages_count_to_the_new_value(monkeypatch):
+    m, world, step, run = _drawn_pet(monkeypatch)
+    assert step()[2] == {"seven_day": (40, None)}
+    world.limits = {"seven_day": (43, None)}
+    world.clock += pet.LIMITS_CHECK_DRAWN
+    shown = [p[2]["seven_day"][0] for p in (step(), step(), step())]
+    assert shown == [41, 42, 43] and m.tick == pet.SLOW_TICK          # fast only while it counted
+    world.limits = {"five_hour": (5, None), "seven_day": (43, None)}
+    world.clock += pet.LIMITS_CHECK_DRAWN
+    assert step()[2] == {"five_hour": (5, None), "seven_day": (43, None)}    # a new window is there at once
+    world.limits = None
+    world.clock += pet.LIMITS_CHECK_DRAWN
+    assert step()[2] is None
+
+
+def test_drawn_pet_yawns_before_it_sleeps(monkeypatch):
+    m, world, step, run = _drawn_pet(monkeypatch)
+    step()
+    world.night = True
+    pictures = run(len(pet.YAWN) * pet.STEP + 1.0, pet.SLOW_TICK)
+    states = [p[0] for p in pictures]
+    assert states[0] == "yawning" and states[-1] == "sleeping" and "yawning" not in states[states.index("sleeping"):]
+    assert max(p[3]["pose"].mouth for p in pictures if p[0] == "yawning") == 2
+    assert len({p[3]["pose"] for p in pictures if p[0] == "yawning"}) == len(set(pet.YAWN))
+    m, world, step, run = _drawn_pet(monkeypatch)
+    world.night = True
+    assert step()[0] == "sleeping"                                    # it was asleep already when the mode started
+
+
+def test_drawn_pet_blinks_and_waves_now_and_then(monkeypatch):
+    m, world, step, run = _drawn_pet(monkeypatch)
+    pictures = run(60.0, pet.SLOW_TICK)
+    assert all(p[0] == "happy" for p in pictures)
+    closed = sum(p[3]["pose"].eyes == "closed" for p in pictures)
+    waving = sum(p[3]["pose"].arms != (0, 0) for p in pictures)
+    assert 5 <= closed < len(pictures) / 8 and 8 <= waving < len(pictures) / 4
+    world.limits = {"seven_day": (70, None)}                          # "fine" blinks too, but does not wave
+    pictures = [p for p in run(60.0, pet.SLOW_TICK) if p[0] == "fine"]
+    assert any(p[3]["pose"].eyes == "closed" for p in pictures) and all(p[3]["pose"].arms == (0, 0) for p in pictures)
+
+
+def test_drawn_pet_returns_nothing_while_nothing_moves(monkeypatch):
+    m, world, step, run = _drawn_pet(monkeypatch)
+    world.busy = True                                                 # working: a loop of 8 frames in 2 s
+    pictures = run(4.0, pet.SLOW_TICK)
+    assert 15 <= len(pictures) <= 17 and [p[1] for p in pictures[:9]] == [0, 1, 2, 3, 4, 5, 6, 7, 0]
+
+
+def test_drawn_frames_render():
+    limits = {"five_hour": (12, None), "seven_day": (97, None)}
+    plain = pet.render_frame(0, limits, "dancing")
+    lit = pet.render_frame(0, limits, "dancing", pose=pet.dance_pose(3, 1.0, pet.BODY), risen=120, glow=pet.GLOWS - 1)
+    assert lit.size == plain.size == (device.WIDTH, device.HEIGHT) and lit.tobytes() != plain.tobytes()
+    assert lit.getpixel((2, 2)) != plain.getpixel((2, 2))             # the edges, which the cooler's light follows
+    assert pet.render_frame(0, limits, "dancing", glow=0).tobytes() == plain.tobytes()
+    yawns = {pet.render_frame(0, limits, "yawning", pose=pet.yawn_pose(i, pet.BODY)).tobytes() for i in range(len(pet.YAWN))}
+    assert len(yawns) == len(set(pet.YAWN))
+    assert pet.render_frame(0, limits, "yawning", pose=pet.yawn_pose(0, pet.BODY)).getpixel((2, 2)) == \
+        pet.render_frame(0, limits, "sleeping").getpixel((2, 2))
+
+
+def _event(hours_ago, state, home_score, away_score):
+    when = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+    return nba.parse_event({
+        "date": when.strftime("%Y-%m-%dT%H:%MZ"), "status": {"type": {"state": state, "shortDetail": ""}},
+        "competitions": [{"competitors": [
+            {"homeAway": "home", "winner": state == "post" and home_score > away_score, "score": str(home_score), "team": {"abbreviation": "GS", "color": "1d428a"}},
+            {"homeAway": "away", "winner": state == "post" and away_score > home_score, "score": str(away_score), "team": {"abbreviation": "MEM", "color": "000000"}},
+        ]}]})
+
+
+def test_drawn_pet_watches_the_game_for_its_final(monkeypatch):
+    asked = []
+    live = _event(1, "in", 60, 58)
+    final = [None]
+    monkeypatch.setattr(nba, "fetch_games", lambda team: asked.append("schedule") or [live])
+    monkeypatch.setattr(nba, "fetch_live", lambda team, game: asked.append("live") or final[0] or live)
+    m, world, step, run = _drawn_pet(monkeypatch, reacts="nba,-working,-music,-night", team="GS")
+    assert step()[0] == "happy" and asked == ["schedule"]
+    world.clock += pet.NBA_LIVE_CHECK
+    step()
+    assert m.status.startswith("Feeling happy") and asked == ["schedule", "live"]     # still playing
+    final[0] = _event(1, "post", 118, 110)
+    world.clock += pet.NBA_LIVE_CHECK
+    assert step()[0] == "cheering" and m.status == "Celebrating GS 118-110 MEM · weekly 40%"
+    world.clock += pet.NBA_LIVE_CHECK
+    step()
+    assert asked == ["schedule", "live", "live"]                      # and back to the schedule's own pace
+
+
+def test_stored_pet_is_as_before_after_drawing(monkeypatch):
+    m, world, step, run = _drawn_pet(monkeypatch)
+    monkeypatch.setattr(pet, "render_animation", lambda limits, state, result: ("stored", state))
+    world.playing = True
+    assert run(1.0)[-1][0] == "dancing"
+    m.direct = False                                                  # e.g. the slide show was switched on
+    assert step(pet.MUSIC_CHECK) == ("stored", "dancing") and m.tick is None
+    assert step(1.0) is None and m._activity.every == pet.CHECK_SECONDS

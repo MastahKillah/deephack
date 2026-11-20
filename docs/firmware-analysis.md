@@ -337,6 +337,15 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   one every 299 ms at the median (258 to 322; the loop has 300 ms a frame), and Claude Pet, 97 frames,
   one every 250 ms (235 to 251). Neither stored anything. Sending a frame took 23 to 26 ms, and the
   engine used 0.2 % and 1.4 % of one CPU core. How the cooler takes hours of this is not known yet.
+- **A pet drawn whenever it moves** (Claude Pet since it makes its own pictures instead of handing over
+  a loop; with Spotify, 20 Nov 2026): dancing 0.06 and 0.55 s after "play" was asked of Spotify (it
+  asks Windows whether music plays twice a second), back at work 1.75 and 1.97 s after "pause". While
+  it danced: 297 frames in 16.1 s, 18.4 a second, 15 to 19 KB at quality 85, every one of them to the
+  beat, 112 beats a minute found (a beat is a jump of the bass or of the rest of the sound; the bass
+  alone found 48, under a held bass note), 7.4 % of one CPU core, nearly all of it in the USB traffic
+  (the pet takes 0.4 ms to draw, 0.7 to encode). At work, four frames a second: 2.1 %. A percentage
+  that went from 20 to 38 was read 3.5 s later and counted up in 0.9 s. 588 frames in the run, none
+  stored.
 - **A page redrawn every second** (System, live): 44 frames in 44 s, 39 to 44 KB, 50 ms to send, none
   stored. The engine took 1.95 % of one CPU core for it, half of that drawing the page (before the
   page's fixed parts were cached; 6 ms a frame instead of 11 since).
