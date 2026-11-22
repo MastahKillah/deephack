@@ -47,7 +47,13 @@ def test_live_weather_has_to_show_up_twice():
 
 
 def test_live_mode_fetches_the_sky(monkeypatch):
-    now = datetime.now().astimezone()
+    class Noon(datetime):                  # the mode's clock: the test must not depend on when it is run
+        @classmethod                       # (before 3 at night "three hours ago" was yesterday's sunrise)
+        def now(cls, tz=None):
+            return datetime(2026, 6, 1, 12, 0)
+
+    monkeypatch.setattr(scene, "datetime", Noon)
+    now = Noon.now().astimezone()
     rise, set_ = now - timedelta(hours=3), now + timedelta(hours=3)
     monkeypatch.setattr(scene, "fetch_sky", lambda city: ("Lisbon", 61, rise, set_, 38.7))
     m = scene.Scene({}, city="Lisbon")
