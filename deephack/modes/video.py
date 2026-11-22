@@ -458,6 +458,7 @@ class Video(Mode):
     description = "Plays YouTube or a video file"
     glyph = ""
     quality = QUALITY
+    needs_direct = True
     actions = (("mute", "Mute"),)
     settings = (
         Setting("source", "Video", "file", "", placeholder="https://www.youtube.com/watch?v=…",

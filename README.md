@@ -32,13 +32,19 @@ cooler directly over USB and keeps one image slot up to date with content it ren
 | **GitHub** | Your contribution heatmap for the last four months, then the CI status and open pull requests of a repository you pick (or your own open pull requests anywhere). One GraphQL request per refresh, redrawn only when something changed. The token is borrowed from the [GitHub CLI](https://cli.github.com) (`gh auth login` once); deephack stores none. In Auto it can take the screen while the repository's build runs or fails. |
 
 Clicking a mode opens its page with a live preview and leaves the cooler alone; **Show on cooler** (or a
-double-click on the mode) puts it on the display. A green dot marks the mode that is on it.
+double-click on the mode) puts it on the display. A green dot marks the mode that is on it. A mode's page
+has that mode's own settings and nothing else.
 
-**Cooler light** picks what drives the light strip on the side of the pump head: the colours at the edges
+**Settings**, under the list of modes, is the page for what belongs to no mode: starting with Windows and
+closing to the tray, the cooler's light and its screen's brightness, the cooler's firmware, and which
+deephack this is. The **Draw on the cooler** switch below it is there on every page: off, the cooler
+shows your own stored image again.
+
+**Cooler light** (in Settings) picks what drives the light strip on the side of the pump head: the colours at the edges
 of the picture on screen (picked by the cooler itself, ambilight style), the motherboard's ARGB effects
 (needs the cooler's ARGB cable on a motherboard header) or the cooler's fixed warning colour.
 
-**Keep on screen** decides whether the cooler stays on deephack's image or cycles through every image
+**Keep on screen** (in Settings) decides whether the cooler stays on deephack's image or cycles through every image
 stored on it (the cooler's own slideshow).
 
 ## Install and run
@@ -60,7 +66,7 @@ python -m venv .venv
 .\.venv\Scripts\deephack.exe
 ```
 
-The window closes to the system tray; quit from the tray menu. "Start with Windows" adds a per-user
+The window closes to the system tray; quit from the tray menu. "Start with Windows" in Settings adds a per-user
 autostart entry.
 
 ### Things to know
@@ -75,8 +81,8 @@ autostart entry.
   [Protocol](#protocol)) deephack draws its pictures straight from USB instead, and Claude Pet
   and Scene, which are stored animations otherwise, are drawn anew whenever something in them moves:
   nothing is stored but one plain black picture, once, for the frames to go over.
-  The "Firmware" section at the bottom of the window says which firmware the cooler runs and can install
-  that one, or DeepCool's own again. **Read what it says first: a firmware update that goes wrong can
+  The "Firmware" section of the Settings page says which firmware the cooler runs and can install
+  that one, or DeepCool's own again (Video and TikTok, which need it, say so on their pages and lead there). **Read what it says first: a firmware update that goes wrong can
   leave the cooler's screen dead for good.**
   A slide show of the stored pictures is the exception: with that switched on, ours is stored as before.
   Where it does store, deephack rate-limits
@@ -138,6 +144,9 @@ a stored image, never the erase commands) and fails any test that breaks one.
 To let Auto pick the mode, set `claims` to a few words saying when it has something to show
 (`claims = "music playing"`), keep `self.active` up to date in `frame()`, and add the class to
 `CANDIDATES` in `auto.py`.
+
+A mode that is of little use without the direct drawing firmware sets `needs_direct = True`: on a cooler
+with DeepCool's own firmware its page then says so and leads to the firmware in Settings.
 
 ## Releasing
 
@@ -273,8 +282,8 @@ second at most.
 
 **Drawing without storing** is not something the stock firmware can do. `tools/fw/patch.py` builds a
 firmware that can: one new command (`20`, size and sum16, then the JPEG) puts a frame on screen straight
-from RAM, and the driver has `draw_version()` and `draw_jpeg()` for it. The app installs it from its
-"Firmware" section (`deephack/firmware.py`: the patch as a table of some 500 bytes, put on DeepCool's
+from RAM, and the driver has `draw_version()` and `draw_jpeg()` for it. The app installs it from the
+"Firmware" section of its Settings page (`deephack/firmware.py`: the patch as a table of some 500 bytes, put on DeepCool's
 v2.70 image, which is read from the installed DeepCool app and checked by its hash; deephack does not
 carry DeepCool's firmware). It runs in the emulator
 (`python tools/emu/bench.py --firmware ...`, and `tests/test_direct_draw.py`) and, since 19 Nov 2026,

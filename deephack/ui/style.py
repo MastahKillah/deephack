@@ -12,6 +12,7 @@ ACCENT_SOFT = "#2a2750"
 OK = "#3ecf8e"
 WARN = "#f5b84a"
 ERR = "#f0616d"
+LINK = "#a59bff"
 
 ICON_FONT = "Segoe Fluent Icons"
 
@@ -19,6 +20,7 @@ QSS = f"""
 * {{ font-family: "Segoe UI Variable Text", "Segoe UI"; font-size: 10pt; color: {TEXT}; }}
 QMainWindow, #content {{ background: {BG}; }}
 #sidebar {{ background: {SIDEBAR}; border-right: 1px solid {BORDER}; }}
+#rule {{ background: {BORDER}; border: none; }}
 #brand {{ font-family: "Segoe UI Variable Display", "Segoe UI"; font-size: 17pt; font-weight: 700; }}
 #brandSub, #muted {{ color: {MUTED}; }}
 #section {{ color: {MUTED}; font-size: 8pt; font-weight: 700; letter-spacing: 1px; }}

@@ -190,16 +190,17 @@ class StatusDot(QWidget):
 
 
 class ModeButton(QPushButton):
-    """A mode in the sidebar. Checked: its page is open. The green dot: it is the one on the cooler."""
+    """A mode in the sidebar. Checked: its page is open. The green dot: it is the one on the cooler.
+    Without a description it is one line high (Settings)."""
 
     doubleClicked = Signal()
 
-    def __init__(self, glyph: str, title: str, description: str, parent=None):
+    def __init__(self, glyph: str, title: str, description: str = "", parent=None):
         super().__init__(parent)
         self.setObjectName("modeButton")
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(60)
+        self.setMinimumHeight(60 if description else 42)
         row = QHBoxLayout(self)
         row.setContentsMargins(12, 8, 12, 8)
         row.setSpacing(12)
@@ -209,8 +210,6 @@ class ModeButton(QPushButton):
         col = QVBoxLayout()
         col.setSpacing(1)
         t = QLabel(title, objectName="modeTitle")
-        d = QLabel(description, objectName="modeDesc")
-        d.setWordWrap(True)
         self._live = StatusDot()
         self._live.setFixedSize(7, 7)
         self._live.set_color(style.OK)
@@ -221,15 +220,26 @@ class ModeButton(QPushButton):
         head.addWidget(self._live, 0, Qt.AlignmentFlag.AlignVCenter)
         head.addStretch(1)
         col.addLayout(head)
-        col.addWidget(d)
+        inside = [g, t, self._live]
+        if description:
+            d = QLabel(description, objectName="modeDesc")
+            d.setWordWrap(True)
+            col.addWidget(d)
+            inside.append(d)
         row.addWidget(g)
         row.addLayout(col, 1)
-        for w in (g, t, d, self._live):
+        for w in inside:
             w.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
+    def set_mark(self, color: str | None, tip: str = "") -> None:
+        """The dot next to the title, in a colour, or none; and what the button says when pointed at."""
+        if color:
+            self._live.set_color(color)
+        self._live.setVisible(bool(color))
+        self.setToolTip(tip)
+
     def set_live(self, on: bool) -> None:
-        self._live.setVisible(on)
-        self.setToolTip("On the cooler" if on else "Double-click to show it on the cooler")
+        self.set_mark(style.OK if on else None, "On the cooler" if on else "Double-click to show it on the cooler")
 
     def mouseDoubleClickEvent(self, event):  # noqa: N802
         super().mouseDoubleClickEvent(event)

@@ -85,6 +85,8 @@ class Mode:
     tick: float | None = None      # seconds between frame() calls when the mode needs them faster than usual
     quality: int | None = None     # JPEG quality of its drawn pictures, when the engine's own choice will not do (a
                                    # video: smaller frames, so that the cooler takes more of them a second)
+    needs_direct: bool = False     # of little use on DeepCool's own firmware (a video is one picture there): the
+                                   # mode's page says so on such a cooler, and points to Settings
     settings: tuple[Setting, ...] = ()
     actions: tuple[tuple[str, str], ...] = ()    # (name, label) of what the user can tell the mode to do ("next"):
                                                  # buttons on its page, and keys (settings of kind "shortcut")

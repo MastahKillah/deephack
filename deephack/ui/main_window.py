@@ -5,9 +5,9 @@ import time
 from PySide6.QtCore import QDir, Qt, QTimer
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-                               QKeySequenceEdit, QProgressBar, QPushButton, QScrollArea, QVBoxLayout, QWidget)
+                               QKeySequenceEdit, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from .. import autostart, firmware
+from .. import __version__, autostart, firmware
 from ..config import Config
 from ..engine import Engine, quit_deepcool
 from ..hotkeys import Hotkeys
@@ -36,6 +36,12 @@ def _scroll(inner: QWidget) -> QScrollArea:
     return area
 
 
+REPO = "https://github.com/a7ex-turcan/deephack"
+LINKS = (("Source and releases", REPO), ("Licence", REPO + "/blob/main/LICENSE"),
+         ("What the app carries", REPO + "/blob/main/THIRD-PARTY.md"))
+SETTINGS_GLYPH = "\ue713"                        # the cog of "Segoe Fluent Icons"
+
+
 def _card() -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame(objectName="card")
     lay = QVBoxLayout(frame)
@@ -51,7 +57,8 @@ class MainWindow(QMainWindow):
         self.quitting = False
         self._placeholder = True
         self._state: dict = {}
-        self._viewing = ""                       # the mode whose page is open; config "mode" is the one on the cooler
+        self._viewing = ""                       # the mode whose page is open; config "mode" is the one on the cooler.
+                                                 # Empty while the Settings page is
         self._live_frames: tuple | None = None   # last frames of the mode on the cooler, to show again
         self.hotkeys = Hotkeys()                 # the keys of the mode on the cooler (app.py lets it hear them)
         self._keys_refused: set[str] = set()     # ... and the ones Windows would not give us
@@ -115,7 +122,26 @@ class MainWindow(QMainWindow):
         mode_list.addStretch(1)
         self._mode_scroll = _scroll(modes)
         lay.addWidget(self._mode_scroll, 1)
-        lay.addSpacing(8)
+
+        # what belongs to no mode: one page for it, and the switch that is wanted most often right here
+        self._settings_button = ModeButton(SETTINGS_GLYPH, "Settings")
+        self._settings_button.clicked.connect(lambda _=False: self.open_settings())
+        self._mode_buttons.addButton(self._settings_button)
+        rule = QFrame(objectName="rule")
+        rule.setFixedHeight(1)
+        lay.addWidget(rule)
+        lay.addWidget(self._settings_button)
+        draw = QHBoxLayout()
+        draw.setContentsMargins(12, 2, 12, 8)
+        text = _label("Draw on the cooler")
+        self._enabled = Switch()
+        self._enabled.setChecked(bool(self.config.get("enabled")))
+        self._enabled.toggled.connect(self._set_enabled)
+        for widget in (text, self._enabled):
+            widget.setToolTip("Off: the cooler shows your own stored image again.")
+        draw.addWidget(text, 1)
+        draw.addWidget(self._enabled, 0, Qt.AlignmentFlag.AlignVCenter)
+        lay.addLayout(draw)
 
         status = QHBoxLayout()
         status.setSpacing(10)
@@ -149,9 +175,18 @@ class MainWindow(QMainWindow):
         self._banner.hide()
         outer.addWidget(self._banner)
 
-        row = QHBoxLayout()
+        self._pages = QStackedWidget()           # a mode's page, or Settings
+        self._pages.addWidget(self._build_mode_page())
+        self._pages.addWidget(self._build_settings_page())
+        outer.addWidget(self._pages, 1)
+        self._refresh_firmware()
+        return content
+
+    def _build_mode_page(self) -> QWidget:
+        page = QWidget()
+        row = QHBoxLayout(page)
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(28)
-        outer.addLayout(row, 1)
 
         left = QVBoxLayout()
         left.setSpacing(8)
@@ -193,28 +228,60 @@ class MainWindow(QMainWindow):
         self._mode_desc = _label("", "muted", wrap=True)
         right.addWidget(self._mode_desc)
 
+        # a mode that needs the direct drawing firmware, on a cooler that does not run it
+        self._needs = QFrame(objectName="banner")
+        nl = QVBoxLayout(self._needs)
+        nl.setContentsMargins(14, 12, 14, 12)
+        nl.setSpacing(10)
+        self._needs_text = _label("", wrap=True)
+        to_firmware = QPushButton("Firmware…")
+        to_firmware.clicked.connect(lambda _=False: self.open_settings(self._fw_card))
+        nl.addWidget(self._needs_text)
+        nl.addWidget(to_firmware, 0, Qt.AlignmentFlag.AlignLeft)
+        self._needs.hide()
+        right.addWidget(self._needs)
+
         self._settings_card, self._settings_layout = _card()
         right.addWidget(self._settings_card)
+        right.addStretch(1)
+        return page
 
-        display, dl = _card()
-        dl.addWidget(_label("DISPLAY", "section"))
-        self._enabled = self._switch_row(dl, "Draw on the cooler", "Off: the cooler shows your own stored image again.",
-                                         bool(self.config.get("enabled")), self._set_enabled)
-        self._keep = self._switch_row(dl, "Keep on screen", "Off: the cooler cycles through all images stored on it.",
-                                      not self.config.get("slideshow"), lambda on: self.config.set("slideshow", not on))
-        self._autostart = self._switch_row(dl, "Start with Windows", "Launches minimised to the tray.",
+    def _build_settings_page(self) -> QWidget:
+        """What belongs to no mode: the app, the cooler, the cooler's firmware."""
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(14)
+        lay.addWidget(_label("Settings", "h1"))
+        column = QWidget()
+        cards = QVBoxLayout(column)
+        cards.setContentsMargins(0, 0, 0, 0)
+        cards.setSpacing(14)
+        self._settings_scroll = _scroll(column)
+        lay.addWidget(self._settings_scroll, 1)
+
+        app, al = _card()
+        al.addWidget(_label("APP", "section"))
+        self._autostart = self._switch_row(al, "Start with Windows", "Launches minimised to the tray.",
                                            autostart.is_enabled(), autostart.set_enabled)
-        self._tray = self._switch_row(dl, "Keep running when closed", "The window hides to the tray instead of quitting.",
+        self._tray = self._switch_row(al, "Keep running when closed", "The window hides to the tray instead of quitting.",
                                       bool(self.config.get("close_to_tray")), lambda on: self.config.set("close_to_tray", on))
-        self._choice_row(dl, "Cooler light", "The light strip on the pump head.", "light",
-                         (("screen", "Picks up the screen's edges"), ("motherboard", "Synced with the motherboard"),
-                          ("warning", "The cooler's warning colour")))
-        self._choice_row(dl, "Screen brightness", "", "brightness",
-                         tuple((p, f"{p} %") for p in (100, 85, 70, 50, 30)))
-        right.addWidget(display)
+        cards.addWidget(app)
+
+        cooler, cl = _card()
+        cl.addWidget(_label("COOLER", "section"))
+        self._keep = self._switch_row(cl, "Keep on screen", "Off: the cooler cycles through all images stored on it.",
+                                      not self.config.get("slideshow"), lambda on: self.config.set("slideshow", not on))
+        self._light = self._choice_row(cl, "Cooler light", "The light strip on the pump head.", "light",
+                                       (("screen", "Picks up the screen's edges"), ("motherboard", "Synced with the motherboard"),
+                                        ("warning", "The cooler's warning colour")))
+        self._brightness = self._choice_row(cl, "Screen brightness", "Of the cooler's screen.", "brightness",
+                                            tuple((p, f"{p} %") for p in (100, 85, 70, 50, 30)))
+        cards.addWidget(cooler)
 
         # what the cooler's screen runs, and the way to the firmware that draws straight from USB
-        fw, fl = _card()
+        self._fw_card, fl = _card()
+        fw = self._fw_card
         fl.addWidget(_label("FIRMWARE", "section"))
         self._fw_title = _label("")
         self._fw_hint = _label("", "hint", wrap=True)
@@ -233,10 +300,33 @@ class MainWindow(QMainWindow):
         for widget in (self._fw_title, self._fw_bar, self._fw_hint, self._fw_result):
             fl.addWidget(widget)
         fl.addLayout(buttons)
-        right.addWidget(fw)
-        self._refresh_firmware()
-        right.addStretch(1)
-        return content
+        cards.addWidget(fw)
+
+        about, bl = _card()
+        bl.addWidget(_label("ABOUT", "section"))
+        bl.addWidget(_label(f"deephack {__version__}"))
+        bl.addWidget(_label("Free software under the MIT licence. Not affiliated with or endorsed by DeepCool.", "hint", wrap=True))
+        links = _label(" &nbsp;·&nbsp; ".join(f'<a href="{url}" style="color: {style.LINK}; text-decoration: none;">{text}</a>'
+                                              for text, url in LINKS))
+        links.setTextFormat(Qt.TextFormat.RichText)
+        links.setOpenExternalLinks(True)
+        bl.addWidget(links)
+        cards.addWidget(about)
+        cards.addStretch(1)
+        return page
+
+    def open_settings(self, show: QWidget | None = None) -> None:
+        """Open the Settings page, scrolled to one of its cards if one is given. The cooler keeps showing
+        what it shows, and a preview that was running stops: nobody is looking at it."""
+        if self._viewing:
+            self._viewing = ""
+            self.engine.set_preview(None)
+        self._settings_button.setChecked(True)
+        self._pages.setCurrentIndex(1)
+        if show is None:
+            self._settings_scroll.verticalScrollBar().setValue(0)
+        else:                                    # once laid out
+            QTimer.singleShot(0, lambda: self._settings_scroll.ensureWidgetVisible(show, 0, 14))
 
     # ------------------------------------------------------------ firmware
     def _ask_flash(self, which: str) -> None:
@@ -295,19 +385,35 @@ class MainWindow(QMainWindow):
         self._fw_hint.setText(hint)
         self._fw_install.setVisible(install)
         self._fw_restore.setVisible(restore)
+        newer = install and not busy and running["patch"] > 0      # the card is a page away now: a dot says so
+        self._settings_button.set_mark(style.WARN if newer else None,
+                                       f"Version {firmware.PATCH_VERSION} of the direct drawing firmware can be installed" if newer else "")
+
+    def _refresh_needs(self) -> None:
+        """The note on the page of a mode that needs the direct drawing firmware, when the cooler runs DeepCool's."""
+        cls, running = BY_ID.get(self._viewing), self._state.get("firmware")
+        lacking = bool(cls and cls.needs_direct and running and not running["patch"])
+        if lacking:
+            self._needs_text.setText(f"{cls.title} plays only with the direct drawing firmware. This cooler runs DeepCool's own: "
+                                     "it shows one picture.")
+        self._needs.setVisible(lacking)
 
     def _choice_row(self, parent: QVBoxLayout, title: str, hint: str, key: str, choices) -> ComboBox:
-        parent.addWidget(_label(title))
+        row = QHBoxLayout()
+        row.setSpacing(16)
+        col = QVBoxLayout()
+        col.setSpacing(0)
+        col.addWidget(_label(title))
+        col.addWidget(_label(hint, "hint", wrap=True))
         box = ComboBox()
-        box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        box.setMinimumContentsLength(12)
+        box.setFixedWidth(250)
         for value, text in choices:
             box.addItem(text, value)
         box.setCurrentIndex(max(0, box.findData(self.config.get(key))))
         box.currentIndexChanged.connect(lambda _i: self.config.set(key, box.currentData()))
-        parent.addWidget(box)
-        if hint:
-            parent.addWidget(_label(hint, "hint", wrap=True))
+        row.addLayout(col, 1)
+        row.addWidget(box, 0, Qt.AlignmentFlag.AlignVCenter)
+        parent.addLayout(row)
         return box
 
     def _switch_row(self, parent: QVBoxLayout, title: str, hint: str, checked: bool, on_toggle) -> Switch:
@@ -338,10 +444,12 @@ class MainWindow(QMainWindow):
             btn.setChecked(btn.property("mode_id") == mode_id)
             if btn.isChecked():   # once laid out, so the selected mode is not hidden in the scrolled list
                 QTimer.singleShot(0, lambda b=btn: self._mode_scroll.ensureWidgetVisible(b, 0, 8))
+        self._pages.setCurrentIndex(0)
         self._mode_title.setText(cls.title)
         self._mode_desc.setText(cls.description + ".")
         self._build_settings(cls)
         live = mode_id == self._live
+        self._preview.set_dimmed(live and not self.config.get("enabled"))
         self._live_dot.setVisible(live)
         self._live_label.setVisible(live)
         self._show_button.setVisible(not live)
@@ -349,6 +457,7 @@ class MainWindow(QMainWindow):
             self.engine.set_preview(None if live else mode_id)
             if live and self._live_frames:
                 self._show_frames(*self._live_frames)
+        self._refresh_needs()
         self._on_state(self._state)
 
     def activate_mode(self, mode_id: str) -> None:
@@ -364,7 +473,8 @@ class MainWindow(QMainWindow):
 
     def _mark_live(self) -> None:
         for btn in self._mode_buttons.buttons():
-            btn.set_live(btn.property("mode_id") == self._live)
+            if btn is not self._settings_button:
+                btn.set_live(btn.property("mode_id") == self._live)
 
     def _build_settings(self, cls) -> None:
         lay = self._settings_layout
@@ -458,7 +568,7 @@ class MainWindow(QMainWindow):
         self.config.set_mode_setting(mode_id, key, value)
 
         def uses(target: str) -> bool:           # Auto, for one, runs the other modes with their own settings
-            return target == mode_id or mode_id in BY_ID[target].reads
+            return target == mode_id or (target in BY_ID and mode_id in BY_ID[target].reads)
 
         setting = next((s for s in BY_ID[mode_id].settings if s.key == key), None)
         key_setting = setting is not None and setting.kind == "shortcut"
@@ -534,6 +644,7 @@ class MainWindow(QMainWindow):
         self._now.setText(self._now.fontMetrics().elidedText(now, Qt.TextElideMode.ElideRight, 350))
         self._refresh_caption()
         self._refresh_firmware()
+        self._refresh_needs()
 
     def _refresh_caption(self) -> None:
         s = self._state
