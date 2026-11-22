@@ -14,6 +14,7 @@ from ..hotkeys import Hotkeys
 from ..modes import BY_ID, MODES
 from . import style
 from .firmware_dialog import FlashDialog
+from .pick import CaptureChooser
 from .widgets import ComboBox, ModeButton, OrderList, Preview, StatusDot, Switch
 
 
@@ -517,6 +518,10 @@ class MainWindow(QMainWindow):
                                   "hint", wrap=True)
                     note.setStyleSheet(f"color: {style.WARN};")
                     lay.addWidget(note)
+            elif s.kind == "capture":
+                chooser = CaptureChooser(current)
+                chooser.changed.connect(lambda value, key=s.key: self._set_setting(cls.id, key, value))
+                lay.addWidget(chooser)
             elif s.kind == "order":
                 order = OrderList(s.choices, current)
                 order.changed.connect(lambda value, key=s.key: self._set_setting(cls.id, key, value))

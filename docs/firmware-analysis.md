@@ -396,6 +396,33 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   second, 16 to 45 KB each, 36 ms to send, 11 % of one CPU core. Between two videos the picture stood
   for 0.76 s. After "next" or "previous" the other video was on the cooler 0.65 to 0.81 s later (four
   presses). Nothing stored.
+- **The PC's screen on the cooler** (Mirror, 22 Nov 2026; `deephack/modes/mirror.py`, `deephack/capture.py`).
+  A window of 960 x 1280 in which everything moves 60 times a second, shown filling the screen: 15.8
+  pictures a second on the cooler and 21 % of one CPU core for the whole of deephack (JPEGs of 37 KB at
+  quality 75, a draw 56 ms); whole and lying on its side 16.5 a second (28 KB, 40 ms). From a picture
+  being painted on the PC until the cooler had taken it: 90 ms (median; 77 to 106 for nine in ten).
+  What it took to get there:
+  - *Taking the picture.* Pillow's `ImageGrab` copies the whole screen and cuts the part out: 67 ms on
+    a 4K screen whatever the part's size, and its way of taking a window gave one flat colour for
+    browsers, terminals and most new programs. deephack's own calls (`BitBlt` of the part only;
+    `PrintWindow` with `PW_RENDERFULLCONTENT` for a window) take 17 to 22 ms, of which 1 to 7 are CPU
+    and the rest is waiting for the screen's next refresh. A window comes out right while another
+    covers it, and not at all while it is minimised.
+  - *Taking the next one while the last is drawn.* One after the other (take, send, take) it was 10
+    pictures a second. With the taking begun 30 ms after a picture is handed to the engine it is 16.
+    (A first try was slower than before, 8 a second: the taking was handed to asyncio, which only got
+    to start it after the draw. It has to go to a thread at once.)
+  - *Quality 75.* At the engine's 85 the same window is 45 KB a picture: 11 a second, 160 ms behind.
+    At 65 it is no faster than at 75: the tick is the limit then.
+  A window in which nothing moves: one picture, and then next to none (one more in ten seconds); the
+  first picture after it moved again was on the cooler within 0.15 s. Minimised and closed are said on
+  the cooler, and the window is shown again when it is back.
+  **Not seen:** a part of the screen with something moving in it. The PC was locked during all of this
+  (nobody at it), and a locked PC's screen is one standing dark picture to every program, deephack
+  included; windows are drawn all the same, which is why they could be measured. The part's code is
+  the same but for the one call. Choosing the part with a real mouse was not tried either, for the
+  same reason, and the camera that watches the cooler was not connected: what the cooler showed was
+  checked by the pictures that were sent to it, not by looking at it.
 - **Sound with the picture** (Video and TikTok, 22 Nov 2026; the sound comes from the PC, the cooler only
   shows). The picture goes by what the PC's sound output says it has played, and is chosen 120 ms ahead
   of it (`LEAD` in `deephack/modes/video.py`). Measured at the moment the cooler had taken a frame: the

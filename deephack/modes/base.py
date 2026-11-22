@@ -50,6 +50,7 @@ class Setting:
     kind: str                      # "choice" | "text" | "secret" (text shown as dots) | "folder" (text with a Browse button)
                                    # | "file" (the same, for a file) | "order" (see parse_order)
                                    # | "shortcut" (a key that works in any window, for `action`; see hotkeys.py)
+                                   # | "capture" (a window or a part of the screen, chosen on it; see mirror.py)
     default: str
     choices: tuple[tuple[str, str], ...] = ()   # (value, label) for kind "choice" and "order"
     placeholder: str = ""

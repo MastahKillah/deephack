@@ -26,6 +26,7 @@ QMainWindow, #content {{ background: {BG}; }}
 #section {{ color: {MUTED}; font-size: 8pt; font-weight: 700; letter-spacing: 1px; }}
 #h1 {{ font-family: "Segoe UI Variable Display", "Segoe UI"; font-size: 15pt; font-weight: 600; }}
 #hint {{ color: {MUTED}; font-size: 9pt; }}
+#chosen {{ background: {BG}; border: 1px solid {BORDER}; border-radius: 8px; padding: 7px 10px; }}
 #caption {{ color: {MUTED}; font-size: 9pt; }}
 #nowLine {{ font-size: 10.5pt; font-weight: 600; }}
 

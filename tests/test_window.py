@@ -8,11 +8,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
-from deephack import autostart, firmware  # noqa: E402
+from PySide6.QtCore import QPoint, QRect  # noqa: E402
+
+from deephack import autostart, capture, firmware  # noqa: E402
 from deephack.config import Config  # noqa: E402
 from deephack.engine import Engine  # noqa: E402
 from deephack.modes import BY_ID  # noqa: E402
-from deephack.ui import main_window  # noqa: E402
+from deephack.modes import mirror  # noqa: E402
+from deephack.ui import main_window, pick  # noqa: E402
 
 BCD = next(iter(firmware.KNOWN))
 
@@ -160,3 +163,74 @@ def test_a_setting_changed_as_settings_opens_does_not_trip(window):
     window._set_setting("weather", "city", "Porto")
     assert window.asked == [("reload_mode",)]
     assert window.config.mode_settings("weather")["city"] == "Porto"
+
+
+# ---------------------------------------------------------------- choosing what Mirror shows
+def test_a_rectangle_dragged_on_a_scaled_screen_is_in_real_pixels():
+    assert pick.dragged(QPoint(100, 100), QPoint(400, 300)) == QRect(100, 100, 300, 200)
+    assert pick.dragged(QPoint(400, 300), QPoint(100, 100)) == QRect(100, 100, 300, 200)         # dragged up and left
+    upright = pick.dragged(QPoint(0, 0), QPoint(500, 800), True)
+    assert (upright.width(), upright.height()) == (500, 667)                                     # 3 to 4, as much as fits
+    wide = pick.dragged(QPoint(900, 700), QPoint(100, 400), True)
+    assert (wide.width(), wide.height()) == (400, 300) and wide.bottomRight() == QPoint(899, 699)    # 4 to 3, from the start
+    # pressed at 375,250 for real, which the window calls 300,200: a screen scaled by 1.25
+    assert pick.real((375, 250), QPoint(300, 200), QRect(300, 200, 600, 450), 1.25) == (375, 250, 750, 562)
+    assert pick.real((375, 250), QPoint(300, 200), QRect(100, 120, 200, 80), 1.25) == (125, 150, 250, 100)
+    assert pick.real((-1500, 40), QPoint(10, 40), QRect(10, 40, 100, 100), 1.0) == (-1500, 40, 100, 100)    # a screen on the left
+
+
+def test_mirror_is_chosen_with_two_buttons_and_reaches_the_running_mode(window, monkeypatch):
+    film = capture.Window(77, "vlc.exe", "Qt5QWindowIcon", "holiday.mp4")
+    monkeypatch.setattr(pick.capture, "windows", lambda: [film, capture.Window(78, "notepad.exe", "Notepad", "a & b")])
+    window.view_mode("mirror")
+    chooser = window._settings_card.findChild(pick.CaptureChooser)
+    assert chooser is not None and chooser._now.toolTip() == "Nothing chosen"
+    window.asked.clear()
+    menu = chooser._menu()
+    assert [a.text() for a in menu.actions()] == ["holiday.mp4 · vlc", "a && b · notepad"]
+    menu.actions()[0].trigger()
+    value = mirror.window_value(film)
+    assert window.asked == [("mode_value", "mirror", "source", value)]       # no restart of the mode: it reads it as it runs
+    assert window.config.mode_settings("mirror")["source"] == value and chooser._now.toolTip() == "holiday.mp4"
+    window.asked.clear()
+    chooser._set(mirror.part_value(10, 20, 960, 1280))
+    assert window.asked == [("mode_value", "mirror", "source", "part:10,20,960,1280")]
+    assert chooser._now.toolTip() == "Part of the screen · 960 × 1280"
+    chooser._set(mirror.part_value(10, 20, 960, 1280))                       # the same again: nothing to tell
+    assert len(window.asked) == 1
+
+
+def test_the_part_picker_hands_over_what_was_dragged(window, monkeypatch):
+    monkeypatch.setattr(pick, "cursor", lambda: (1000, 500))
+    picker = pick.PartPicker(QApplication.primaryScreen())
+    picker._scale = 1.5
+    got, gone = [], []
+    picker.picked.connect(lambda *box: got.append(box))
+    picker.cancelled.connect(lambda: gone.append(True))
+
+    class Mouse:
+        def __init__(self, x, y, button=pick.Qt.MouseButton.LeftButton, shift=False):
+            self._at, self._button, self._shift = QPoint(x, y), button, shift
+
+        def position(self):
+            from PySide6.QtCore import QPointF
+            return QPointF(self._at)
+
+        def button(self):
+            return self._button
+
+        def modifiers(self):
+            return pick.Qt.KeyboardModifier.ShiftModifier if self._shift else pick.Qt.KeyboardModifier.NoModifier
+
+    picker.mousePressEvent(Mouse(200, 100))
+    picker.mouseMoveEvent(Mouse(203, 104))
+    picker.mouseReleaseEvent(Mouse(203, 104))
+    assert got == []                                         # a slip of the hand: go on
+    picker.mousePressEvent(Mouse(200, 100))
+    picker.mouseMoveEvent(Mouse(520, 340))
+    picker.mouseReleaseEvent(Mouse(520, 340))
+    assert got == [(1000, 500, 480, 360)]                    # from where the mouse really was, in real pixels
+    picker.mousePressEvent(Mouse(5, 5, pick.Qt.MouseButton.RightButton))
+    assert gone == [True]
+    picker.grab()                                            # it paints, with and without a rectangle
+    picker.close()
