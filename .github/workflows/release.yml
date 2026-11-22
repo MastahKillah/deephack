@@ -52,6 +52,12 @@ jobs:
       - name: Build the app
         run: pyinstaller --noconfirm packaging/deephack.spec
 
+      # What the app loads only when it is needed does not show in its window when it is missing. yt-dlp is
+      # such a thing: a build without it started fine and could not play one link.
+      - name: Check what the app carries
+        shell: bash
+        run: grep -q "'yt_dlp.YoutubeDL'" build/deephack/PYZ-00.toc
+
       # The built app, started for real: without a cooler, with fresh settings. It saves a picture of its
       # window after a few seconds and quits; a missing module or DLL would end it before that.
       - name: Try the app

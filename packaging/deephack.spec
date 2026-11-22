@@ -8,7 +8,7 @@
 import os
 import shutil
 
-from PyInstaller.utils.hooks import collect_all, collect_submodules
+from PyInstaller.utils.hooks import collect_all, collect_submodules, copy_metadata
 
 datas, binaries, hidden = [], [], []
 for package in ("libusb_package",          # carries libusb's DLL as a data file
@@ -16,6 +16,8 @@ for package in ("libusb_package",          # carries libusb's DLL as a data file
     found = collect_all(package)
     datas, binaries, hidden = datas + found[0], binaries + found[1], hidden + found[2]
 hidden += collect_submodules("winrt")      # namespace packages of compiled modules, imported inside functions
+hidden += ["yt_dlp"]                       # deephack/ytdlp.py imports it; said here too, so that it cannot go missing
+datas += copy_metadata("yt-dlp")           # its version, for the Settings page (deephack/ytdlp.py), without loading it
 
 a = Analysis(
     ["run.py"],

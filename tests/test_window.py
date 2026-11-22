@@ -234,3 +234,32 @@ def test_the_part_picker_hands_over_what_was_dragged(window, monkeypatch):
     assert gone == [True]
     picker.grab()                                            # it paints, with and without a rectangle
     picker.close()
+
+
+# ---------------------------------------------------------------- a newer yt-dlp, from Settings
+def test_youtube_links_can_be_kept_current_from_settings(window, monkeypatch):
+    asked = []
+    monkeypatch.setattr(main_window.ytdlp, "version", lambda: ("2027.1.15", True) if asked else ("2026.10.26", False))
+    monkeypatch.setattr(main_window.ytdlp, "update", lambda: asked.append(True) or ("updated", "2027.1.15"))
+    window._refresh_reader()
+    window._settings_button.click()
+    shown = texts(window._pages.currentWidget())
+    assert "YOUTUBE LINKS" in shown and "Keep it current" in shown
+    assert window._reader_title.text() == "yt-dlp 2026.10.26 · the one deephack came with"
+    assert window.config.get("ytdlp_current") is False and not window._reader_auto.isChecked()      # off unless switched on
+    window._reader_auto.click()
+    assert window.config.get("ytdlp_current") is True and asked == []                               # the switch fetches nothing
+
+    window._reader_button.click()
+    assert not window._reader_button.isEnabled() and window._reader_result.text() == "Asking PyPI…"
+    for _ in range(200):                                     # the answer comes from a thread
+        QApplication.processEvents()
+        if window._reader_button.isEnabled():
+            break
+        QApplication.instance().thread().msleep(10)
+    assert asked == [True] and window._reader_result.text() == "Now using yt-dlp 2027.1.15."
+    assert window._reader_title.text() == "yt-dlp 2027.1.15 · fetched by deephack"
+    window._on_reader("current", "2027.1.15")
+    assert window._reader_result.text() == "yt-dlp 2027.1.15 is the newest."
+    window._on_reader("failed", "no net")
+    assert window._reader_result.text() == "Could not: no net" and window._reader_button.isEnabled()

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import threading
 import time
 
-from PySide6.QtCore import QDir, Qt, QTimer
+from PySide6.QtCore import QDir, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
                                QKeySequenceEdit, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from .. import __version__, autostart, firmware
+from .. import __version__, autostart, firmware, ytdlp
 from ..config import Config
 from ..engine import Engine, quit_deepcool
 from ..hotkeys import Hotkeys
@@ -52,6 +53,8 @@ def _card() -> tuple[QFrame, QVBoxLayout]:
 
 
 class MainWindow(QMainWindow):
+    readerChecked = Signal(str, str)             # how looking for a newer yt-dlp went (ytdlp.update), from its thread
+
     def __init__(self, config: Config, engine: Engine):
         super().__init__()
         self.config, self.engine = config, engine
@@ -280,6 +283,30 @@ class MainWindow(QMainWindow):
                                             tuple((p, f"{p} %") for p in (100, 85, 70, 50, 30)))
         cards.addWidget(cooler)
 
+        # the program that finds the stream behind a YouTube link, and a newer one when YouTube has changed
+        links, ll = _card()
+        ll.addWidget(_label("YOUTUBE LINKS", "section"))
+        self._reader_title = _label("")
+        ll.addWidget(self._reader_title)
+        ll.addWidget(_label("YouTube changes how its videos are handed out now and then, and links stop playing. yt-dlp, "
+                            "which deephack finds them with, follows within days: deephack can fetch the newest from PyPI "
+                            "and use it instead of the one it came with.", "hint", wrap=True))
+        self._reader_auto = self._switch_row(
+            ll, "Keep it current", "Looks once a day and when a link will not open. Off: only when you press the button. "
+            "It is code from the net that deephack then runs.", bool(self.config.get("ytdlp_current")),
+            lambda on: self.config.set("ytdlp_current", on))
+        self._reader_button = QPushButton("Update now")
+        self._reader_button.clicked.connect(lambda _=False: self._check_reader())
+        self._reader_result = _label("", "hint", wrap=True)
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        row.addWidget(self._reader_button)
+        row.addWidget(self._reader_result, 1)
+        ll.addLayout(row)
+        self.readerChecked.connect(self._on_reader)
+        self._refresh_reader()
+        cards.addWidget(links)
+
         # what the cooler's screen runs, and the way to the firmware that draws straight from USB
         self._fw_card, fl = _card()
         fw = self._fw_card
@@ -328,6 +355,25 @@ class MainWindow(QMainWindow):
             self._settings_scroll.verticalScrollBar().setValue(0)
         else:                                    # once laid out
             QTimer.singleShot(0, lambda: self._settings_scroll.ensureWidgetVisible(show, 0, 14))
+
+    # ------------------------------------------------------------ yt-dlp
+    def _refresh_reader(self) -> None:
+        version, fetched = ytdlp.version()
+        self._reader_title.setText(f"yt-dlp {version}".rstrip() + (" · fetched by deephack" if fetched else " · the one deephack came with"))
+
+    def _check_reader(self) -> None:
+        """Look for a newer yt-dlp now. It asks the net: in a thread, and the answer comes as a signal."""
+        self._reader_button.setEnabled(False)
+        self._reader_result.setStyleSheet("")
+        self._reader_result.setText("Asking PyPI…")
+        threading.Thread(target=lambda: self.readerChecked.emit(*ytdlp.update()), daemon=True).start()
+
+    def _on_reader(self, how: str, text: str) -> None:
+        self._reader_button.setEnabled(True)
+        self._reader_result.setStyleSheet(f"color: {style.ERR if how == 'failed' else style.OK};")
+        self._reader_result.setText({"updated": f"Now using yt-dlp {text}.", "current": f"yt-dlp {text} is the newest."}.get(
+            how, f"Could not: {text}"))
+        self._refresh_reader()
 
     # ------------------------------------------------------------ firmware
     def _ask_flash(self, which: str) -> None:

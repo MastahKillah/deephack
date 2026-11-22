@@ -24,6 +24,7 @@ DEFAULTS = {
     "mode": "now_playing",
     "slideshow": False,        # False: keep our image on screen. True: cooler cycles through all stored images.
     "close_to_tray": True,
+    "ytdlp_current": False,    # True: look for a newer yt-dlp once a day and when a link will not open (ytdlp.py)
     "light": "screen",         # the pump head's light strip: screen (edge colours) | motherboard | warning
     "brightness": 70,          # screen backlight, percent (70 is what the official app sends)
     "slot_index": None,        # index of our image among the JPGs stored on the device

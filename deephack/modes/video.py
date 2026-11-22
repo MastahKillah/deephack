@@ -38,6 +38,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from .. import ytdlp
 from ..render import H, W
 from ..sound import FRAME, RATE, Speaker
 from .base import Mode, Setting
@@ -86,6 +87,17 @@ def read_twice(address: str) -> bool:
     return "://" not in address
 
 
+class LinkError(RuntimeError):
+    """The site would not say where the video is. (YouTube may have changed: a newer yt-dlp can help.)"""
+
+
+def _ask(source: str, wanted: str) -> dict:
+    """What yt-dlp finds out about a link."""
+    yt_dlp = ytdlp.module()                                  # a second to load: only when a link is played
+    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True, "format": wanted}) as ydl:
+        return ydl.extract_info(source, download=False)
+
+
 def resolve(source: str, lines: int = 720, sound: bool = False) -> tuple[str, dict, str, str | None]:
     """Where to read the video from: (address, options for opening it, title, address of its sound). A
     file on this PC is its own address; for anything else yt-dlp asks the site (YouTube and a great many
@@ -94,11 +106,17 @@ def resolve(source: str, lines: int = 720, sound: bool = False) -> tuple[str, di
     if is_file(source):
         path = Path(source).expanduser()
         return str(path), {}, path.stem, None
-    import yt_dlp                                            # a second to load: only when a link is played
-
     wanted = (FORMATS_SOUND if sound else FORMATS).format(lines)
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True, "format": wanted}) as ydl:
-        info = ydl.extract_info(source, download=False)
+    ytdlp.keep_current()                                     # once a day, if that is switched on (Settings)
+    try:
+        info = _ask(source, wanted)
+    except Exception as error:                               # noqa: BLE001  (whatever a site can do wrong)
+        if not ytdlp.keep_current(ytdlp.HOUR):               # ... and now, since a link will not open
+            raise LinkError(brief(error)) from error
+        try:
+            info = _ask(source, wanted)                      # with the newer one
+        except Exception as again:                           # noqa: BLE001
+            raise LinkError(brief(again)) from again
     if info.get("entries"):                                  # a playlist after all: its first video
         info = next(iter(info["entries"]))
     parts = info.get("requested_formats") or [info]          # picture and sound apart, or one stream with both
@@ -181,6 +199,7 @@ class Player:
         self._on_end, self._on_error, self._skipped = on_end, on_error, False
         self.title, self.duration, self.position = "", 0.0, 0.0
         self.state, self.error = "idle", ""
+        self.link_failed = False                 # the error is the site's, not the stream's: see LinkError
         self.opened = 0                          # times the video was opened: 1, and one more for every new start
         self._frame, self._seq = None, 0
         self._asked = float("-inf")
@@ -266,7 +285,7 @@ class Player:
                             self._resume, wait = 0.0, RETRY_NEXT
                         raise
                 except Exception as e:                       # noqa: BLE001  (whatever a site or a file can do wrong)
-                    self.state, self.error = "failed", brief(e)
+                    self.state, self.error, self.link_failed = "failed", brief(e), isinstance(e, LinkError)
                     until = self._clock() + wait
                     while self._wanted() and not self._skipped and self._clock() < until:
                         time.sleep(0.05)
@@ -530,7 +549,8 @@ class Video(Mode):
         seq, frame = player.latest()
         name = self._name(source)
         if player.state == "failed" and (frame is None or seq == self._shown):
-            self.status, self.placeholder = f"Cannot play it: {player.error}", (name, f"Cannot play it: {player.error}")
+            hint = ". If links have stopped working: Settings, YouTube links, Update now" if player.link_failed else ""
+            self.status, self.placeholder = f"Cannot play it: {player.error}", (name, f"Cannot play it: {player.error}{hint}")
             return None
         if frame is None:
             self.status, self.placeholder = f"Opening {name}…", (name, "Opening…")

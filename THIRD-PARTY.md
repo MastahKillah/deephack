@@ -17,7 +17,7 @@ yourself from source, see "Releasing" in the README.
 | FFmpeg, inside PyAV | LGPL-3.0-or-later | https://ffmpeg.org, built by https://github.com/PyAV-Org/pyav-ffmpeg |
 | x264 and x265, next to FFmpeg | GPL-2.0-or-later | https://www.videolan.org/developers/x264.html, https://www.x265.org |
 | dav1d, libvpx, Opus, libwebp, SVT-AV1, libvmaf, libvpl, LAME, zlib, next to FFmpeg | BSD-2-Clause, BSD-3-Clause, BSD-3-Clause, BSD-3-Clause, BSD-3-Clause-Clear, BSD-2-Clause-Patent, MIT, LGPL-2.0-or-later, Zlib | see pyav-ffmpeg above |
-| yt-dlp (finds a YouTube video's stream) | Unlicense | https://github.com/yt-dlp/yt-dlp |
+| yt-dlp (finds a YouTube video's stream; the app can fetch a newer one from PyPI when asked to, into its settings folder) | Unlicense | https://github.com/yt-dlp/yt-dlp |
 | Pillow (draws the pictures) | MIT-CMU | https://github.com/python-pillow/Pillow |
 | pyusb | BSD-3-Clause | https://github.com/pyusb/pyusb |
 | libusb-package, with libusb in it | Apache-2.0, LGPL-2.1-or-later | https://github.com/pyocd/libusb-package, https://libusb.info |

@@ -24,6 +24,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--screenshot", metavar="PNG", help="(development) save a screenshot of the window after a few seconds and exit")
     ap.add_argument("--screenshot-after", metavar="SECONDS", type=float, default=7.0, help="(development) ... after this many seconds")
     ap.add_argument("--no-device", action="store_true", help="(development) preview only, never touch the cooler")
+    ap.add_argument("--settings", action="store_true", help="(development) open the Settings page")
     ap.add_argument("--config", metavar="JSON", help="(development) use another settings file")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args(argv)
@@ -93,6 +94,8 @@ def main(argv: list[str] | None = None) -> int:
     tray.show()
 
     engine.start()
+    if args.settings:
+        window.open_settings()
     if not args.minimized:
         show_window()
 

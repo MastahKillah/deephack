@@ -20,7 +20,7 @@ from PIL import Image
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
-from . import device, firmware, render
+from . import device, firmware, render, ytdlp
 from .config import GIF_SLOT_ID, SLOT_ID, Config, book_id
 from .modes import BY_ID, MODES, Mode
 from .modes.base import Animation, Dashboard, Flipbook
@@ -167,6 +167,7 @@ class Engine(QThread):
         self._last_state: dict | None = None
         self._placeholder_shown = None
         self._preview: Mode | None = None
+        ytdlp.wanted = lambda: bool(config.get("ytdlp_current"))
         self._closing: list[Mode] = []    # modes that were replaced and have not been told yet
         self._preview_frame: Image.Image | Animation | None = None
         self._preview_shown = None        # placeholder of the preview last emitted
