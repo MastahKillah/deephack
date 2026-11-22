@@ -145,7 +145,7 @@ def test_one_video_plays_after_the_other(clips):
     assert [colour for _, colour in seen] == ["red", "green", "blue"]
     assert 0.7 < seen[1][0] - seen[0][0] < 1.6                 # each for its second
     assert mode.status.startswith("@blue_account · 0:0") and mode.status.endswith(" of 0:01 · A blue video")
-    assert BY_ID["tiktok"] is TikTok and TikTok.actions == (("previous", "Previous"), ("next", "Next"))
+    assert BY_ID["tiktok"] is TikTok and TikTok.actions[:2] == (("previous", "Previous"), ("next", "Next"))
 
 
 def test_or_the_same_one_again(clips):
@@ -208,7 +208,9 @@ def test_keys_are_read_the_way_qt_writes_them():
     for nothing in ("", "  ", "Ctrl+K, Ctrl+N", "Ctrl+Alt+Banana", "Hyper+N"):
         assert hotkeys.parse(nothing) is None
     defaults = {s.key: s.default for s in TikTok.settings if s.kind == "shortcut"}
-    assert all(hotkeys.parse(key) for key in defaults.values()) and {s.action for s in TikTok.settings if s.kind == "shortcut"} == {"next", "previous"}
+    assert defaults.pop("mute_key") == "" and len(defaults) == 2             # no key for Mute unless one is set
+    assert all(hotkeys.parse(key) for key in defaults.values())
+    assert {s.action for s in TikTok.settings if s.kind == "shortcut"} == {"next", "previous", "mute"}
 
 
 def test_only_the_keys_asked_for_are_registered_and_a_taken_one_is_reported():

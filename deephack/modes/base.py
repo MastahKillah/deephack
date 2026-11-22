@@ -55,6 +55,8 @@ class Setting:
     placeholder: str = ""
     hint: str = ""
     action: str = ""               # kind "shortcut": which of the mode's `actions` the key is for
+    live: bool = False             # the running mode reads it at every frame: a change reaches it as it is, and the
+                                   # mode is not started anew for it (the loudness of a video that is playing)
 
 
 def parse_order(value: str, ids: list[str]) -> list[tuple[str, bool]]:
@@ -95,6 +97,8 @@ class Mode:
         self.active = False                               # has something worth showing right now (see `claims`)
         self.direct = False                               # set by the engine: its pictures are drawn from USB, not
                                                           # stored, so a new one costs nothing and may come every tick
+        self.audible = False                              # set by the engine: this is the mode on the cooler, not one
+                                                          # that only shows in the window. Only that one may make sound
 
     @classmethod
     def build(cls, settings) -> Mode:
@@ -108,4 +112,4 @@ class Mode:
         """One of `actions` was asked for. Called between two frame() calls."""
 
     async def close(self) -> None:
-        pass
+        """The engine is done with this mode: another one, or the same with other settings, takes its place."""

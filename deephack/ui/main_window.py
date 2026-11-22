@@ -460,13 +460,18 @@ class MainWindow(QMainWindow):
         def uses(target: str) -> bool:           # Auto, for one, runs the other modes with their own settings
             return target == mode_id or mode_id in BY_ID[target].reads
 
-        if uses(self._live):
-            self.engine.reload_mode()
-        if mode_id == self._live and any(s.key == key and s.kind == "shortcut" for s in BY_ID[mode_id].settings):
+        setting = next((s for s in BY_ID[mode_id].settings if s.key == key), None)
+        key_setting = setting is not None and setting.kind == "shortcut"
+        if setting is not None and (setting.live or key_setting):
+            self.engine.mode_value(mode_id, key, value)      # the running mode goes on, with the new value
+        else:
+            if uses(self._live):
+                self.engine.reload_mode()
+            if self._viewing != self._live and uses(self._viewing):
+                self.engine.reload_preview()
+        if mode_id == self._live and key_setting:
             self.sync_hotkeys()
             QTimer.singleShot(0, lambda: self._viewing == mode_id and self._build_settings(BY_ID[mode_id]))
-        if self._viewing != self._live and uses(self._viewing):
-            self.engine.reload_preview()
 
     def _set_enabled(self, on: bool) -> None:
         self.config.set("enabled", on)

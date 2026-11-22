@@ -167,6 +167,7 @@ class Engine(QThread):
         self._last_state: dict | None = None
         self._placeholder_shown = None
         self._preview: Mode | None = None
+        self._closing: list[Mode] = []    # modes that were replaced and have not been told yet
         self._preview_frame: Image.Image | Animation | None = None
         self._preview_shown = None        # placeholder of the preview last emitted
 
@@ -192,6 +193,15 @@ class Engine(QThread):
 
         self._commands.put(act)
 
+    def mode_value(self, mode_id: str, key: str, value) -> None:
+        """A setting of the `live` kind was changed: the running mode gets the new value as it is."""
+        def put() -> None:
+            for mode in (self._mode, self._preview):
+                if mode is not None and mode.id == mode_id and key in mode.values:
+                    mode.values[key] = value
+
+        self._commands.put(put)
+
     def retry_device(self) -> None:
         self._commands.put(lambda: setattr(self, "_next_open", 0.0))
 
@@ -215,6 +225,8 @@ class Engine(QThread):
 
     def _make_mode(self) -> None:
         cls = BY_ID.get(self.config.get("mode"), MODES[0])
+        if self._mode is not None:
+            self._closing.append(self._mode)
         if self._preview is not None and self._preview.id == cls.id:
             # the previewed mode goes on the cooler: keep it running, with what it has drawn so far
             self._mode, frame, self._preview, self._preview_frame = self._preview, self._preview_frame, None, None
@@ -236,15 +248,28 @@ class Engine(QThread):
         self.frameChanged.emit(*_placeholder_frames(self._mode), True)
 
     def _make_preview(self, mode_id: str | None) -> None:
+        if self._preview is not None:
+            self._closing.append(self._preview)
         self._preview = BY_ID[mode_id].build(self.config.mode_settings) if mode_id in BY_ID else None
         self._preview_frame = None
         if self._preview is not None:
             self._preview_shown = self._preview.placeholder
             self.previewChanged.emit(self._preview.id, *_placeholder_frames(self._preview), True)
 
+    async def _close_modes(self, *more) -> None:
+        """Tell the modes that were replaced that they are done (a video stops its sound there)."""
+        closing, self._closing = self._closing, []
+        closing = [mode for mode in closing if mode is not self._mode and mode is not self._preview]     # still in use
+        for mode in (*closing, *more):
+            if mode is not None:
+                try:
+                    await mode.close()
+                except Exception:
+                    traceback.print_exc()
+
     async def _preview_step(self) -> None:
         mode = self._preview
-        mode.direct = self._drawing
+        mode.direct, mode.audible = self._drawing, False
         try:
             img = await mode.frame()
         except Exception:
@@ -268,10 +293,12 @@ class Engine(QThread):
                     self._commands.get_nowait()()
                 except queue.Empty:
                     break
+            if self._closing:
+                await self._close_modes()
             enabled = self.config.get("enabled")
             if commanded or started >= modes_due:
                 if enabled:
-                    self._mode.direct = self._drawing
+                    self._mode.direct, self._mode.audible = self._drawing, True
                     try:
                         img = await self._mode.frame()
                     except Exception:
@@ -297,6 +324,7 @@ class Engine(QThread):
             while (left := deadline - time.perf_counter()) > 0 and not self._stop and self._commands.empty():
                 await asyncio.to_thread(time.sleep, min(0.05, left))
             await asyncio.sleep(0)
+        await self._close_modes(self._mode, self._preview)
         self._shutdown()
 
     def _device_step(self, enabled: bool) -> None:

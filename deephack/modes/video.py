@@ -1,4 +1,4 @@
-"""Video: a YouTube link or a video file, playing on the cooler. Without sound: it is a screen.
+"""Video: a YouTube link or a video file, playing on the cooler, with its sound from the PC if wanted.
 
 Needs the direct drawing firmware: a cooler that stores every picture before it shows it cannot play
 anything. That one gets a single picture of the video and a line that says why.
@@ -18,19 +18,28 @@ How it works:
 - At its end the video starts again. A stream that breaks off, or an address that has expired (YouTube's
   last some hours), is opened afresh at the same place.
 
-Not done: sound, and the turn that phone videos ask for (one filmed upright plays on its side).
+- **Sound** is off unless switched on. It comes from the PC's speakers (sound.py), and the picture goes
+  by it: the frame on screen is the one that belongs to what is being heard, chosen a tenth of a second
+  ahead because that is how long a frame needs to get to the cooler's screen (`LEAD`). A YouTube video's sound is a
+  stream of its own, read by a second thread; a file is opened a second time for it; where one address
+  on the net holds both (TikTok), both are read from it at once, the sound a little ahead. Only the
+  mode on the cooler sounds, not one that is merely looked at in the window.
+
+Not done: the turn that phone videos ask for (one filmed upright plays on its side).
 """
 from __future__ import annotations
 
 import asyncio
 import threading
 import time
+from collections import deque
 from fractions import Fraction
 from pathlib import Path
 
 from PIL import Image
 
 from ..render import H, W
+from ..sound import FRAME, RATE, Speaker
 from .base import Mode, Setting
 
 TICK = 0.06                 # seconds between pictures asked of the mode: a little more often than the cooler takes them
@@ -43,9 +52,22 @@ RETRY_NEXT = 1.0            # ... and before the next one is tried, where there 
 OPEN_TIMEOUT = (15.0, 15.0)     # seconds to open the address, and to wait for more of it
 # what to ask YouTube for: H.264 when there is one (every ffmpeg decodes it, fast), and no more lines than needed
 FORMATS = "bestvideo[height<={0}][vcodec^=avc1]/bestvideo[height<={0}]/best[height<={0}]/best"
+# ... and with its sound, which YouTube keeps in a stream of its own
+FORMATS_SOUND = ("bestvideo[height<={0}][vcodec^=avc1]+bestaudio/bestvideo[height<={0}]+bestaudio/"
+                 "best[height<={0}]/best")
 LINES = {"fill": 720, "fit": 480}            # on the cooler the whole of deephack took 13 % of a CPU core for the
                                              # first and 10 % for the second
 NETWORK = {"reconnect": "1", "reconnect_streamed": "1", "reconnect_delay_max": "5"}
+# Sound
+LEAD = 0.12                 # seconds the picture is chosen ahead of what is heard. Measured on the cooler: a frame of a
+                            # real video is 65 to 70 ms on its way from here until the cooler has taken it, and the
+                            # speaker's count is some 15 ms behind what is heard. Then the cooler has to show it: that
+                            # cannot be measured from here and is taken as 35 ms
+SOUND_AHEAD = 0.4           # seconds of sound kept ready in the speaker
+SOUND_WAIT = 3.0            # the picture waits this long at most for the sound to begin
+HUSH = 0.5                  # seconds without anybody asking for a frame: the sound pauses (after IDLE it all closes)
+PENDING, PENDING_BYTES = 45, 64 << 20        # frames that may wait while the reading runs ahead for the sound
+SOUND_LEVELS = (("0", "Off"), ("20", "20 %"), ("40", "40 %"), ("60", "60 %"), ("80", "80 %"), ("100", "100 %"))
 
 
 def clock_text(seconds: float) -> str:
@@ -58,21 +80,34 @@ def is_file(source: str) -> bool:
     return "://" not in source and Path(source).expanduser().is_file()
 
 
-def resolve(source: str, lines: int = 720) -> tuple[str, dict, str]:
-    """Where to read the video from: (address, options for opening it, title). A file on this PC is its
-    own address; for anything else yt-dlp asks the site (YouTube and a great many others) for a stream
-    of at most that many lines."""
+def read_twice(address: str) -> bool:
+    """A file is opened a second time for its sound, which costs nothing. An address on the net is read
+    once, picture and sound together."""
+    return "://" not in address
+
+
+def resolve(source: str, lines: int = 720, sound: bool = False) -> tuple[str, dict, str, str | None]:
+    """Where to read the video from: (address, options for opening it, title, address of its sound). A
+    file on this PC is its own address; for anything else yt-dlp asks the site (YouTube and a great many
+    others) for a stream of at most that many lines. The sound's address is None when it was not asked
+    for, and when it is in the same stream as the picture."""
     if is_file(source):
         path = Path(source).expanduser()
-        return str(path), {}, path.stem
+        return str(path), {}, path.stem, None
     import yt_dlp                                            # a second to load: only when a link is played
 
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True, "format": FORMATS.format(lines)}) as ydl:
+    wanted = (FORMATS_SOUND if sound else FORMATS).format(lines)
+    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "noplaylist": True, "format": wanted}) as ydl:
         info = ydl.extract_info(source, download=False)
     if info.get("entries"):                                  # a playlist after all: its first video
         info = next(iter(info["entries"]))
-    headers = "".join(f"{name}: {value}\r\n" for name, value in (info.get("http_headers") or {}).items())
-    return info["url"], {**NETWORK, "headers": headers}, info.get("title") or ""
+    parts = info.get("requested_formats") or [info]          # picture and sound apart, or one stream with both
+    picture_part = next((part for part in parts if part.get("vcodec") not in (None, "none")), parts[0])
+    sound_part = next((part for part in parts if part is not picture_part and part.get("acodec") not in (None, "none")), None)
+    headers = "".join(f"{name}: {value}\r\n" for name, value in
+                      (picture_part.get("http_headers") or info.get("http_headers") or {}).items())
+    return (picture_part["url"], {**NETWORK, "headers": headers}, info.get("title") or "",
+            sound_part["url"] if sound_part else None)
 
 
 _graphs: dict[tuple, tuple] = {}             # (width, height, pixel format, fit) -> ffmpeg's filters for such frames
@@ -135,9 +170,13 @@ class Player:
 
     By itself it plays one video over and over. For a list of them: `resolve` is asked where the video
     is every time one is opened, so it can name another; `on_end` is called at a video's end and
-    `on_error` when one would not play, before the next is opened; `skip()` opens the next at once."""
+    `on_error` when one would not play, before the next is opened; `skip()` opens the next at once.
 
-    def __init__(self, source: str, resolve=resolve, clock=time.monotonic, on_end=None, on_error=None):
+    Sound: `set_sound(True)` and the video's sound is played (`speaker` makes what plays it, see
+    sound.py), as loud as `volume` says. The picture then goes by what is being heard. `silent` says
+    why there is none when there should be."""
+
+    def __init__(self, source: str, resolve=resolve, clock=time.monotonic, on_end=None, on_error=None, speaker=Speaker):
         self.source, self._resolve, self._clock = source, resolve, clock
         self._on_end, self._on_error, self._skipped = on_end, on_error, False
         self.title, self.duration, self.position = "", 0.0, 0.0
@@ -148,20 +187,43 @@ class Player:
         self._resume = 0.0                       # seconds into the video to go on from
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self.sound, self.silent = False, ""
+        self._make_speaker, self._speaker, self._volume = speaker, None, 1.0
+        self._again = False                      # open the video anew where it is (its sound was switched on or off)
 
     def ask(self) -> None:
         with self._lock:
             self._asked = self._clock()
+            if self._speaker is not None and self._speaker.paused:
+                self._speaker.resume()
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(target=self._run, name="video", daemon=True)
                 self._thread.start()
 
     def stop(self) -> None:
         self._asked = float("-inf")
+        self._hush()
 
     def skip(self) -> None:
         """Leave the video that is playing and open what `resolve` names now, from its beginning."""
         self._skipped = True
+        self._hush()
+
+    def set_sound(self, on: bool) -> None:
+        """With sound or without. A video that is playing is opened anew for it, where it is."""
+        if on != self.sound:
+            self.sound, self._again = on, True
+
+    @property
+    def volume(self) -> float:
+        return self._volume
+
+    @volume.setter
+    def volume(self, volume: float) -> None:
+        self._volume = volume
+        speaker = self._speaker
+        if speaker is not None:
+            speaker.volume = volume
 
     def latest(self):
         return self._seq, self._frame
@@ -169,66 +231,225 @@ class Player:
     def _wanted(self) -> bool:
         return self._clock() - self._asked < IDLE
 
+    def _over(self) -> bool:
+        """The video that is being read is not to be played any further."""
+        return not self._wanted() or self._skipped or self._again
+
+    def _hush(self) -> None:
+        speaker = self._speaker
+        if speaker is not None:
+            speaker.reset()
+
     def _run(self) -> None:
         import av
 
-        while self._wanted():
-            wait = RETRY
-            try:
-                self.state = "opening"
-                if self._skipped:
-                    self._skipped, self._resume = False, 0.0
-                address, options, title = self._resolve(self.source)
-                self.title = title or self.title
+        try:
+            while self._wanted():
+                wait = RETRY
                 try:
-                    with av.open(address, options=options, timeout=OPEN_TIMEOUT) as container:
-                        self.opened += 1
-                        if self._play(container):
-                            self._resume = 0.0               # its end: from the beginning again, or the next one
-                            if self._on_end:
-                                self._on_end()
-                except Exception:                            # noqa: BLE001
-                    if self._on_error:                       # this one will not play: on to the next
-                        self._on_error()
-                        self._resume, wait = 0.0, RETRY_NEXT
-                    raise
-            except Exception as e:                           # noqa: BLE001  (whatever a site or a file can do wrong)
-                self.state, self.error = "failed", brief(e)
-                until = self._clock() + wait
-                while self._wanted() and not self._skipped and self._clock() < until:
-                    time.sleep(0.05)
-        self.state = "idle"
+                    self.state = "opening"
+                    if self._skipped:
+                        self._skipped, self._resume = False, 0.0
+                    self._again = False
+                    address, options, title, *more = self._resolve(self.source)
+                    self.title = title or self.title
+                    try:
+                        with av.open(address, options=options, timeout=OPEN_TIMEOUT) as container:
+                            self.opened += 1
+                            if self._play(container, address, options, more[0] if more else None):
+                                self._resume = 0.0           # its end: from the beginning again, or the next one
+                                if self._on_end:
+                                    self._on_end()
+                    except Exception:                        # noqa: BLE001
+                        if self._on_error:                   # this one will not play: on to the next
+                            self._on_error()
+                            self._resume, wait = 0.0, RETRY_NEXT
+                        raise
+                except Exception as e:                       # noqa: BLE001  (whatever a site or a file can do wrong)
+                    self.state, self.error = "failed", brief(e)
+                    until = self._clock() + wait
+                    while self._wanted() and not self._skipped and self._clock() < until:
+                        time.sleep(0.05)
+        finally:
+            speaker, self._speaker = self._speaker, None
+            if speaker is not None:
+                speaker.close()
+            self.state = "idle"
 
-    def _play(self, container) -> bool:
+    def _speaker_now(self):
+        """What plays the sound, opened when it is first wanted. None: this video plays without."""
+        if not self.sound or self._make_speaker is None:
+            speaker, self._speaker = self._speaker, None
+            if speaker is not None:                          # no longer wanted: Windows gets it back
+                speaker.close()
+            return None
+        if self._speaker is None or self._speaker.broken:
+            if self._speaker is not None:                    # its device failed (headphones pulled out): a new one
+                self._speaker.close()
+            try:
+                self._speaker = self._make_speaker()
+            except OSError as e:                             # a PC with nothing to play sound on
+                self._speaker, self.silent = None, brief(e)
+                return None
+        self._speaker.reset()
+        self._speaker.volume = self._volume
+        return self._speaker
+
+    def _feed(self, address: str, options: dict, start: float, speaker, epoch: int, feeding: list) -> None:
+        """Thread: read the sound from an address of its own and hand it to the speaker, a little ahead of
+        what is heard. Ends with the video (the speaker is reset then, which ends this `epoch`)."""
+        import av
+
+        try:
+            with av.open(address, options=options, timeout=OPEN_TIMEOUT) as container:
+                if not container.streams.audio:
+                    self.silent = "this video has no sound"
+                    return
+                if start > 1.0:
+                    container.seek(int(start * 1_000_000))
+                voice = _Voice(speaker, epoch, start)
+                for frame in container.decode(container.streams.audio[0]):
+                    if not voice.say(frame):
+                        return
+                    while speaker.ahead() > SOUND_AHEAD and speaker.epoch == epoch:
+                        time.sleep(0.02)
+                voice.say(None)
+        except Exception as e:                               # noqa: BLE001
+            self.silent = brief(e)
+        finally:
+            feeding.clear()
+
+    def _play(self, container, address: str, options: dict, sound_address: str | None) -> bool:
         """Play from where we were. True at the video's end, False when nobody wants frames any more or
         another video was asked for."""
+        import av
+
         video = container.streams.video[0]
         video.thread_type = "AUTO"
         self.duration = float(container.duration or 0) / 1_000_000
         start = self._resume
+        speaker, voice, feeding = self._speaker_now(), None, []
+        streams = [video]
+        if speaker is not None:
+            self.silent = ""
+            if sound_address is None and not container.streams.audio:
+                self.silent, speaker = "this video has no sound", None
+            elif sound_address is None and not read_twice(address):
+                # the sound is in the same stream as the picture and is read with it: to have enough of it
+                # ready, the reading runs ahead of the picture, and the frames wait in `pending`
+                voice = _Voice(speaker, speaker.epoch, start)
+                streams.append(container.streams.audio[0])
+            else:                                            # an address of its own, or the same file once more
+                feeding.append(threading.Thread(target=self._feed, name="video sound", daemon=True, args=(
+                    sound_address or address, options if sound_address else {}, start, speaker, speaker.epoch, feeding)))
+                feeding[0].start()
         if start > 1.0:
             container.seek(int(start * 1_000_000))           # lands on the key frame before; the frames up to
-        base = None                                          # `start` are decoded and not shown
-        for frame in container.decode(video):
-            if not self._wanted() or self._skipped:
-                return False
-            at = frame.time
-            if at is None or at < start - 0.05:
-                continue
-            now = self._clock()
-            if base is None:
-                base = (now, at)
-            wait = base[0] + (at - base[1]) - now
-            if wait < -BEHIND:
-                base = (now, at)
-            elif wait > 0:
-                time.sleep(min(wait, 1.0))
-            if self._skipped:
-                return False
-            self._frame, self._seq = frame, self._seq + 1
-            self.position = self._resume = at
+        pending: deque = deque()                             # `start` are decoded and not shown
+        room = max(4, min(PENDING, PENDING_BYTES // max(1, video.width * video.height * 3 // 2)))
+        base, began, shown = None, self._clock(), False
+
+        def show(frame) -> None:
+            nonlocal shown
+            self._frame, self._seq, shown = frame, self._seq + 1, True
+            self.position = self._resume = frame.time
             self.state, self.error = "playing", ""
+
+        def present(final: bool) -> bool:
+            """Show the frames that are due. True: read on; False: this video is over for us."""
+            nonlocal base
+            while pending:
+                if self._over():
+                    return False
+                now, at = self._clock(), pending[0].time
+                if speaker is not None and now - self._asked > HUSH:
+                    speaker.pause()                          # nobody is looking: the sound waits, and with it the picture
+                heard = speaker.position() if speaker is not None else None
+                if heard is not None:
+                    base = (now, heard + LEAD)
+                elif base is None:
+                    if (voice is not None or feeding) and now - began < SOUND_WAIT:
+                        # the sound has not begun yet: the picture waits for it, so that they start together
+                        if not shown:
+                            show(pending[0])
+                        if voice is not None and not final and len(pending) < room:
+                            return True
+                        time.sleep(0.01)
+                        continue
+                    base = (now, at)
+                wait = at - (base[1] + now - base[0])        # seconds until the frame is due
+                if wait > 0:
+                    if voice is not None and not final and len(pending) < room and speaker.ahead() < SOUND_AHEAD:
+                        return True                          # time to read more of the sound
+                    time.sleep(min(wait, 0.05))
+                    continue
+                if wait < -BEHIND:
+                    if heard is None:
+                        base = (now, at)                     # the reading could not keep up: the clock is set anew
+                    else:                                    # behind the sound: leave out what is no longer due
+                        while len(pending) > 1 and pending[1].time <= base[1]:
+                            pending.popleft()
+                show(pending.popleft())
+            return True
+
+        try:
+            for frame in container.decode(*streams):
+                if self._over():
+                    return False
+                if isinstance(frame, av.AudioFrame):
+                    voice.say(frame)
+                    continue
+                at = frame.time
+                if at is None or at < start - 0.05:
+                    continue
+                pending.append(frame)
+                if not present(final=False):
+                    return False
+            if voice is not None:
+                voice.say(None)
+            if not present(final=True):
+                return False
+            until = self._clock() + 2.0                      # the last of the sound
+            while speaker is not None and speaker.ahead() > 0.02 and not self._over() and self._clock() < until:
+                time.sleep(0.02)
+            return True
+        finally:
+            if speaker is not None:
+                speaker.reset()
+
+
+class _Voice:
+    """Decoded sound on its way to the speaker: brought to the speaker's form, each piece with its time."""
+
+    def __init__(self, speaker, epoch: int, start: float):
+        import av
+
+        self._speaker, self._epoch, self._start = speaker, epoch, start
+        self._form = av.AudioResampler(format="s16", layout="stereo", rate=RATE)
+        self._at: float | None = None            # the time the next piece belongs to
+
+    def say(self, frame) -> bool:
+        """Hand a frame of sound over (None: what the resampler still holds). False: nobody listens any more."""
+        if frame is not None:
+            if frame.time is None or frame.time < self._start - 0.05:
+                return self._speaker.epoch == self._epoch
+            if self._at is None or abs(frame.time - self._at) > 0.1:
+                self._at = frame.time            # the beginning, or a gap in the sound
+        if self._at is None:
+            return self._speaker.epoch == self._epoch
+        for piece in self._form.resample(frame):
+            data = bytes(piece.planes[0])[:piece.samples * FRAME]
+            if not self._speaker.write(data, self._at, self._epoch):
+                return False
+            self._at += piece.samples / RATE
         return True
+
+
+SOUND = Setting("sound", "Sound", "choice", "0", SOUND_LEVELS, live=True,
+                hint="From the PC's speakers, in time with the picture, while the mode is on the cooler. How loud is "
+                     "deephack's own volume in Windows: the rest of the PC stays as loud as it is.")
+MUTE_KEY = Setting("mute_key", "Key to mute", "shortcut", "", action="mute",
+                   hint="Sound off and on again, whatever window is in front. The Mute button does the same.")
 
 
 class Video(Mode):
@@ -237,12 +458,14 @@ class Video(Mode):
     description = "Plays YouTube or a video file"
     glyph = ""
     quality = QUALITY
+    actions = (("mute", "Mute"),)
     settings = (
         Setting("source", "Video", "file", "", placeholder="https://www.youtube.com/watch?v=…",
                 hint="A YouTube link (most other video sites work too), or a video file on this PC. It is read as it "
                      "plays, not downloaded, and starts again at its end."),
         Setting("fit", "Picture", "choice", "fill", (("fill", "Fill the screen"), ("fit", "The whole picture, with bars")),
                 hint="A wide picture fills the screen with its middle."),
+        SOUND, MUTE_KEY,
     )
 
     def __init__(self, values: dict | None = None, player=Player):
@@ -251,6 +474,7 @@ class Video(Mode):
         self._player: Player | None = None
         self._shown = 0                          # number of the frame handed over last
         self._still = False                      # the one picture for a cooler that cannot be drawn on has been made
+        self._muted = False                      # by the Mute button or key: until it is pressed again
 
     def _source(self) -> str:
         """What to play; nothing: the mode says what it wants instead."""
@@ -261,7 +485,29 @@ class Video(Mode):
 
     def _new_player(self, source: str) -> Player:
         lines = LINES.get(self.values["fit"], 720)
-        return self._make_player(source, lambda address: resolve(address, lines))
+        return self._make_player(source, lambda address: resolve(address, lines, bool(self._player and self._player.sound)))
+
+    def _level(self) -> float:
+        """How loud, 0 to 1, as the setting says. 0: no sound is wanted."""
+        try:
+            return min(100, max(0, int(self.values.get("sound") or 0))) / 100
+        except ValueError:
+            return 0.0
+
+    def _sound_note(self) -> str:
+        """What the status line says about the sound, when there is something to say."""
+        player, level = self._player, self._level()
+        if player is None or not level or not player.sound:
+            return ""
+        if player.silent:
+            return f" · no sound ({player.silent})"
+        return " · muted" if self._muted else ""
+
+    def act(self, action: str) -> None:
+        if action == "mute":
+            self._muted = not self._muted
+            if self._player is not None:
+                self._player.volume = 0.0 if self._muted else self._level()
 
     def _name(self, source: str) -> str:
         return self._player.title or ("Video" if "://" in source else Path(source).stem)
@@ -276,6 +522,9 @@ class Video(Mode):
         player = self._player
         if not self.direct and self._still:
             return None
+        level = self._level()
+        player.set_sound(bool(level) and self.direct and self.audible)
+        player.volume = 0.0 if self._muted else level
         player.ask()
         seq, frame = player.latest()
         name = self._name(source)
@@ -292,7 +541,7 @@ class Video(Mode):
             return await asyncio.to_thread(picture, frame, self.values["fit"])
         self._still = False
         length = f" of {clock_text(player.duration)}" if player.duration else ""
-        self.status = f"{name} · {clock_text(player.position)}{length}"
+        self.status = f"{name} · {clock_text(player.position)}{length}{self._sound_note()}"
         if seq == self._shown:
             return None
         self._shown = seq

@@ -1,4 +1,5 @@
-"""TikTok: random videos, one after the other, without an account. Without sound: it is a screen.
+"""TikTok: random videos, one after the other, without an account. With their sound from the PC if
+wanted (video.py says how).
 
 Where they come from: TikTok's Explore page, as a browser that is not logged in gets it. Its list
 (`/api/explore/item_list/`) answers without an account and without the signature most of TikTok's other
@@ -29,7 +30,7 @@ import urllib.request
 from dataclasses import dataclass
 
 from .base import Setting
-from .video import NETWORK, Player, Video, clock_text
+from .video import MUTE_KEY, NETWORK, SOUND, Player, Video, clock_text
 
 PAGE = "https://www.tiktok.com/explore"
 LIST = "https://www.tiktok.com/api/explore/item_list/"
@@ -149,7 +150,7 @@ class TikTok(Video):
     title = "TikTok"
     description = "Random videos, no account"
     glyph = ""
-    actions = (("previous", "Previous"), ("next", "Next"))
+    actions = (("previous", "Previous"), ("next", "Next"), ("mute", "Mute"))
     settings = (
         Setting("topic", "Videos about", "choice", "120", TOPICS,
                 hint="Popular videos from TikTok's Explore page, as somebody who is not logged in sees it. Which ones "
@@ -157,9 +158,11 @@ class TikTok(Video):
         Setting("fit", "Picture", "choice", "fill", (("fill", "Fill the screen"), ("fit", "The whole picture, with bars")),
                 hint="A video filmed upright is taller than the screen: filling it cuts off the top and the bottom."),
         Setting("after", "When a video ends", "choice", "next", (("next", "Play the next one"), ("again", "Play it again"))),
+        SOUND,
         Setting("next_key", "Key for the next video", "shortcut", "Ctrl+Alt+PgDown", action="next",
                 hint="Works whatever window is in front, while TikTok is on the cooler. Empty: no key."),
         Setting("previous_key", "Key for the one before", "shortcut", "Ctrl+Alt+PgUp", action="previous"),
+        MUTE_KEY,
     )
 
     def __init__(self, values: dict | None = None, player=Player, feed=None):
@@ -185,9 +188,9 @@ class TikTok(Video):
         return self._player.title or "TikTok"
 
     def act(self, action: str) -> None:
-        """Next or Previous, from the app's buttons or a key."""
+        """Next or Previous (and Mute, which is the Video mode's), from the app's buttons or a key."""
         if action not in ("next", "previous"):
-            return
+            return super().act(action)
         self._feed.step(+1 if action == "next" else -1)
         if self._player is not None:
             self._player.skip()
@@ -198,5 +201,6 @@ class TikTok(Video):
         clip = self._playing
         if player is not None and clip is not None and player.state == "playing" and self.direct:
             text = f" · {clip.text}" if clip.text else ""
-            self.status = f"@{clip.author} · {clock_text(player.position)} of {clock_text(player.duration or clip.seconds)}{text}"
+            self.status = (f"@{clip.author} · {clock_text(player.position)} of {clock_text(player.duration or clip.seconds)}"
+                           f"{self._sound_note()}{text}")
         return picture

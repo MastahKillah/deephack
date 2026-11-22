@@ -129,14 +129,15 @@ def test_a_link_is_asked_of_yt_dlp_for_a_stream_of_the_right_size(monkeypatch):
             return {"url": "https://stream.invalid/video", "title": "A title", "http_headers": {"User-Agent": "x", "Accept": "*/*"}}
 
     monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=Stand))
-    address, options, title = video.resolve("https://www.youtube.com/watch?v=abc", video.LINES["fit"])
+    address, options, title, sound = video.resolve("https://www.youtube.com/watch?v=abc", video.LINES["fit"])
+    assert sound is None and "bestaudio" not in asked["format"]            # no sound unless asked for (test_sound.py)
     assert (address, title) == ("https://stream.invalid/video", "A title")
     assert options["headers"] == "User-Agent: x\r\nAccept: */*\r\n" and options["reconnect"] == "1"
     assert asked["download"] is False and asked["noplaylist"] and "height<=480" in asked["format"] and "720" not in asked["format"]
 
 
 def test_a_file_is_its_own_address(clip):
-    assert video.resolve(str(clip)) == (str(clip), {}, "A clip")
+    assert video.resolve(str(clip)) == (str(clip), {}, "A clip", None)
     assert not video.is_file("https://www.youtube.com/watch?v=abc") and not video.is_file(str(clip) + ".nothing")
 
 

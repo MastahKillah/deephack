@@ -396,6 +396,22 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   second, 16 to 45 KB each, 36 ms to send, 11 % of one CPU core. Between two videos the picture stood
   for 0.76 s. After "next" or "previous" the other video was on the cooler 0.65 to 0.81 s later (four
   presses). Nothing stored.
+- **Sound with the picture** (Video and TikTok, 22 Nov 2026; the sound comes from the PC, the cooler only
+  shows). The picture goes by what the PC's sound output says it has played, and is chosen 120 ms ahead
+  of it (`LEAD` in `deephack/modes/video.py`). Measured at the moment the cooler had taken a frame: the
+  frame was 51 ms ahead of the sound's count for a YouTube video (392 frames in 25 s; 18 to 76 ms for
+  nine in ten of them) and 56 ms for TikTok (396 frames; 36 to 76). Recording what Windows sends to the
+  speakers showed the sound itself to be 14 ms ahead of that count, which leaves about 40 ms for the
+  cooler to put the frame on its screen. **How long that really takes cannot be measured from the PC**,
+  so sound and picture are together to within a few hundredths of a second by reckoning, not by a
+  measurement of the screen. With sound: 15.7 frames a second and 15 % of one CPU core for the YouTube
+  video (its sound is a second stream), 15.8 and 12 % for TikTok, 16.5 and 8 % for a file of 640 x 360.
+  Mute and the loudness act at once (they are deephack's volume in Windows' mixer; the PC's own volume
+  stayed where it was, checked). After "next" the speaker was empty 50 ms after the press, and the
+  other video was there with its sound 0.73 and 0.78 s after it. With deephack switched off the sound
+  stood still within the half second and went on from the same place when it was switched on again.
+  The standalone app played the same (its sound recorded from Windows: the test clip's beep once a
+  second).
 - **A picture every second** (Countdown and Calendar, 20 Nov 2026): the mode asks to be called again
   when the next second begins, and the engine does. The countdown's frames (30 to 31 KB at quality 92)
   were sent 14 ms after their second began at the median, 17 at the latest; the calendar's in its last
