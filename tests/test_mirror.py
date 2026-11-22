@@ -219,8 +219,9 @@ def test_a_window_is_followed_minimised_closed_and_back():
         desk = Desk(CHROME)
         mode, screen = make({"source": window_value(CHROME)}, desk, clock=lambda: now[0])
         assert (await mode.frame()).size == (480, 640)
-        assert screen.asked == [("window", 7)] and mode.status == "A film - Google Chrome · 800 × 600"
-        await mode._drop()
+        assert mode.status == "A film - Google Chrome · 800 × 600"
+        await mode._drop()                                   # the next one, which is being taken already
+        assert set(screen.asked) == {("window", 7)}
 
         desk.down.add(7)
         said = await mode.frame()
