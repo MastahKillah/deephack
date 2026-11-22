@@ -324,6 +324,12 @@ return the readings by name (`"CPU Temperature"`, `"Gpu usage"`, `"Fan list"`, .
 modes read it. [docs/deepcool-services.md](docs/deepcool-services.md) has the frame layout, every field,
 the fan control and display services next to it, and how all this was found.
 
+## Licence
+
+[MIT](LICENSE): use it, change it, pass it on, keep the notice. The standalone app also carries other
+people's work under their own licences (Qt, FFmpeg, yt-dlp and more): [THIRD-PARTY.md](THIRD-PARTY.md)
+lists them, and both files are in the zip next to `deephack.exe`.
+
 ## Disclaimer
 
 Not affiliated with or endorsed by DeepCool. This talks to your hardware in ways the vendor did not

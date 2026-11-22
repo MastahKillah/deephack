@@ -6,6 +6,7 @@
 # A folder, not a single file: a one-file app unpacks itself to a temporary folder on every start, which is
 # slow for an app that starts with Windows, and virus scanners like it even less.
 import os
+import shutil
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
@@ -26,4 +27,6 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="deephack", console=False)
-COLLECT(exe, a.binaries, a.datas, name="deephack")
+app = COLLECT(exe, a.binaries, a.datas, name="deephack")
+for name in ("LICENSE", "THIRD-PARTY.md"):          # next to deephack.exe: the app carries other people's work
+    shutil.copy(os.path.join(os.path.dirname(SPECPATH), name), app.name)
