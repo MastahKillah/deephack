@@ -234,7 +234,7 @@ cooler** (see "On the cooler" below).
 It appends 1120 bytes of code and a picture of 10 780 after the image and changes twenty bytes of it: five
 4-byte jumps. (This is version 6: see "Version 3" for drawing a part of the picture and "Versions 4 to
 6" for reading memory and the start screen. Versions 3, 4 and 5 were on the cooler one after the
-other on 23 Nov 2026. Version 2, 504 bytes, was on it from 20 Nov 2026 and is what the rest of this
+other on 23 Nov 2026, and version 6 is on it since. Version 2, 504 bytes, was on it from 20 Nov 2026 and is what the rest of this
 section describes. Version 1, which the cooler ran from 19 Nov 2026, was 472 bytes and four jumps: it had no
 hook in `lv_task_handler` and reported no version.) The app carries it as a table of those bytes,
 `deephack/firmware_patch.py`, written by `python tools/fw/patch.py --table`; a test compares the two.
@@ -450,6 +450,11 @@ screen that has been left is kept: the start screen was still there, with our pi
 the main loop looks at `0x20000F18` until there is an object with children there, once. In the emulator,
 with four such pictures in the stand-in `ui.bin`: the screen stays ours after the four seconds, the idle
 screen has five children, and nothing is decoded but our picture.
+
+**Version 6 on the cooler** (23 Nov 2026, 462 996 bytes). Photographed every half second for 34 s after
+the restart: dark for 11 s, then our picture, and it stays: no DeepCool logo at any point. deephack,
+started after that, took the screen over and drew as before (a video). Versions 3 to 6 were four
+flashes in one day, each off the bus for 11.8 s.
 
 The picture is `tools/fw/logo.jpg`, drawn by `tools/fw/logo.py`: 480 x 640, 10 780 bytes. It is that
 small because its JPEG has **Huffman tables made for it** (Pillow's `optimize`), not the standard ones
