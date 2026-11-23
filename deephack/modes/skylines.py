@@ -328,24 +328,26 @@ def _romanita() -> Art:
 
 def _gate() -> Art:
     """One of the two City Gates: a white block of flats in steps, the highest next to the road."""
-    a = Art(11, 30)
-    for i, top in enumerate((24, 18, 12, 6, 0)):
-        a.box(i * 2, top, i * 2 + 1, 29, "S")
-        a.box(i * 2, top, i * 2 + 1, top, "s")
-        a.windows(i * 2, top + 2, i * 2, 28, 2, 3)
-    a.box(10, 0, 10, 29, "s")
+    a = Art(17, 28)
+    for i, top in enumerate((22, 16, 11, 5, 0)):
+        a.box(i * 3, top, i * 3 + 2, 27, "S")
+        a.box(i * 3, top, i * 3 + 2, top, "s")
+    a.box(15, 0, 16, 27, "S")                    # the tall end is a little wider than a step
+    a.box(15, 0, 16, 0, "s")
+    a.box(16, 1, 16, 27, "s")
+    a.windows(1, 2, 15, 26, 2, 3)
     return a
 
 
 def chisinau() -> City:
     marks = [
-        place(_gate(), 95, FAR_BASE, "far", 0.42, flood=False),
-        place(_gate().mirrored(), 109, FAR_BASE, "far", 0.42, flood=False),
+        place(_gate(), 84, FAR_BASE, "far", 0.42, flood=False),
+        place(_gate().mirrored(), 103, FAR_BASE, "far", 0.42, flood=False),
         place(_romanita(), 1, FAR_BASE, "far", 0.36, flood=False),
         place(tree(9, 12), -2), place(tree(10, 13), 34), place(tree(8, 11), 100), place(tree(10, 13), 110),
         place(_arch(), 11), place(_bell_tower(), 40), place(_cathedral(), 53),
     ]
-    far = blocks(31, FAR_BASE, 12, 30, 14, 26, gaps=((0, 11), (93, LW)))
+    far = blocks(31, FAR_BASE, 12, 30, 14, 26, gaps=((0, 11), (82, LW)))
     return city("chisinau", "Chișinău", ("chisinau", "kishinev", "kishinau"), far, (), marks, lamps=(7, 49, 98))
 
 
