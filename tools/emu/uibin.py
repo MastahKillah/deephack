@@ -44,6 +44,7 @@ SCREENS = (*range(0x01, 0x11), *range(0x17, 0x20), *range(0x29, 0x2E), 0x90E, 0x
 BOOT_SCREEN = 0x01          # the logo, for 4 s; nothing else happens before its timer has run
 UPLOAD_SCREEN = 0x2C        # shown while a file comes in; the file is taken by its "leaving" handler
 IMAGE_SCREEN = 0x90E        # stored pictures and animations (mode 2)
+IDLE_SCREEN = 0x2D          # where the firmware goes after the logo, until a host says what to show
 
 
 @dataclass
@@ -140,6 +141,9 @@ def stock() -> bytes:
     # centres all four) and two lines of text it sets the font of
     screens[BOOT_SCREEN].children += [image(wid, (140, 220, 200, 200)) for wid in (0x4A4, 0x912, 0x913, 0x914)]
     screens[BOOT_SCREEN].children += [label(0x918, "deephack bench", (140, 500, 200, 24)), label(0x919, "", (140, 530, 200, 24))]
+    # the idle screen: four pictures as large as the panel, one per rotation (read from the cooler's
+    # memory, 23 Nov 2026: on the real one they are DeepCool's logo again)
+    screens[IDLE_SCREEN].children += [image(wid, (0, 0, 480, 640)) for wid in (0x706, 0x90B, 0x90C, 0x90D)]
     screens[UPLOAD_SCREEN].children.append(label(0x4A2, "uploading", (160, 299, 160, 40)))     # the firmware places it
     # the image screen: the stored picture, and two pictures shown when nothing is stored (the
     # firmware places and turns those two to match the panel's rotation)

@@ -231,10 +231,10 @@ operations: confirm SWD access → dump → understand update verification → o
 to `captures/`, which is not in the repository). **It runs in the emulator, and since 19 Nov 2026 on the
 cooler** (see "On the cooler" below).
 
-It appends 1044 bytes of code and a picture of 10 780 after the image and changes twenty bytes of it: five
-4-byte jumps. (This is version 5: see "Version 3" for drawing a part of the picture and "Versions 4 and
-5" for reading memory and the start screen. Version 3, 792 bytes, was on the cooler on 23 Nov 2026, and
-version 4 after it the same day. Version 2, 504 bytes, was on it from 20 Nov 2026 and is what the rest of this
+It appends 1120 bytes of code and a picture of 10 780 after the image and changes twenty bytes of it: five
+4-byte jumps. (This is version 6: see "Version 3" for drawing a part of the picture and "Versions 4 to
+6" for reading memory and the start screen. Versions 3, 4 and 5 were on the cooler one after the
+other on 23 Nov 2026. Version 2, 504 bytes, was on it from 20 Nov 2026 and is what the rest of this
 section describes. Version 1, which the cooler ran from 19 Nov 2026, was 472 bytes and four jumps: it had no
 hook in `lv_task_handler` and reported no version.) The app carries it as a table of those bytes,
 `deephack/firmware_patch.py`, written by `python tools/fw/patch.py --table`; a test compares the two.
@@ -257,7 +257,7 @@ to 64 bytes. The reply's status byte says what to do:
 | `12` | refused: size 0 or more than 128 KiB |
 | `13` | version 3, for a part of the picture: no page of ours is under it. Draw the page first |
 
-Command `21` (version 4) reads memory: see "Versions 4 and 5".
+Command `21` (version 4) reads memory: see "Versions 4 to 6".
 | `00` | what the **stock** firmware answers to every command it does not know. `deephack.device` takes it for "no direct drawing here" and sends no picture data (data without an upload in progress would be left in the endpoint's buffer, and the endpoint would stay shut) |
 
 The byte after the status is the **version of the patch** (2 now; version 1 leaves it 0). A command
@@ -398,7 +398,7 @@ In the app: a mode returns `modes.base.Part(page, picture, at)` for a picture of
 changed. The engine sends the page once and then the parts, to a cooler whose patch says 3; any other
 cooler gets whole pictures as before. The NBA mode's highlights are the first to use it.
 
-#### Versions 4 and 5: reading memory, the bootloader, and our own start screen
+#### Versions 4 to 6: reading memory, the bootloader, and our own start screen
 
 **Version 4** (on the cooler 23 Nov 2026, 908 bytes) adds command `21`: `AA 2E 21 <address:u32>
 <count:u8>`, and the reply carries up to 39 bytes of the cooler's memory from there. It only reads.
@@ -436,6 +436,20 @@ patch puts a picture of its own over them. Seen in the emulator:
   starts its redraw at the topmost object that covers the area, and the pictures under it are never
   decoded. The emulated screen shows our picture from the first redraw, decoded once into the frame
   buffer, and the firmware goes on as before after its four seconds.
+
+**Version 5 on the cooler** (23 Nov 2026; an image of 462 920 bytes, 11 KB longer than any before: off
+the bus for 11.8 s like the others). Photographed every half second while it restarted: dark for 12 s,
+then **our picture from the first lit frame, for four seconds**, and then **DeepCool's logo after all**.
+That is the next screen, `2D`, where the firmware waits until a host tells it what to show: for as long
+as the PC takes to start. Read from the cooler's memory with command `21`: its object's address is at
+`0x20000F18`, and its children are four pictures as large as the panel, one per rotation. It is made
+when it is first entered, not at the start (only the start screen and LVGL's own exist before), and a
+screen that has been left is kept: the start screen was still there, with our picture on it.
+
+**Version 6** therefore puts the same picture (one copy in RAM, two `lv_img`) on screen `2D` as well:
+the main loop looks at `0x20000F18` until there is an object with children there, once. In the emulator,
+with four such pictures in the stand-in `ui.bin`: the screen stays ours after the four seconds, the idle
+screen has five children, and nothing is decoded but our picture.
 
 The picture is `tools/fw/logo.jpg`, drawn by `tools/fw/logo.py`: 480 x 640, 10 780 bytes. It is that
 small because its JPEG has **Huffman tables made for it** (Pillow's `optimize`), not the standard ones
@@ -851,7 +865,7 @@ did not find most of them).
 | `02` to `10`, `17` to `1F` | dashboards, 10 to 24 widgets each (mode 1; which one by layout and rotation) |
 | `29` `2A` `2B` | recorder (mode 3): made in code from line objects and a chart, on top of 8 to 13 widgets |
 | `2C` | upload. Entered when command `0F` sets its flag. **The file is received by this screen's "leaving" handler** (`0x69A88`): a loop around the upload state machine (`FUN_000200ec`) that ends on success, on a flag, or after about 15.7 million rounds without a packet; then the next screen loads |
-| `2D` | where the firmware goes after the logo and when it has nothing to show; timer every tick |
+| `2D` | where the firmware goes after the logo and when it has nothing to show; timer every tick. Four pictures as large as the panel (`706`, `90B`, `90C`, `90D`), one per rotation: DeepCool's logo again (seen on the cooler) |
 | `90E` | stored pictures and animations (mode 2). `90F` is the picture; `915` (150 x 200) and `916` (325 x 28) are two pictures shown instead when nothing is stored, placed and turned to match the rotation. All three are images |
 | `917` | command `A1` |
 

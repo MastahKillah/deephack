@@ -174,7 +174,7 @@ def test_frames_are_drawn_from_ram_without_a_file(cooler, tmp_path):
     now = state(cooler)
     assert now["shown"] == 3 and now["phase"] == 0 and not decoder.errors
     buffers = (now["first"], now["second"], now["third"])
-    assert all(buffers) and patch.STATE_SIZE == 64
+    assert all(buffers) and patch.STATE_SIZE == 68
     used = [next(b for b in buffers if b + 16 <= s < b + 16 + patch.MAX_FRAME) for s in sources]
     assert used[0] != used[1] and used[1] != used[2]          # never the buffer that is on screen
     assert on_card(cooler) == {f"img/000_{STORED_ID}/angle_0.jpg": cooler.stored}      # nothing was written
@@ -353,8 +353,9 @@ def test_stock_firmware_is_not_asked_for_its_memory_twice():
 
 
 def test_our_picture_is_on_the_start_screen(stock_image, tmp_path):
-    """Version 5. The cooler shows DeepCool's logo for four seconds when it starts, a picture from a file
-    nothing reaches. The patch puts its own over it before anything is drawn."""
+    """Versions 5 and 6. The cooler shows DeepCool's logo for four seconds when it starts, a picture from a
+    file nothing reaches, and then again on the screen where it waits for a host: for as long as the PC
+    takes to start. The patch puts its own over both, the first before anything is drawn."""
     from PIL import Image, ImageChops
 
     machine = boot.Machine(patch.build(stock_image), None, flash=bench.fat.build({"ui.bin": bench.uibin.stock()}))
@@ -376,9 +377,17 @@ def test_our_picture_is_on_the_start_screen(stock_image, tmp_path):
     assert differs() <= 7                                                 # and it is our picture, all of it
     assert [(width, height) for _, width, height in machine.jpeg.decoded] == [(480, 640)] and not machine.jpeg.errors
     assert machine.jpeg.decoded[0][0] in FRAME_BUFFERS                    # decoded straight into the frame buffer
+    assert bytes(machine.uc.mem_read(patch.STATE + 60, 1)) == b"\x01"     # so far the start screen only
     while not machine.uc.mem_read(bench.READY, 1)[0]:
         machine.run(blocks=250_000)
         assert sum(machine.blocks.values()) < bench.BOOT_LIMIT and machine.stuck is None
-    machine.run(blocks=400_000)
-    assert differs() > 100 and machine.stuck is None                      # four seconds later the firmware goes on
-    assert len(machine.jpeg.decoded) == 1 and bytes(machine.uc.mem_read(patch.STATE + 60, 1)) == b"\x01"    # once
+    machine.run(blocks=400_000)                                           # four seconds later the firmware goes on,
+    assert machine.stuck is None and differs() <= 7                       # to its idle screen: our picture again
+    assert bytes(machine.uc.mem_read(patch.STATE + 60, 1)) == b"\x03"
+    assert {(width, height) for _, width, height in machine.jpeg.decoded} == {(480, 640)} and not machine.jpeg.errors
+    assert all(address in FRAME_BUFFERS for address, _, _ in machine.jpeg.decoded)       # the pictures under it: never
+    idle = struct.unpack("<I", bytes(machine.uc.mem_read(patch.IDLE_SCREEN, 4)))[0]
+    children, child = 0, struct.unpack("<I", bytes(machine.uc.mem_read(idle + 8, 4)))[0]
+    while child:
+        children, child = children + 1, struct.unpack("<I", bytes(machine.uc.mem_read(child + 0x64, 4)))[0]
+    assert children == 5                                                  # its four pictures, and ours: put there once

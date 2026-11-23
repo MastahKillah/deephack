@@ -76,12 +76,17 @@ main loop comes round, which is before LVGL has drawn anything, the JPEG is copi
 to a new picture that is the start screen's child and covers all of it; LVGL starts a redraw at the
 topmost object that covers the area, so DeepCool's pictures under it are not drawn at all.
 
+After those four seconds the firmware goes to another screen, 2D, and stays there until a host tells it
+what to show: on the cooler that is DeepCool's logo once more, as large as the panel, and it is what one
+looks at while the PC starts (seen on the cooler with version 5). Version 6 puts the same picture over
+that one too, as soon as the screen has been made.
+
 The image may not be longer than 0x72000 bytes (466 944): the bootloader, read from the cooler with
 command 21, erases the firmware's whole area up to the end of the chip's flash at 0x80000 and then
 writes the update file 4 KiB at a time until there, whatever its size. So patch and logo together have
 15 848 bytes.
 
-RAM: 64 bytes at 0x2000F000, above the firmware's stack (which starts at 0x2000B418); the emulated
+RAM: 68 bytes at 0x2000F000, above the firmware's stack (which starts at 0x2000B418); the emulated
 firmware never touches anything up there.
 """
 from __future__ import annotations
@@ -101,15 +106,16 @@ COMMAND = 0x20
 PEEK = 0x21                                 # read memory (version 4)
 PEEK_MOST = 39                              # bytes a reply carries
 GO, LATER, REFUSED, NO_PAGE = 0x10, 0x11, 0x12, 0x13
-VERSION = 5                                 # of this patch, in every reply to the command (see CHANGES)
+VERSION = 6                                 # of this patch, in every reply to the command (see CHANGES)
 CHANGES = {
     1: "the first: draws a JPEG from USB. Answers 0 where the version is now",
     2: "frames are also shown while lv_task_handler does not return (#22); the reply has the version",
     3: "a part of the picture can be drawn by itself, on top of the page that was drawn last (#47)",
     4: "a command that reads the cooler's memory, to look at its bootloader",
     5: "deephack's own picture while the cooler starts, in place of DeepCool's logo",
+    6: "and on the screen after it, where the cooler waits for a host",
 }
-STATE_SIZE = 64                             # bytes of the patch's RAM (see the layout above SOURCE)
+STATE_SIZE = 68                             # bytes of the patch's RAM (see the layout above SOURCE)
 TIMEOUT_MS = 2000
 
 # the stock firmware's own routines and data (real addresses, v2.70)
@@ -133,6 +139,7 @@ REPLY = 0x200006A4                          # where the firmware builds its 48 b
 SCREEN = 0x20000732                         # u16: the screen on show
 READY = 0x200051A8                          # u8: set when the start screen's four seconds are over
 START_SCREEN = 0x20000994                   # the start screen (an lv_obj), while it is on
+IDLE_SCREEN = 0x20000F18                    # screen 2D, once it has been made: where the firmware waits for a host
 LOGO = Path(__file__).with_name("logo.jpg")  # what is shown on it: see logo.py
 MOST = 0x72000                              # bytes of image the bootloader writes: from 0xE000 to the flash's end
 WIDGET = 0x20001074                         # the image screen's picture (an lv_img)
@@ -159,7 +166,8 @@ BRANCHES = {"b", "bl", "cbz", "cbnz"} | {"b" + c for c in "eq ne hs lo mi pl vs 
 #        +32 tick at start   +36 frames shown   +40 u8 the buffer being filled   +41 u8 1: it is a part
 #        +44 u16 x, +46 u16 y of the part   +48 its lv_img_header_t (which has its size)
 #        +52, +56 the same two words of the part before it: where the small picture is now
-#        +60 u8 the start screen has been seen to (1)
+#        +60 u8 our picture is on the start screen (1) and on the idle screen (2), or was tried
+#        +64 that picture: its lv_img_dsc_t, in RAM
 def source(logo_at: int, logo_size: int) -> str:
     """The patch's code, for a logo of `logo_size` bytes at address `logo_at`."""
     return f"""
@@ -176,26 +184,35 @@ init_clear:
     bne     init_clear
     bx      lr
 
-logo:                                   @ r4 = state. Our picture over the start screen's, once
-    push    {{r4, r5, r6, lr}}
-    movs    r0, #1
-    strb.w  r0, [r4, #60]
-    movw    r0, #{READY & 0xFFFF}
-    movt    r0, #{READY >> 16}
-    ldrb    r0, [r0]
+logo_on:                                @ r0 = a screen (or 0), r5 = our picture: put it on top of that screen
+    push    {{r4, lr}}
     cmp     r0, #0
-    bne     logo_out                    @ the start screen is over already (not when this is first called)
-    movw    r6, #{START_SCREEN & 0xFFFF}
-    movt    r6, #{START_SCREEN >> 16}
-    ldr     r6, [r6]
-    cmp     r6, #0
-    beq     logo_out
+    beq     logo_on_out
+    movs    r1, #0
+    bl      lv_img_create               @ a child of the screen, made last: on top of what is there
+    cmp     r0, #0
+    beq     logo_on_out
+    mov     r1, r5
+    bl      lv_img_set_src
+logo_on_out:
+    pop     {{r4, pc}}
+
+logo:                                   @ r4 = state. Our picture over the start screen's and the idle screen's, once each
+    push    {{r4, r5, r6, lr}}
+    ldr     r5, [r4, #64]
+    cmp     r5, #0
+    bne     logo_start
     movw    r0, #{(logo_size + 16) & 0xFFFF}
     movt    r0, #{(logo_size + 16) >> 16}
     bl      lv_mem_alloc
     cmp     r0, #0
-    beq     logo_out
+    bne     logo_made
+    movs    r0, #3
+    strb.w  r0, [r4, #60]               @ no memory: DeepCool's pictures stay
+    b       logo_out
+logo_made:
     mov     r5, r0
+    str     r5, [r4, #64]
     movw    r0, #{HEADER & 0xFFFF}
     movt    r0, #{HEADER >> 16}
     str     r0, [r5, #0]                @ an lv_img_dsc_t as the stock loader makes it: raw, 480 x 640
@@ -213,13 +230,36 @@ logo_copy:                              @ the JPEG, from the flash into RAM: whe
     strb    r0, [r1], #1
     subs    r3, #1
     bne     logo_copy
-    mov     r0, r6
-    movs    r1, #0
-    bl      lv_img_create               @ a child of the start screen, made last: on top of what is there
+logo_start:
+    ldrb.w  r6, [r4, #60]
+    tst     r6, #1
+    bne     logo_idle
+    orr     r6, r6, #1
+    strb.w  r6, [r4, #60]               @ the start screen: when this is first called, and never again
+    movw    r0, #{READY & 0xFFFF}
+    movt    r0, #{READY >> 16}
+    ldrb    r0, [r0]
     cmp     r0, #0
-    beq     logo_out
-    mov     r1, r5
-    bl      lv_img_set_src
+    bne     logo_idle                   @ its four seconds are over already (not when this is first called)
+    movw    r0, #{START_SCREEN & 0xFFFF}
+    movt    r0, #{START_SCREEN >> 16}
+    ldr     r0, [r0]
+    bl      logo_on
+logo_idle:
+    ldrb.w  r6, [r4, #60]
+    tst     r6, #2
+    bne     logo_out
+    movw    r0, #{IDLE_SCREEN & 0xFFFF}
+    movt    r0, #{IDLE_SCREEN >> 16}
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     logo_out                    @ the idle screen has not been made yet: look again next time
+    ldr     r1, [r0, #8]
+    cmp     r1, #0
+    beq     logo_out                    @ ... or has no pictures yet
+    orr     r6, r6, #2
+    strb.w  r6, [r4, #60]
+    bl      logo_on
 logo_out:
     pop     {{r4, r5, r6, pc}}
 
@@ -244,8 +284,8 @@ show:                                   @ make the buffers when asked to, and sh
     movw    r4, #{STATE & 0xFFFF}
     movt    r4, #{STATE >> 16}
     ldrb.w  r0, [r4, #60]
-    cmp     r0, #0
-    bne     show_started
+    cmp     r0, #3
+    beq     show_started
     bl      logo
 show_started:
     ldrb    r0, [r4, #1]
