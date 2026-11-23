@@ -4,6 +4,9 @@ Dawn, day, dusk and night follow the actual sunrise and sunset, and the weather 
 rain, snow, thunderstorms) is the current weather in the city set on the Weather page, from Open-Meteo.
 Windows light up in the evening, street lamps glow, a car drives by.
 
+Which city: a made-up one, or one of a few real ones, drawn by their landmarks (skylines.py): by itself
+the one that is set on the Weather page, if it is among them.
+
 On DeepCool's own firmware it is, like the pet, a short animation stored on the cooler (8 frames),
 rewritten only when the time of day or the kind of weather changes: a handful of times a day. A new kind
 of weather has to show up in two forecasts in a row before the scene follows it, so weather flickering
@@ -31,8 +34,9 @@ from functools import lru_cache
 from PIL import Image, ImageDraw
 
 from ..render import H, W
-from . import weather
+from . import skylines, weather
 from .base import Animation, Mode, Setting
+from .skylines import City
 
 LW, LH = 120, 160
 FRAMES, LOOP_MS = 8, 2400
@@ -139,24 +143,61 @@ def default_sky(phase: str) -> Sky:
 
 
 # ------------------------------------------------------------------ the city (the same every time)
-def _skyline(seed: int, base: int, low: int, high: int, narrow: int, wide: int) -> list[tuple[int, int, int, int]]:
-    rng, x, out = random.Random(seed), -random.Random(seed).randrange(0, 6), []
-    while x < LW:
-        w, h = rng.randrange(narrow, wide), rng.randrange(low, high)
-        out.append((x, base - h, x + w, base))
-        x += w + rng.randrange(0, 3)
-    return out
-
-
-FAR = _skyline(4, 132, 26, 66, 8, 15)
-NEAR = _skyline(11, STREET, 16, 50, 11, 21)
-WINDOWS = [(x, y, random.Random(x * 1000 + y).random())          # (x, y, how likely it is lit)
-           for x0, y0, x1, y1 in NEAR for x in range(x0 + 2, x1 - 2, 4) for y in range(y0 + 4, y1 - 4, 5)]
-FAR_LIGHTS = [(x, y, random.Random(x * 77 + y).random())
-              for x0, y0, x1, y1 in FAR for x in range(x0 + 2, x1 - 1, 3) for y in range(y0 + 3, y1 - 2, 4)]
+# Which city: skylines.py. These are the made-up one's, the scene's first, under the names they had.
+ANYWHERE = skylines.ANYWHERE
+FAR, NEAR, WINDOWS, FAR_LIGHTS = list(ANYWHERE.far), list(ANYWHERE.near), list(ANYWHERE.windows), list(ANYWHERE.far_lights)
 STARS = [(random.Random(i).randrange(0, LW), random.Random(i + 500).randrange(0, 96)) for i in range(48)]
 LAMPS = (14, 56, 98)
-TALLEST = min(NEAR, key=lambda b: b[1])
+SNOW_WHITE = (236, 240, 250)
+
+
+def _far_city(img: Image.Image, d: ImageDraw.ImageDraw, city: City, far: tuple, near: tuple, grey: tuple, over: float,
+              dark: float, lit: float) -> None:
+    """The city in the distance: landmarks behind the far buildings, those buildings with a few tiny
+    lights, and the landmarks that stand in front of them."""
+    def marks(layer: str) -> None:
+        for mark in city.marks:
+            if mark.layer == layer:
+                colours = skylines.tones(mark, dark, over, near, far, grey)
+                skylines.paint(img, mark, colours)
+                glow = _mix(WARM, far, mark.depth * 0.5)
+                for x, y, p in mark.dots:
+                    if p < lit * 0.8:
+                        d.point((x, y), fill=glow)
+
+    marks("back")
+    for b in city.far:
+        d.rectangle(b, fill=far)
+    for x, y, p in city.far_lights:
+        if p < lit * 0.5:
+            d.point((x, y), fill=_mix(WARM, far, 0.35))
+    marks("far")
+
+
+def _near_city(img: Image.Image, d: ImageDraw.ImageDraw, city: City, far: tuple, near: tuple, bottom: tuple, grey: tuple,
+               over: float, dark: float, lit: float, off, beacon: bool, snow: bool) -> None:
+    """The city up close: the near buildings and their windows (`off(i)`: window i is dark for a moment),
+    the landmarks on the street, and the red lights on the masts while `beacon`."""
+    for b in city.near:
+        d.rectangle(b, fill=near)
+        if snow:
+            d.line([(b[0], b[1]), (b[2], b[1])], fill=SNOW_WHITE)
+    for x, top, foot in city.masts:
+        d.line([(x, top), (x, foot)], fill=near)
+    unlit = _mix(near, bottom, 0.35)
+    for i, (x, y, p) in enumerate(city.windows):
+        d.rectangle([x, y, x + 1, y + 1], fill=WARM if p < lit and not off(i) else unlit)
+    for mark in city.marks:
+        if mark.layer == "near":
+            skylines.paint(img, mark, skylines.tones(mark, dark, over, near, far, grey))
+            for x, y, p in mark.dots:
+                if p < lit:
+                    d.point((x, y), fill=WARM)
+            if snow:
+                d.point(list(mark.tops), fill=SNOW_WHITE)
+    if beacon:
+        d.point([(x, top) for x, top, _ in city.masts] + [point for mark in city.marks for point in mark.beacons],
+                fill=RED_LIGHT)
 
 
 # Traffic: each lane loops seamlessly because every vehicle crosses exactly once per loop, all at the
@@ -253,8 +294,8 @@ def _moon(d: ImageDraw.ImageDraw, cx: int, cy: int, age: float, south: bool, nig
                 d.point((px, py), fill=_mix(sky_at(py), (70, 74, 100), 0.35))
 
 
-def render_frame(f: int, phase: str, kind: str, seed: int = 0, sky: Sky | None = None) -> Image.Image:
-    sky = sky or default_sky(phase)
+def render_frame(f: int, phase: str, kind: str, seed: int = 0, sky: Sky | None = None, city: City | None = None) -> Image.Image:
+    sky, city = sky or default_sky(phase), city or ANYWHERE
     over = OVERCAST[kind]
     top, bottom = (_mix(c, GREY[phase], over) for c in SKY[phase])
     if kind == "thunder" and f == 3:                    # the flash
@@ -291,31 +332,15 @@ def render_frame(f: int, phase: str, kind: str, seed: int = 0, sky: Sky | None =
 
     # far buildings, hazy, with a few tiny lights
     far = _mix(bottom, (20, 22, 36) if night else (70, 74, 96), 0.45)
-    for b in FAR:
-        d.rectangle(b, fill=far)
-    for x, y, p in FAR_LIGHTS:
-        if p < LIT[phase] * 0.5:
-            d.point((x, y), fill=_mix(WARM, far, 0.35))
+    near = (14, 15, 26) if night else _mix((46, 50, 70), GREY[phase], over * 0.5)
+    _far_city(img, d, city, far, near, GREY[phase], over, DARK[phase], LIT[phase])
     if kind == "thunder" and f in (3, 4):
         pts = [(70, 14), (64, 34), (72, 38), (62, 62), (70, 66), (60, 92)]
         d.line(pts, fill=(255, 255, 230) if f == 3 else (190, 190, 230), width=2 if f == 3 else 1)
 
-    # near buildings with their windows
-    near = (14, 15, 26) if night else _mix((46, 50, 70), GREY[phase], over * 0.5)
-    for b in NEAR:
-        d.rectangle(b, fill=near)
-        if kind == "snow":
-            d.line([(b[0], b[1]), (b[2], b[1])], fill=(236, 240, 250))
-    tx = (TALLEST[0] + TALLEST[2]) // 2
-    d.line([(tx, TALLEST[1] - 8), (tx, TALLEST[1])], fill=near)
-    if phase in ("night", "dusk") and f < 4:
-        d.point((tx, TALLEST[1] - 8), fill=RED_LIGHT)
-    unlit = _mix(near, bottom, 0.35)
-    for i, (x, y, p) in enumerate(WINDOWS):
-        lit = p < LIT[phase]
-        if lit and i % 23 == f % 8:                     # someone switches a light off for a moment
-            lit = False
-        d.rectangle([x, y, x + 1, y + 1], fill=WARM if lit else unlit)
+    # near buildings with their windows; someone switches a light off for a moment
+    _near_city(img, d, city, far, near, bottom, GREY[phase], over, DARK[phase], LIT[phase], lambda i: i % 23 == f % 8,
+               phase in ("night", "dusk") and f < 4, kind == "snow")
 
     # street
     d.rectangle([0, STREET, LW, STREET + 3], fill=(236, 240, 250) if kind == "snow" else (70, 72, 84) if not night else (40, 41, 52))
@@ -325,7 +350,7 @@ def render_frame(f: int, phase: str, kind: str, seed: int = 0, sky: Sky | None =
     glow = phase in ("night", "dusk") or over >= 0.6
     layer = Image.new("RGBA", (LW, LH), (0, 0, 0, 0))
     g = ImageDraw.Draw(layer)
-    for x in LAMPS:
+    for x in city.lamps:
         d.line([(x, 126), (x, STREET + 3)], fill=(60, 62, 74))
         d.line([(x, 126), (x + 3, 126)], fill=(60, 62, 74))
         if glow:
@@ -335,7 +360,7 @@ def render_frame(f: int, phase: str, kind: str, seed: int = 0, sky: Sky | None =
             if kind in ("rain", "thunder"):                 # reflections on the wet road
                 g.rectangle([x + 1, STREET + 6, x + 4, LH], fill=WARM + (40,))
     img.paste(layer, (0, 0), layer)
-    for x in LAMPS:
+    for x in city.lamps:
         d.point((x + 3, 127), fill=WARM if glow else (150, 150, 140))
 
     # traffic both ways: oncoming in the far lane first, the near lane in front of it
@@ -379,8 +404,8 @@ def render_frame(f: int, phase: str, kind: str, seed: int = 0, sky: Sky | None =
     return img.resize((W, H), Image.NEAREST)
 
 
-def render_animation(phase: str, kind: str, seed: int = 0, sky: Sky | None = None) -> Animation:
-    return Animation([render_frame(i, phase, kind, seed, sky) for i in range(FRAMES)], LOOP_MS)
+def render_animation(phase: str, kind: str, seed: int = 0, sky: Sky | None = None, city: City | None = None) -> Animation:
+    return Animation([render_frame(i, phase, kind, seed, sky, city) for i in range(FRAMES)], LOOP_MS)
 
 
 # ------------------------------------------------------------------ the scene when it is drawn anew
@@ -490,13 +515,14 @@ def clouds_at(t: float, kind: str) -> tuple[tuple[int, int, int, bool], ...]:
 
 # A window that is lit goes dark for a few seconds now and then: every ninth one, each at its own pace.
 FLICKER = {i: (150 + 200 * random.Random(i).random(), 400 * random.Random(i + 1).random())
-           for i in range(0, len(WINDOWS), 9)}             # window -> (seconds between two, when in them)
+           for i in range(0, max(len(c.windows) for c in skylines.CITIES), 9)}    # window -> (seconds between two, when in them)
 FLICKER_SECONDS = 6
 
 
-def away_at(t: float) -> frozenset[int]:
+def away_at(t: float, city: City | None = None) -> frozenset[int]:
     """The windows whose light is off for a moment at time `t`."""
-    return frozenset(i for i, (every, shift) in FLICKER.items() if (t + shift) % every < FLICKER_SECONDS)
+    count = len((city or ANYWHERE).windows)
+    return frozenset(i for i, (every, shift) in FLICKER.items() if i < count and (t + shift) % every < FLICKER_SECONDS)
 
 
 STRIKE_SLOT, STRIKE_CHANCE = 7.0, 0.4          # lightning: in each slot of so many seconds, this likely
@@ -586,9 +612,10 @@ def vehicle_sprite(vehicle: str, colour: tuple, facing: int, glass: tuple, light
 
 
 def render_ground(light: Light, kind: str, sky: Sky, lit: float, clouds: tuple = (), twinkle: int = 0,
-                  beacon: bool = False, away: frozenset = frozenset(), bolt=None) -> Image.Image:
+                  beacon: bool = False, away: frozenset = frozenset(), bolt=None, city: City | None = None) -> Image.Image:
     """What stands still or changes slowly, on the small canvas: the sky with the sun, the moon and the
     clouds, the city with `lit` of its windows alight (but those in `away`), and the empty street."""
+    city = city or ANYWHERE
     over = OVERCAST[kind]
     grey = light.mix(GREY)
     top, bottom = _mix(light.mix(SKY_TOP), grey, over), _mix(light.mix(SKY_BOTTOM), grey, over)
@@ -626,26 +653,11 @@ def render_ground(light: Light, kind: str, sky: Sky, lit: float, clouds: tuple =
         _cloud(d, x, y, w, heavy if is_dark else cloud)
 
     far = _mix(bottom, light.mix(FAR_TINT), 0.45)
-    for b in FAR:
-        d.rectangle(b, fill=far)
-    for x, y, p in FAR_LIGHTS:
-        if p < lit * 0.5:
-            d.point((x, y), fill=_mix(WARM, far, 0.35))
+    near = light.mix({phase: (14, 15, 26) if phase == "night" else _mix((46, 50, 70), GREY[phase], over * 0.5) for phase in PHASES})
+    _far_city(img, d, city, far, near, grey, over, dark, lit)
     if bolt:
         d.line(list(bolt[0]), fill=(255, 255, 230) if bolt[1] else (190, 190, 230), width=2 if bolt[1] else 1)
-
-    near = light.mix({phase: (14, 15, 26) if phase == "night" else _mix((46, 50, 70), GREY[phase], over * 0.5) for phase in PHASES})
-    for b in NEAR:
-        d.rectangle(b, fill=near)
-        if kind == "snow":
-            d.line([(b[0], b[1]), (b[2], b[1])], fill=(236, 240, 250))
-    tx = (TALLEST[0] + TALLEST[2]) // 2
-    d.line([(tx, TALLEST[1] - 8), (tx, TALLEST[1])], fill=near)
-    if beacon and dark > 0.5:
-        d.point((tx, TALLEST[1] - 8), fill=RED_LIGHT)
-    unlit = _mix(near, bottom, 0.35)
-    for i, (x, y, p) in enumerate(WINDOWS):
-        d.rectangle([x, y, x + 1, y + 1], fill=WARM if p < lit and i not in away else unlit)
+    _near_city(img, d, city, far, near, bottom, grey, over, dark, lit, away.__contains__, beacon and dark > 0.5, kind == "snow")
 
     d.rectangle([0, STREET, LW, STREET + 3], fill=(236, 240, 250) if kind == "snow" else light.mix(PAVEMENT))
     d.rectangle([0, STREET + 4, LW, LH], fill=light.mix(ROAD))
@@ -654,7 +666,7 @@ def render_ground(light: Light, kind: str, sky: Sky, lit: float, clouds: tuple =
     glow = dark > 0.5 or over >= 0.6
     layer = Image.new("RGBA", (LW, LH), (0, 0, 0, 0))
     g = ImageDraw.Draw(layer)
-    for x in LAMPS:
+    for x in city.lamps:
         d.line([(x, 126), (x, STREET + 3)], fill=(60, 62, 74))
         d.line([(x, 126), (x + 3, 126)], fill=(60, 62, 74))
         if glow:
@@ -664,7 +676,7 @@ def render_ground(light: Light, kind: str, sky: Sky, lit: float, clouds: tuple =
             if kind in ("rain", "thunder"):                # reflections on the wet road
                 g.rectangle([x + 1, STREET + 6, x + 4, LH], fill=WARM + (40,))
     img.paste(layer, (0, 0), layer)
-    for x in LAMPS:
+    for x in city.lamps:
         d.point((x + 3, 127), fill=WARM if glow else (150, 150, 140))
     return img
 
@@ -743,11 +755,17 @@ class Scene(Mode):
                      "visibly moves or the weather changes; behind clouds they cost no redraws."),
         Setting("time", "Time of day", "choice", "live", (
             ("live", "Live, from sunrise and sunset"), ("dawn", "Dawn"), ("day", "Day"), ("dusk", "Dusk"), ("night", "Night"))),
+        Setting("skyline", "City", "choice", "auto", (("auto", "The Weather page's, if it is one of these"),)
+                + tuple((c.id, c.name) for c in skylines.CITIES),
+                hint="A few real cities are drawn by their landmarks. Any other is a city of its own."),
     )
 
     def __init__(self, values=None, city: str = ""):
         super().__init__(values)
         self.city = city.strip()
+        chosen = self.values["skyline"]
+        self._follow = chosen not in skylines.BY_ID            # the skyline goes by the Weather page's city
+        self.town = skylines.find(self.city) if self._follow else skylines.BY_ID[chosen]
         self._sky: tuple[str, int | None, datetime, datetime, float] | None = None
         self._kind: str | None = None          # the weather the scene follows
         self._seen: str | None = None          # the weather in the last forecast
@@ -786,8 +804,8 @@ class Scene(Mode):
             sky = replace(sky, moon_age=round(sky.moon_age, 1))
         stars = light.level(NIGHT) > 0.2 and over < 0.5
         of = (light, kind, sky, round(lit, 3), clouds_at(t, kind), int(t / TWINKLE) % 6 if stars else 0,
-              light.level(DARK) > 0.5 and int(t / BEACON) % 2 == 0, away_at(t) if lit else frozenset(),
-              strike_at(t) if kind == "thunder" else None)
+              light.level(DARK) > 0.5 and int(t / BEACON) % 2 == 0, away_at(t, self.town) if lit else frozenset(),
+              strike_at(t) if kind == "thunder" else None, self.town)
         if of != self._ground_of:
             self._ground_of, self._grounds = of, self._grounds + 1
             self._ground = render_ground(*of).resize((W, H), Image.NEAREST)
@@ -808,6 +826,8 @@ class Scene(Mode):
             try:
                 self._sky = await asyncio.to_thread(fetch_sky, self.city)
                 self._update_kind(kind_for(self._sky[1]))
+                if self._follow and self.town is ANYWHERE:     # the place as the weather service spells it
+                    self.town = skylines.find(self._sky[0])
                 self._next = time.monotonic() + FETCH_SECONDS
             except (OSError, ValueError, KeyError, LookupError) as e:
                 self.status = f"Weather unavailable ({type(e).__name__}), showing a clear sky"
@@ -838,9 +858,9 @@ class Scene(Mode):
         sky = sky_at(at, sunrise, sunset, lat)
         visible = OVERCAST[kind] < 0.5                 # behind clouds the sun and moon need no redraws
         key = (phase, kind, sky.sun if visible and phase != "night" else None, sky.moon if visible else None,
-               round(sky.moon_age / SYNODIC * 28) if visible and sky.moon else None)
+               round(sky.moon_age / SYNODIC * 28) if visible and sky.moon else None, self.town.id)
         if key == self._shown:
             return None
         self._shown = key
         seed = zlib.crc32(f"{now.date()} {phase} {kind}".encode())     # other traffic every time it is redrawn
-        return await asyncio.to_thread(render_animation, phase, kind, seed, sky)
+        return await asyncio.to_thread(render_animation, phase, kind, seed, sky, self.town)
