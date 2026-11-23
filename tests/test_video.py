@@ -1,6 +1,7 @@
 """The Video mode, with a small video made here. Nothing is fetched from the net: the one test about a
 link gives yt-dlp's place to a stand-in."""
 import asyncio
+from pathlib import Path
 import sys
 import time
 import types
@@ -215,3 +216,76 @@ def test_the_engine_draws_a_modes_pictures_at_the_quality_it_asks_for(tmp_path, 
         eng._set_frame(picture)
         eng._device_step(True)
     assert cooler.draws >= 1 and qualities[-1] == video.QUALITY       # (the black ground before it is stored at 92)
+
+
+# ------------------------------------------------------------------ threads (issue #53)
+def native_threads() -> int:
+    """Threads of this process, Python's and everybody else's. Windows only."""
+    import ctypes
+    from ctypes import wintypes
+
+    class Entry(ctypes.Structure):
+        _fields_ = [("size", wintypes.DWORD), ("usage", wintypes.DWORD), ("thread", wintypes.DWORD), ("process", wintypes.DWORD),
+                    ("base", wintypes.LONG), ("delta", wintypes.LONG), ("flags", wintypes.DWORD)]
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+    snapshot = ctypes.c_void_p(kernel32.CreateToolhelp32Snapshot(0x4, 0))
+    entry, me, count = Entry(ctypes.sizeof(Entry)), kernel32.GetCurrentProcessId(), 0
+    more = kernel32.Thread32First(snapshot, ctypes.byref(entry))
+    while more:
+        count += entry.process == me
+        more = kernel32.Thread32Next(snapshot, ctypes.byref(entry))
+    kernel32.CloseHandle(snapshot)
+    return count
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="counts threads the way Windows does")
+def test_videos_of_many_sizes_leave_no_threads_behind():
+    """ffmpeg gives a chain of filters a thread for every core unless told not to, and deephack keeps a
+    chain for each size of video it has seen: on a PC with 32 cores that was 210 idle threads after seven
+    sizes, and TikTok's videos come in many."""
+    import av
+
+    with video._graphs_lock:
+        video._graphs.clear()
+    before = native_threads()
+    for width, height in ((320, 568), (360, 640), (540, 960), (576, 1024), (720, 1280), (640, 360), (854, 480)):
+        frame = av.VideoFrame(width, height, "yuv420p")
+        for plane in frame.planes:
+            plane.update(bytes(plane.buffer_size))
+        assert video.picture(frame, "fill").size == (480, 640) and video.picture(frame, "fit").size == (480, 640)
+    assert len(video._graphs) >= 5 and all(graph.threads == 1 for (graph,) in video._graphs.values())
+    assert native_threads() - before <= 4                    # (a thread or two of Python's own may come and go)
+
+
+def test_a_video_is_decoded_by_a_few_threads_not_one_for_every_core(clip, monkeypatch):
+    import av
+
+    counts, real = [], av.open
+
+    def opening(*args, **kwargs):
+        container = real(*args, **kwargs)
+        decode = container.decode
+
+        def decoding(*streams, **more):                      # as the player begins to decode: what did it set?
+            counts.extend(stream.thread_count for stream in streams if stream.type == "video")
+            return decode(*streams, **more)
+
+        try:
+            container.decode = decoding
+        except AttributeError:                               # a container that takes no such thing: ask it now
+            counts.extend(stream.thread_count for stream in container.streams.video)
+        return container
+
+    monkeypatch.setattr(av, "open", opening)
+    player = Player(str(clip))
+    play(player, 0.4)
+    player.stop()
+    assert player.latest()[1] is not None                    # it plays
+    assert video.DECODERS <= 4
+    with real(str(clip)) as container:                       # and the name deephack sets is one PyAV has
+        stream = container.streams.video[0]
+        stream.thread_count = video.DECODERS
+        assert stream.thread_count == video.DECODERS
+    assert "video.thread_count = DECODERS" in Path(video.__file__).read_text(encoding="utf8")

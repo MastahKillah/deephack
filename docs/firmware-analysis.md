@@ -406,8 +406,14 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   - *TikTok, for two hours:* 245 videos, 233 of them different, none refused by TikTok. 15.5 a second
     in the middle minute; the minutes with several short videos in them are lower (11 in the worst),
     since each new video is a second or two without a picture. **Memory grew by 77 MB (204 to 281) and
-    the handles by 295 (1097 to 1392), about one handle and a third of a megabyte a video.** That is its
-    own issue.
+    the handles by 295 (1097 to 1392).** Looked into since (#53): not a leak. ffmpeg gave every chain of
+    filters that scales a video a thread for each of the PC's 32 cores, and deephack keeps a chain for
+    each size of video it has seen, up to nine: 210 idle threads after seven sizes, with their handles
+    and memory, thrown away and made again as the sizes changed (in the log both numbers also go down:
+    208 handles fewer at 05:31). With one thread a chain, and four instead of sixteen for decoding:
+    after 175 different TikTok videos the handles stood where they had begun (326, then 317; before:
+    356 to 587) and memory at rest was 47 to 79 MB (before: 52 to 149). A picture takes no longer for it
+    (1.05 ms).
   - *Scene, for two hours:* drawn when something in it moves, 6 to 15 pictures a second; memory stood
     still (280 to 285 MB), which also says the 77 MB of before were not given back.
   - *A live stream (news), for one hour:* played like a video, 15.6 a second in the middle minute, one

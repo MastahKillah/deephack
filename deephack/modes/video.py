@@ -46,6 +46,8 @@ from .base import Mode, Setting
 TICK = 0.06                 # seconds between pictures asked of the mode: a little more often than the cooler takes them
 QUALITY = 65                # JPEG quality of its pictures. A frame of a crowd is 65 KB at 85, which the cooler takes eleven
                             # of a second; at 65 it is 47 KB, and fifteen
+DECODERS = 4                # threads that decode a video: enough for any that plays here, and not one for every core,
+                            # each with pictures of its own in memory
 IDLE = 3.0                  # seconds without anybody asking for a frame: the stream is closed
 BEHIND = 0.3                # a frame this late means the reading cannot keep up: the clock is set anew, nothing is skipped
 RETRY = 5.0                 # seconds before a video that would not open is tried again
@@ -150,6 +152,8 @@ def picture(frame, fit: str = "fill") -> Image.Image:
             if len(_graphs) > 8:
                 _graphs.clear()
             graph = av.filter.Graph()
+            graph.threads = 1                    # ffmpeg would give each of these a thread for every core and keep
+                                                 # them: 210 idle threads after seven sizes of video on a PC with 32
             source = graph.add_buffer(width=frame.width, height=frame.height, format=frame.format,
                                       time_base=frame.time_base or Fraction(1, 1000))
             if fit == "fill":
@@ -345,6 +349,7 @@ class Player:
 
         video = container.streams.video[0]
         video.thread_type = "AUTO"
+        video.thread_count = DECODERS
         self.duration = float(container.duration or 0) / 1_000_000
         start = self._resume
         speaker, voice, feeding = self._speaker_now(), None, []
