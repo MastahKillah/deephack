@@ -117,3 +117,93 @@ def test_countdown_mode_draws_when_it_may_and_stores_when_it_must():
     mode.direct = False
     assert asyncio.run(mode.frame()) is not None and mode.tick is None and "days to go" in mode.status
     assert asyncio.run(mode.frame()) is None
+
+
+# ------------------------------------------------------------------ the Christmas look
+def at_time(monkeypatch, moment):
+    """The mode's clock, standing at `moment`."""
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment
+
+    monkeypatch.setattr(cd, "datetime", Clock)
+
+
+def test_the_next_christmas_day():
+    assert cd.christmas_day(datetime(2026, 11, 23, 10, 0)) == datetime(2026, 12, 25)
+    assert cd.christmas_day(datetime(2026, 12, 25, 23, 59)) == datetime(2026, 12, 25)      # the day itself, all of it
+    assert cd.christmas_day(datetime(2026, 12, 26, 0, 0)) == datetime(2027, 12, 25)
+
+
+def test_christmas_counts_to_the_25th_without_being_told_a_date(monkeypatch):
+    import asyncio
+
+    at_time(monkeypatch, datetime(2026, 11, 23, 10, 0))
+    mode = cd.Countdown({"look": "christmas"})
+    picture = asyncio.run(mode.frame())
+    assert picture.size == (480, 640) and mode.status == "Christmas: 32 days to go"
+    assert asyncio.run(mode.frame()) is None                                               # stored pictures: once a day
+    plain = cd.Countdown({"title": "Christmas", "date": "2026-12-25"})
+    assert asyncio.run(plain.frame()).tobytes() != picture.tobytes()                       # another picture altogether
+    assert asyncio.run(cd.Countdown({}).frame()) is None                                   # the plain look still wants a date
+
+    own = cd.Countdown({"look": "christmas", "title": "Holidays", "date": "2026-12-24 18:00"})
+    assert asyncio.run(own.frame()) is not None and own.status == "Holidays: 31 days to go"
+    untitled = cd.Countdown({"look": "christmas", "date": "2026-12-24"})
+    assert asyncio.run(untitled.frame()) is not None and untitled.status == "31 days to go"
+
+
+def test_christmas_snows_between_the_seconds(monkeypatch):
+    import asyncio
+
+    moment = datetime(2026, 11, 23, 10, 0, 0, 200000)
+    at_time(monkeypatch, moment)
+    mode = cd.Countdown({"look": "christmas"})
+    mode.direct = True
+    first = asyncio.run(mode.frame())
+    assert mode.tick == cd.SNOW_TICK and mode.status == "Christmas: 31 d 14:00:00 to go"
+    assert asyncio.run(mode.frame()) is None                                               # the same moment again
+    at_time(monkeypatch, moment + timedelta(milliseconds=100))
+    second = asyncio.run(mode.frame())
+    assert second is not None and second.tobytes() != first.tobytes()                      # the same second, other snow
+    top = (150, 250, 330, 330)                                                             # the middle of the big number
+    assert sum(a != b for a, b in zip(first.crop(top).tobytes(), second.crop(top).tobytes())) < 3000     # ... the number stands
+    at_time(monkeypatch, moment + timedelta(seconds=1))
+    assert asyncio.run(mode.frame()) is not None and mode.status.endswith("31 d 13:59:59 to go")
+
+
+def test_it_is_merry_christmas_for_all_of_the_day(monkeypatch):
+    import asyncio
+
+    at_time(monkeypatch, datetime(2026, 12, 25, 15, 30))
+    mode = cd.Countdown({"look": "christmas"})
+    mode.direct = True
+    merry = asyncio.run(mode.frame())
+    assert merry is not None and mode.tick == cd.SNOW_TICK and mode.status == "Christmas: today" and mode.active
+    at_time(monkeypatch, datetime(2026, 12, 25, 15, 30, 0, 100000))
+    assert asyncio.run(mode.frame()).tobytes() != merry.tobytes()                          # hours after midnight: still snowing
+    mode.direct = False                                                                    # a cooler that stores: one picture
+    still = asyncio.run(mode.frame())
+    assert still is not None and mode.tick is None and asyncio.run(mode.frame()) is None
+    assert still.tobytes() == cd.render_party("Christmas", datetime(2026, 12, 25), False, 0.0, "christmas").tobytes()
+    assert still.tobytes() == cd.render_party("", datetime(2026, 12, 25), False, 0.0, "christmas").tobytes()      # not said twice
+
+    at_time(monkeypatch, datetime(2026, 12, 26, 8, 0))                                     # the day after: on to the next one
+    again = cd.Countdown({"look": "christmas"})
+    assert asyncio.run(again.frame()) is not None and again.status == "Christmas: 364 days to go"
+    own = cd.Countdown({"look": "christmas", "date": "2026-12-25", "title": "Christmas"})  # a date of one's own stays past
+    assert asyncio.run(own.frame()) is not None and own.status == "Christmas: 1 day ago"
+
+
+def test_the_lights_glow_and_the_looks_have_their_own_colours():
+    target = datetime(2026, 12, 25)
+    a = cd.render_ticking("Christmas", target, False, 86400 * 3, "christmas", 0.0)
+    b = cd.render_ticking("Christmas", target, False, 86400 * 3, "christmas", 1.5)
+    string = (0, 0, 480, 60)                                                               # the string of lights along the top
+    assert a.crop(string).tobytes() != b.crop(string).tobytes()
+    assert cd.colours("christmas") != cd.colours("plain") == (cd.TEXT, cd.MUTED, cd.ACCENT)
+    assert len(cd.LIGHTS) > 12 and all(0 <= x <= 480 and 0 <= y <= 640 for x, y, _ in cd.LIGHTS)
+    assert cd.render_ticking("x", target, False, 5).tobytes() == cd.render_ticking("x", target, False, 5, "plain", 9.0).tobytes()
+    setting = {s.key: s for s in cd.Countdown.settings}["look"]
+    assert setting.default == "plain" and dict(setting.choices) == {"plain": "Plain", "christmas": "Christmas"}

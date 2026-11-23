@@ -6,7 +6,7 @@ Each part of the plan is `mode=hours`, with settings for the mode after a colon 
 them with commas; a value may hold `=` and `:` but no comma). The settings file used is a copy of the
 app's own, so nothing the run changes stays. A line a minute:
 
-    time  mode  pictures a second  refused  longest wait between two pictures  errors
+    time  mode  pictures a second  refused  longest wait between two pictures  errors  share of a CPU core
           memory (working set / private, MB)  handles  threads  what the mode says
 
 and for a video how often its stream was opened, for TikTok how many videos it has played. The app must
@@ -169,7 +169,7 @@ def main() -> int:
                 count.reset(time.perf_counter())
                 total = lines = 0
                 while time.monotonic() < until and not stop_file.exists():
-                    started = time.perf_counter()
+                    started, cpu = time.perf_counter(), time.process_time()
                     slept_until = time.monotonic() + args.every
                     while time.monotonic() < min(slept_until, until) and not stop_file.exists():
                         time.sleep(0.5)
@@ -178,7 +178,7 @@ def main() -> int:
                         if name != said:
                             said, changes = name, changes + 1
                             seen.add(name)
-                    wall = time.perf_counter() - started
+                    wall, cpu = time.perf_counter() - started, time.process_time() - cpu
                     with count.lock:
                         drawn, refused, failed, size, wait, took = count.drawn, count.refused, count.failed, count.bytes, count.wait, count.took
                         errors, count.errors = count.errors, []
@@ -197,7 +197,7 @@ def main() -> int:
                     total, lines = total + drawn, lines + 1
                     say(f"{mode_id:9s} {drawn / wall:5.1f}/s  refused {refused:3d}  wait {wait:5.2f} s  "
                         f"{size / max(1, drawn) / 1024:4.0f} KB {1000 * took / max(1, drawn):3.0f} ms  errors {failed + len(errors):2d}  "
-                        f"mem {working:5.0f}/{private:5.0f} MB  handles {handles:5d}  threads {threads:3d}{more}  | "
+                        f"cpu {100 * cpu / wall:3.0f} %  mem {working:5.0f}/{private:5.0f} MB  handles {handles:5d}  threads {threads:3d}{more}  | "
                         f"{eng._dev_state} | {(mode.status if mode else '')[:70]}")
                     for error in errors:
                         say(f"   ! {error}")
