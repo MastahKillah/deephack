@@ -419,7 +419,7 @@ def render_animation(phase: str, kind: str, seed: int = 0, sky: Sky | None = Non
 # which window is dark for a moment, when lightning strikes. Random things are picked from the time slot
 # they belong to.
 PX = W // LW                                   # real pixels to one of the small canvas
-FAST_TICK, WEATHER_TICK, SLOW_TICK = 0.05, 0.1, 0.25    # seconds between pictures: while a car passes, while
+FAST_TICK, WEATHER_TICK, SLOW_TICK = 0.033, 0.05, 0.25   # seconds between pictures: while a car passes, while
                                                         # rain or snow falls, and when only the sky moves
 LIGHT_STEP = 15                                # seconds between two looks at the sky's colours
 TWINKLE, BEACON = 0.7, 1.0                     # seconds a star keeps its brightness, and the mast its light

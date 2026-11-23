@@ -43,9 +43,16 @@ from ..render import H, W
 from ..sound import FRAME, RATE, Speaker
 from .base import Mode, Setting
 
-TICK = 0.06                 # seconds between pictures asked of the mode: a little more often than the cooler takes them
-QUALITY = 65                # JPEG quality of its pictures. A frame of a crowd is 65 KB at 85, which the cooler takes eleven
-                            # of a second; at 65 it is 47 KB, and fifteen
+TICK = 0.02                 # seconds between pictures asked of the mode: more often than any video has one. (It was
+                            # 0.06 at first, and a video got 16 pictures a second for it, whatever its size: the
+                            # cooler was waiting for the app, not the other way round.)
+QUALITY = 65                # JPEG quality of its pictures at best. A frame of a crowd is 65 KB at 85, which the cooler takes
+                            # eleven of a second; at 65 it is 47 KB
+LEAST_QUALITY = 45          # ... and at worst: see `quality_for`
+# How fast the cooler takes a picture, measured with tools/drawbench.py: its bytes at 820,000 a second
+# (USB at full speed), and some 6 ms more until it says "go ahead" again.
+BUS, TAKING = 820_000, 0.006
+MOST_A_SECOND = 30.0        # pictures a second that are tried for (a video of 60 is shown as one of 30)
 DECODERS = 4                # threads that decode a video: enough for any that plays here, and not one for every core,
                             # each with pictures of its own in memory
 IDLE = 3.0                  # seconds without anybody asking for a frame: the stream is closed
@@ -62,15 +69,36 @@ LINES = {"fill": 720, "fit": 480}            # on the cooler the whole of deepha
                                              # first and 10 % for the second
 NETWORK = {"reconnect": "1", "reconnect_streamed": "1", "reconnect_delay_max": "5"}
 # Sound
-LEAD = 0.12                 # seconds the picture is chosen ahead of what is heard. Measured on the cooler: a frame of a
-                            # real video is 65 to 70 ms on its way from here until the cooler has taken it, and the
-                            # speaker's count is some 15 ms behind what is heard. Then the cooler has to show it: that
-                            # cannot be measured from here and is taken as 35 ms
+LEAD = 0.10                 # seconds the picture is chosen ahead of what is heard. Measured on the cooler: a frame of a
+                            # real video is 40 to 45 ms on its way from here until the cooler has taken it (65 to 70
+                            # while pictures were only asked for every 60 ms), and the speaker's count is some 15 ms
+                            # behind what is heard. Then the cooler has to show it: that cannot be measured from here
+                            # and is taken as 35 ms
 SOUND_AHEAD = 0.4           # seconds of sound kept ready in the speaker
 SOUND_WAIT = 3.0            # the picture waits this long at most for the sound to begin
 HUSH = 0.5                  # seconds without anybody asking for a frame: the sound pauses (after IDLE it all closes)
 PENDING, PENDING_BYTES = 45, 64 << 20        # frames that may wait while the reading runs ahead for the sound
 SOUND_LEVELS = (("0", "Off"), ("20", "20 %"), ("40", "40 %"), ("60", "60 %"), ("80", "80 %"), ("100", "100 %"))
+
+
+def room_for(rate: float) -> int:
+    """The bytes a picture may have for the cooler to take one in the time a video of `rate` pictures a
+    second shows one."""
+    rate = min(MOST_A_SECOND, rate if rate > 0 else MOST_A_SECOND)
+    return int((1 / rate - TAKING) * BUS)
+
+
+def quality_for(quality: int, sent: int, rate: float) -> int:
+    """The JPEG quality for the next picture, given the last one's and how large that came out: a little
+    less when it was too large for the cooler to keep up with the video, a little more again when there
+    is room. A video that is all movement is shown less sharp and not in fewer pictures; one that is
+    calm is as sharp as it gets."""
+    room = room_for(rate)
+    if sent > room * 1.06:
+        return max(LEAST_QUALITY, quality - 3)
+    if 0 < sent < room * 0.85:
+        return min(QUALITY, quality + 1)
+    return quality
 
 
 def clock_text(seconds: float) -> str:
@@ -202,6 +230,7 @@ class Player:
         self.source, self._resolve, self._clock = source, resolve, clock
         self._on_end, self._on_error, self._skipped = on_end, on_error, False
         self.title, self.duration, self.position = "", 0.0, 0.0
+        self.rate = 0.0                          # pictures a second the video has; 0 while that is not known
         self.state, self.error = "idle", ""
         self.link_failed = False                 # the error is the site's, not the stream's: see LinkError
         self.opened = 0                          # times the video was opened: 1, and one more for every new start
@@ -351,6 +380,7 @@ class Player:
         video.thread_type = "AUTO"
         video.thread_count = DECODERS
         self.duration = float(container.duration or 0) / 1_000_000
+        self.rate = float(video.average_rate or 0)
         start = self._resume
         speaker, voice, feeding = self._speaker_now(), None, []
         streams = [video]
@@ -571,6 +601,7 @@ class Video(Mode):
         if seq == self._shown:
             return None
         self._shown = seq
+        self.quality = quality_for(self.quality, self.sent_bytes, player.rate)
         return await asyncio.to_thread(picture, frame, self.values["fit"])
 
     async def close(self) -> None:

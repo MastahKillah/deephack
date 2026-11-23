@@ -396,6 +396,48 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   second, 16 to 45 KB each, 36 ms to send, 11 % of one CPU core. Between two videos the picture stood
   for 0.76 s. After "next" or "previous" the other video was on the cooler 0.65 to 0.81 s later (four
   presses). Nothing stored.
+- **How many pictures a second** (23 Nov 2026, `tools/drawbench.py`; nothing was flashed for it). Frames sent
+  to the cooler as fast as it says "go ahead", with the clock read at every step:
+
+  | frame | the cooler busy after it | sending it | a frame in all | a second |
+  |---|---|---|---|---|
+  | 26 KB | 4 ms | 32 ms | 36 ms | 27.7 |
+  | 33 KB | 12 ms | 42 ms | 54 ms | 18.7 |
+  | 40 KB | 12 ms (0.5 in another run) | 48 ms | 62 ms (52) | 16.1 (19.1) |
+  | 47 KB | 4 ms | 58 ms | 62 ms | 16.2 |
+  | 60 KB | 28 ms | 77 ms | 105 ms | 9.5 |
+  | 90 KB | 0.2 ms | 108 ms | 108 ms | 9.2 |
+
+  A question and its answer take 0.25 ms. **The bytes go at 820 KB a second whatever the frame's size:
+  that is USB at full speed, and it is nearly all of a frame's time.** What the cooler adds is small and
+  goes by where its own work happens to be when the last byte comes, not by the frame's size.
+
+  So the 16 pictures a second a video got until now were not the cooler's limit. **They were the
+  app's:** the Video mode was asked for a picture every 60 ms, a number chosen when a frame was thought
+  to need that long. Asked every 20 ms, with nothing else changed, the same video got 24.9 a second (it
+  has 25). What was changed for it, all on the PC:
+  - Video and TikTok are asked every 20 ms, and **the JPEG's quality gives way before the number of
+    pictures does**: a picture may be as large as the cooler takes in the time the video shows one
+    (22 KB for a video of 30 a second), and the quality goes down a step, from 65 to 45 at the least,
+    while the pictures come out larger, and up again when there is room (`quality_for`).
+  - Mirror takes its next picture 12 ms after handing one over (it was 30), Scene is drawn every 33 ms
+    while a car passes and every 50 while it rains or snows, the pet and the Visualizer every 33.
+  - With sound, the picture reached the cooler some 23 ms sooner than it was tuned for (74 ms ahead of
+    the sound's count where it was 51); `LEAD` is 0.10 s now and it is 53 again.
+
+  On the cooler after it: a YouTube video of 25 a second **25.0** (16.5 before), TikTok **24 to 27.6**
+  (15.5), the pet dancing in front of a cover **25.5 to 27.6**, the Visualizer **26**, Mirror **19** for
+  a window that is all movement and **25 to 26** for a calmer picture (15.8 and 16.5). The price is
+  CPU: 10 to 15 % of a core for a video (7 to 9), 24 to 30 % for Mirror (17 to 22).
+
+  **Not known:** whether the cooler's screen shows every frame it takes. It says "go ahead" when the
+  frame is handed to the picture widget, not when it is on the glass, and nothing here can see the
+  glass (the camera was not on the cooler, and takes 30 pictures a second itself). The numbers above
+  are frames taken.
+
+  What is left for the firmware (a patch version 3, a flash): only fewer bytes help, since the bus is
+  the limit. A JPEG of half the size each way, doubled on the cooler, is a quarter of the bytes; sending
+  only the part of the picture that changed is less still for a countdown or the pet.
 - **Twelve hours without a pause** (22 Nov 2026, 21:10, to 23 Nov, 09:10; `tools/longrun.py`, which writes
   a line a minute). One process, the cooler drawn on all the time, 668,000 pictures: **not one refused,
   not one error, no stall**; the longest wait between two pictures was 2.5 s, between two TikTok videos.

@@ -2,7 +2,7 @@
 
 **Spectrum** (needs the direct drawing firmware): a bar for each of 24 pitches, from the bass on the left
 to the treble on the right, as loud as that pitch is right now, with a mark where it last peaked. Every
-frame is drawn anew, twenty times a second, from what audio.Spectrum hears. A cooler that cannot be drawn
+frame is drawn anew, up to thirty times a second, from what audio.Spectrum hears. A cooler that cannot be drawn
 on gets the orb instead.
 
 **Orb**: the louder (the bass counts most), the bigger and hotter the orb and the longer its rays. The mode
@@ -36,6 +36,7 @@ from ..render import H, W
 from .base import Flipbook, Mode, Setting
 
 LEVELS = 24
+TICK = 0.033                                   # seconds between two pictures: thirty a second, if the cooler takes them
 VERSION = 3                                    # bump when the frames change, so they are stored again
 PALETTES = {   # hue (degrees) at the quietest and at the loudest bass level
     "aurora": (205, 320), "fire": (350, 48), "ocean": (150, 215), "mono": None,
@@ -160,11 +161,11 @@ class Visualizer(Mode):
     title = "Visualizer"
     description = "Pulses with the music"
     glyph = ""
-    tick = 0.05
+    tick = TICK
     settings = (
         Setting("style", "Picture", "choice", "bars",
                 (("bars", "Spectrum: a bar for each pitch"), ("orb", "Orb: pulses with the bass")),
-                hint="The spectrum is drawn anew twenty times a second, which needs the direct drawing firmware on "
+                hint="The spectrum is drawn anew many times a second, which needs the direct drawing firmware on "
                      "the cooler; without it you get the orb."),
         Setting("palette", "Colours", "choice", "aurora",
                 (("aurora", "Aurora: blue to magenta"), ("fire", "Fire: red to yellow"), ("ocean", "Ocean: green to blue"),

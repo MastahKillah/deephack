@@ -69,7 +69,7 @@ NBA_CHECK, NBA_RETRY = 20 * 60, 5 * 60
 RESULT_HOURS = 12                    # how long the pet celebrates or sulks after the final
 
 # When pictures are drawn instead of stored (the direct drawing firmware), nothing has to be saved up:
-FAST_TICK, SLOW_TICK = 0.05, 0.125   # seconds between two looks: while it dances or counts, and otherwise
+FAST_TICK, SLOW_TICK = 0.033, 0.125  # seconds between two looks: while it dances or counts, and otherwise
 MUSIC_CHECK_DRAWN = 0.5
 MUSIC_LINGER_DRAWN = 1.5             # a track change may look like a pause for a moment
 BUSY_CHECK_DRAWN = 5.0               # seconds between looks at Claude Code's logs

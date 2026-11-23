@@ -32,13 +32,13 @@ from .. import capture, render
 from ..render import H, W
 from .base import Mode, Setting
 
-TICK = 0.06                 # seconds between pictures, as for a video
+TICK = 0.02                 # seconds between pictures, as for a video
 STILL_AFTER = 16            # pictures without a change before the looking slows down (a second)
 STILL_EVERY = 4             # ... to every fourth tick
 SEEK = 1.0                  # seconds between looks for a window that is gone
 QUALITY = 75                # JPEG quality of its pictures. A window full of moving colour is 45 KB at 85, which the cooler
                             # takes eleven of a second, 0.16 s behind the screen; at 75 it is 33 KB: sixteen, 0.09 s behind
-LAG = 0.03                  # seconds from handing a picture over to taking the next: it is ready when the cooler is
+LAG = 0.012                 # seconds from handing a picture over to taking the next: it is ready when the cooler is
 SMALLEST = 16               # pixels a side: a smaller part of the screen is a slip of the hand
 TURNS = {"left": Image.Transpose.ROTATE_90, "right": Image.Transpose.ROTATE_270}
 

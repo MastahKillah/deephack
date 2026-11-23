@@ -99,7 +99,7 @@ def test_mode_returns_a_book_only_when_the_frame_changes():
     listener.now = (1.0, 0.5)
     second = asyncio.run(m.frame())
     assert second.index == 20 and second.key == first.key and m.status == "Following the music"
-    assert m.tick == 0.05
+    assert m.tick == visualizer.TICK
 
 
 # ------------------------------------------------------------------ engine: a flipbook on the cooler
@@ -312,7 +312,7 @@ def test_the_model_knows_the_still_limit(cooler):
 def test_engine_loop_runs_faster_for_a_mode_that_asks(tmp_path):
     eng = engine.Engine(Config(tmp_path / "config.json"), use_device=False)
     eng._mode = visualizer.Visualizer({}, listener=FakeListener())
-    assert min(m.tick or engine.TICK for m in (eng._mode, eng._preview) if m is not None) == 0.05
+    assert min(m.tick or engine.TICK for m in (eng._mode, eng._preview) if m is not None) == visualizer.TICK
 
 
 # ------------------------------------------------------------------ the spectrum

@@ -163,7 +163,7 @@ def test_the_mode_plays_when_pictures_are_drawn(clip):
         return mode, pictures
 
     mode, pictures = run(watch())
-    assert mode.tick == video.TICK and 8 <= len(pictures) <= 18      # one for every tick, of the clip's twenty a second
+    assert mode.tick == video.TICK and 14 <= len(pictures) <= 21     # every one of the clip's twenty a second
     assert all(p.size == (480, 640) for p in pictures)
     assert pictures[-1].getpixel((20, 320))[0] > pictures[0].getpixel((20, 320))[0] + 20      # it moved on
     assert mode.status.startswith("A clip · 0:0") and mode.status.endswith(" of 0:02")
@@ -289,3 +289,59 @@ def test_a_video_is_decoded_by_a_few_threads_not_one_for_every_core(clip, monkey
         stream.thread_count = video.DECODERS
         assert stream.thread_count == video.DECODERS
     assert "video.thread_count = DECODERS" in Path(video.__file__).read_text(encoding="utf8")
+
+
+# ------------------------------------------------------------------ as many pictures as the video has (issue #47)
+def test_a_picture_may_be_as_large_as_the_cooler_takes_in_a_frames_time():
+    assert video.TICK < 1 / video.MOST_A_SECOND                       # asked more often than any video has a picture
+    assert 20_000 < video.room_for(30) < 24_000 < video.room_for(25) < 30_000
+    assert video.room_for(60) == video.room_for(30) == video.room_for(0)      # 60 a second is not tried; unknown: as 30
+
+
+def test_the_quality_gives_way_before_the_number_of_pictures_does():
+    room = video.room_for(30)
+    assert video.quality_for(65, room * 2, 30) == 62                  # too large: a little less sharp
+    assert video.quality_for(65, room, 30) == 65 == video.quality_for(65, 0, 30)      # it fits (or nothing was sent yet)
+    assert video.quality_for(50, room // 2, 30) == 51                 # room again: a little sharper
+    assert video.quality_for(video.QUALITY, 1000, 30) == video.QUALITY                # never more than the best
+    quality = video.QUALITY
+    for _ in range(40):
+        quality = video.quality_for(quality, room * 3, 30)
+    assert quality == video.LEAST_QUALITY                             # ... nor less than the least
+    assert video.quality_for(65, room * 1.2, 25) == 65                # a video of 25 a second has more room
+
+
+def test_the_engine_tells_a_mode_how_large_its_picture_was(tmp_path, monkeypatch, cooler):
+    cooler.direct = 2
+    monkeypatch.setattr(engine, "_stored_count", lambda kind: 1)
+    monkeypatch.setattr(engine, "DRAW_SETTLE", 0.0)
+    eng = engine.Engine(Config(tmp_path / "config.json"))
+    eng.config.set("mode", "video")
+    eng._make_mode()
+    assert eng._mode.sent_bytes == 0
+    picture = Image.effect_noise((480, 640), 40).convert("RGB")
+    for _ in range(3):
+        eng._set_frame(picture)
+        eng._device_step(True)
+    assert cooler.draws >= 1
+    assert eng._mode.sent_bytes == len(device.encode_jpeg(picture, quality=video.QUALITY))     # the JPEG as it went out
+
+
+def test_the_mode_makes_its_pictures_smaller_when_they_are_too_large(clip):
+    async def watch():
+        mode = Video({"source": str(clip)})
+        mode.direct = True
+        seen = []
+        until = time.monotonic() + 0.8
+        while time.monotonic() < until:
+            if await mode.frame() is not None:
+                mode.sent_bytes = 90_000                              # as the engine would say of a busy picture
+                seen.append(mode.quality)
+            await asyncio.sleep(mode.tick)
+        await mode.close()
+        return mode, seen
+
+    mode, seen = run(watch())
+    assert len(seen) > 5 and seen[-1] < seen[0] <= video.QUALITY and seen[-1] >= video.LEAST_QUALITY
+    assert Video.quality == video.QUALITY                             # the next video starts at its best again
+    assert mode._player.rate == pytest.approx(FPS)

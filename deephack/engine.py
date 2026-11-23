@@ -547,6 +547,8 @@ class Engine(QThread):
                 fast = self._mode is not None and (self._mode.tick or TICK) <= FAST_TICK
                 quality = self._mode is not None and self._mode.quality or (DRAW_QUALITY if fast else STILL_QUALITIES[0])
                 self._still = (self._frame_seq, frame_jpeg(picture, quality))
+                if self._mode is not None:
+                    self._mode.sent_bytes = len(self._still[1])
             return self._still[1]
 
         if self._draw(("still", self._frame_seq), jpeg, now, REDRAW_STILL) and self._frame_seq != self._uploaded_seq:
