@@ -317,3 +317,91 @@ def test_stored_pet_is_as_before_after_drawing(monkeypatch):
     m.direct = False                                                  # e.g. the slide show was switched on
     assert step(pet.MUSIC_CHECK) == ("stored", "dancing") and m.tick is None
     assert step(1.0) is None and m._activity.every == pet.CHECK_SECONDS
+
+
+# ------------------------------------------------------------------ the song it dances to
+def test_the_song_is_written_above_the_dancing_pet():
+    limits = {"seven_day": (40, None)}
+    plain = pet.render_frame(0, limits, "dancing")
+    named = pet.render_frame(0, limits, "dancing", song=("Blinding Lights", "The Weeknd"))
+    top, rest = (0, 0, 480, 110), (0, 120, 480, 640)
+    assert named.crop(top).tobytes() != plain.crop(top).tobytes()                     # above the pet ...
+    assert named.crop(rest).tobytes() == plain.crop(rest).tobytes()                   # ... and nowhere else
+    assert pet.render_frame(0, limits, "dancing", song=("", "")).tobytes() == plain.tobytes()
+    other = pet.render_frame(0, limits, "dancing", song=("Numb", "Linkin Park"))
+    assert other.crop(top).tobytes() != named.crop(top).tobytes()
+    for state in ("working", "sleeping", None):                                        # only while it dances
+        assert pet.render_frame(0, limits, state, song=("Numb", "Linkin Park")).tobytes() == pet.render_frame(0, limits, state).tobytes()
+
+
+def test_a_long_title_gets_smaller_letters_and_then_dots():
+    short, long, longer = (pet._song(title, "Queen") for title in ("Numb", "Bohemian Rhapsody, the 2011 one", "Bohemian Rhapsody " * 6))
+    height = lambda img: img.crop((0, 0, 480, 40)).getbbox()[3]                        # of the title's letters
+    assert height(short) > height(long)                                                # three times, then twice the size
+    for img in (short, long, longer):
+        left, _, right, bottom = img.getbbox()
+        assert left >= 8 and right <= 472 and bottom <= 100                            # in the picture, above the pet
+    assert pet._song("Numb", "").getbbox()[3] < pet._song("Numb", "Linkin Park").getbbox()[3]     # no artist: one line
+    for other_letters in ("Дорогие мои москвичи", "Zdob și Zdub", "夜に駆ける", "봄날"):       # letters of other scripts
+        assert pet._song(other_letters, "").getbbox() is not None
+
+
+def test_the_pet_names_the_song_only_when_pictures_cost_nothing(monkeypatch):
+    world = SimpleNamespace(clock=100.0)
+
+    async def is_playing(self):
+        return True
+
+    async def not_busy(self):
+        return False
+
+    monkeypatch.setattr(pet.Playback, "playing", is_playing)
+    monkeypatch.setattr(pet.Activity, "busy", not_busy)
+    monkeypatch.setattr(pet.time, "monotonic", lambda: world.clock)
+    monkeypatch.setattr(pet, "read_limits", lambda path: {"seven_day": (40, None)})
+    mode = pet.Tamagotchi({"reacts": "music"}, listener=_Sound())
+    mode.direct = True
+    mode._playback.title, mode._playback.artist = "Blinding Lights", "The Weeknd"
+    first = asyncio.run(mode.frame())
+    assert first is not None and mode.status.startswith("Dancing to Blinding Lights · ")
+    mode._playback.title, mode._playback.artist = "Numb", "Linkin Park"                # the next track
+    world.clock += 0.01
+    second = asyncio.run(mode.frame())
+    assert second is not None and second.crop((0, 0, 480, 110)).tobytes() != first.crop((0, 0, 480, 110)).tobytes()
+
+    stored = pet.Tamagotchi({"reacts": "music"}, listener=_Sound())                    # DeepCool's firmware: an animation
+    stored._playback.title = "Blinding Lights"
+    animation = None
+    for _ in range(20):                                                                # the music has to have settled
+        world.clock += pet.MUSIC_CHECK
+        animation = asyncio.run(stored.frame()) or animation
+        if stored.status.startswith("Dancing"):
+            break
+    assert stored.status.startswith("Dancing to Blinding Lights")
+    assert animation.frames[0].tobytes() == pet.render_frame(0, {"seven_day": (40, None)}, "dancing").tobytes()
+    stored._playback.title = "Numb"                                                    # another song is no reason to store it anew
+    world.clock += 10
+    assert asyncio.run(stored.frame()) is None
+
+
+def test_playback_says_what_plays():
+    from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status
+
+    class Session:
+        status, props = Status.PLAYING, SimpleNamespace(title=" Numb ", artist="Linkin Park")
+
+        def get_playback_info(self):
+            return SimpleNamespace(playback_status=self.status)
+
+        async def try_get_media_properties_async(self):
+            return self.props
+
+    session = Session()
+    playback = pet.Playback()
+    playback._manager = SimpleNamespace(get_current_session=lambda: session)
+    assert asyncio.run(playback.playing()) and (playback.title, playback.artist) == ("Numb", "Linkin Park")
+    session.status = Status.PAUSED
+    session.props = SimpleNamespace(title="Other", artist="")
+    assert not asyncio.run(playback.playing()) and playback.title == "Numb"            # kept while it pauses
+    session.status, session.props = Status.PLAYING, None
+    assert asyncio.run(playback.playing()) and (playback.title, playback.artist) == ("", "")

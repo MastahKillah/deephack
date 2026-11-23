@@ -13,7 +13,8 @@ With the direct drawing firmware (`direct`, set by the engine) pictures cost not
 anew whenever it moves:
 
 - it dances to the music itself: a step and a hop for every beat (see Beat), and the background lights up
-  with the bass, which the cooler's light follows
+  with the bass, which the cooler's light follows. The song's title and artist are written above it
+  (only here: on DeepCool's firmware every new song would be a rewrite of the stored animation)
 - states start at once: no waiting for the music to settle, Claude Code's logs are looked at every few
   seconds, and while the picked NBA team plays the score is asked for every minute
 - it does things that are not part of a loop: a blink now and then, a wave, a yawn before it sleeps
@@ -386,6 +387,47 @@ def _terminal(d: ImageDraw.ImageDraw, f: int) -> None:
 
 
 NOTE_SPAN = 280                                  # risen per loop, so the loop repeats seamlessly
+# The song the pet dances to, above it. Written small in a font made for small sizes, without smoothing,
+# and made larger: chunky letters like everything else here, in any script the font has (the pet's own
+# letters are capitals and digits only).
+SONG_FONTS, SONG_SIZE = ("tahomabd.ttf", "tahoma.ttf"), 11
+SONG_TOP, SONG_ROOM = 16, W - 28                 # where it begins, and how wide it may be
+
+
+def _song_font(text: str, which: int):
+    """The font for a line: Tahoma, or for what Tahoma has no letters for, one of Windows' that does."""
+    if any("\u3040" <= c <= "\u30ff" or "\u4e00" <= c <= "\u9fff" or "\uff00" <= c <= "\uffef" for c in text):
+        return render.font("msgothic.ttc", SONG_SIZE + 1)            # Japanese and Chinese
+    if any("\uac00" <= c <= "\ud7af" for c in text):
+        return render.font(("malgunbd.ttf", "malgun.ttf")[which], SONG_SIZE + 1)       # Korean
+    return render.font(SONG_FONTS[which], SONG_SIZE)
+
+
+@lru_cache(maxsize=8)
+def _song(title: str, artist: str) -> Image.Image:
+    """Title and artist as a picture to lay over the top of the pet's: the title as large as fits in
+    one line (three times, or twice, the small letters' size), cut short with dots if it still does not."""
+    out = Image.new("RGBA", (W, 120), (0, 0, 0, 0))
+    y = 0
+    for which, (text, colour, scales) in enumerate(((title, TEXT, (3, 2)), (artist, MUTED, (2,)))):
+        if not text:
+            continue
+        fnt = _song_font(text, which)
+        probe = ImageDraw.Draw(Image.new("1", (1, 1)))
+        scale = next((s for s in scales if probe.textlength(text, font=fnt) <= SONG_ROOM // s), scales[-1])
+        text = render.fit(probe, text, fnt, SONG_ROOM // scale)
+        small = Image.new("1", (SONG_ROOM // scale + 4, SONG_SIZE + 7), 0)
+        d = ImageDraw.Draw(small)
+        d.fontmode = "1"                                 # every pixel on or off
+        d.text((1, 1), text, font=fnt, fill=1)
+        box = small.getbbox()
+        if box is None:
+            continue
+        letters = small.crop((box[0], 0, box[2], small.height))
+        letters = letters.resize((letters.width * scale, letters.height * scale), Image.NEAREST)
+        out.paste(colour, ((W - letters.width) // 2, y), letters)
+        y += letters.height + 2
+    return out
 
 
 def _notes(d: ImageDraw.ImageDraw, f: int, risen: int | None = None) -> None:
@@ -428,12 +470,13 @@ def _rain(d: ImageDraw.ImageDraw, f: int) -> None:
 
 
 def render_frame(frame: int, limits: dict | None, state: str | None = None, result: Result | None = None, *,
-                 pose: Pose | None = None, risen: int | None = None, glow: int = 0) -> Image.Image:
+                 pose: Pose | None = None, risen: int | None = None, glow: int = 0, song: tuple[str, str] | None = None) -> Image.Image:
     """One frame of the pet. `state` is an activity (working, dancing, sleeping, cheering, sulking, and
     yawning, which has no loop of its own); without one the pet shows the mood of the fullest plan limit.
 
     A pet that is drawn anew for every picture is not bound to its loops: `pose` is the pet itself when it
-    is not the loop's, `risen` how far up the dance's notes are and `glow` how lit its background is."""
+    is not the loop's, `risen` how far up the dance's notes are and `glow` how lit its background is.
+    `song`: (title, artist) of what it dances to, written above it."""
     windows = [(label, limits[key][0]) for key, label in (("five_hour", "5H"), ("seven_day", "WEEK")) if limits and key in limits]
     worst = max((p for _, p in windows), default=None)
     mood = mood_for(worst)
@@ -475,6 +518,9 @@ def render_frame(frame: int, limits: dict | None, state: str | None = None, resu
         _zeds(d, px, py, frame)
     elif state == "dancing":
         _notes(d, frame, risen)
+        if song and any(song):
+            words = _song(*song)
+            img.paste(words, (0, SONG_TOP), words)
     elif state == "cheering" and result:
         _confetti(d, frame, result.color)
 
@@ -621,13 +667,14 @@ class Tamagotchi(Mode):
             if scene == "happy" and (up := self._waving(now)):
                 pose = replace(pose, arms=(0, up))
         self.tick = FAST_TICK if scene == "dancing" or self._counted != real else SLOW_TICK
+        song = (self._playback.title, self._playback.artist) if scene == "dancing" else None
         look = (scene, f, pose, risen, glow, tuple(sorted(self._counted.items())),
-                result.line if result and scene in ("cheering", "sulking") else None)
+                result.line if result and scene in ("cheering", "sulking") else None, song)
         if look == self._look:
             return None
         self._look = look
         limits = {key: (value, None) for key, value in self._counted.items()} or None
-        return render_frame(f, limits, scene, result, pose=pose, risen=risen, glow=glow)
+        return render_frame(f, limits, scene, result, pose=pose, risen=risen, glow=glow, song=song)
 
     async def frame(self):
         now = time.monotonic()
@@ -649,7 +696,9 @@ class Tamagotchi(Mode):
 
         shown = {k: v[0] for k, v in (self._limits or {}).items()}
         parts = [f"{name} {shown[key]}%" for key, name in (("five_hour", "5-hour"), ("seven_day", "weekly")) if key in shown]
-        if state in DOING:
+        if state == "dancing" and self._playback.title:
+            doing = f"Dancing to {self._playback.title}"
+        elif state in DOING:
             doing = DOING[state]
         elif state:
             doing = f"Celebrating {result.line}" if state == "cheering" else f"Sulking after {result.line}"

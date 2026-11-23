@@ -147,10 +147,11 @@ def render_track(track: Track, layout: str = "full", progress: tuple[float, floa
 
 
 class Playback:
-    """Whether the system's current media session is playing, for modes that only need to know that."""
+    """Whether the system's current media session is playing, and what: for modes that need no more."""
 
     def __init__(self):
         self._manager = None
+        self.title = self.artist = ""            # of what plays, as far as the player says; kept while it pauses
 
     async def playing(self) -> bool:
         try:
@@ -160,7 +161,11 @@ class Playback:
             if self._manager is None:
                 self._manager = await Manager.request_async()
             session = self._manager.get_current_session()
-            return session is not None and session.get_playback_info().playback_status == Status.PLAYING
+            playing = session is not None and session.get_playback_info().playback_status == Status.PLAYING
+            if playing:
+                props = await session.try_get_media_properties_async()
+                self.title, self.artist = ((props.title or "").strip(), (props.artist or "").strip()) if props else ("", "")
+            return playing
         except (ImportError, OSError, AttributeError):
             return False
 
