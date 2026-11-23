@@ -433,7 +433,8 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   **Not known:** whether the cooler's screen shows every frame it takes. It says "go ahead" when the
   frame is handed to the picture widget, not when it is on the glass, and nothing here can see the
   glass (the camera was not on the cooler, and takes 30 pictures a second itself). The numbers above
-  are frames taken.
+  are frames taken. The cooler's owner, looking at it the same day: it is smoother, and no dropped
+  frames to be noticed. That is an eye's judgement, not a count.
 
   What is left for the firmware (a patch version 3, a flash): only fewer bytes help, since the bus is
   the limit. A JPEG of half the size each way, doubled on the cooler, is a quarter of the bytes; sending
