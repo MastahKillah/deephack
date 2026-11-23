@@ -6,7 +6,7 @@ from PIL import Image
 
 from deephack import device, engine
 from deephack.config import SLOT_ID, Config
-from deephack.modes.base import Animation
+from deephack.modes.base import Animation, Part
 
 RED, BLUE = Image.new("RGB", (480, 640), "#a02020"), Image.new("RGB", (480, 640), "#2040b0")
 
@@ -210,3 +210,96 @@ def test_only_the_first_patch_stops_taking_frames_after_an_animation(cooler):
                 except TimeoutError:
                     pass
         assert cooler.draws == taken
+
+
+# ---------------------------------------------------------------- a part of the picture (patch 3)
+def _part(page, colour, at=(0, 176), size=(480, 288)):
+    return Part(page, Image.new("RGB", size, colour), at)
+
+
+def _part_jpeg(part, quality=engine.DRAW_QUALITY):
+    return device.encode_jpeg(part.picture, quality=quality, part=True)
+
+
+def test_a_picture_of_which_a_part_changes_is_sent_once_and_then_only_the_part(tmp_path, monkeypatch, cooler):
+    cooler.direct = 3
+    eng = _engine(tmp_path, monkeypatch)
+    shown = []
+    eng.frameChanged.connect(lambda frames, ms, placeholder: shown.append(frames[0]))
+    first = _part(RED, "#ffffff")
+    _show(eng, first, steps=3)                                            # the ground, the page, the part
+    assert cooler.screen == _drawn(RED) and cooler.draws == 1
+    assert cooler.part == (0, 176, _part_jpeg(first)) and cooler.parts == 1
+    assert shown[-1].pixelColor(240, 300).red() == 255 and shown[-1].pixelColor(240, 100).red() == 160      # the window: all of it
+    for colour in ("#00ff00", "#0000ff", "#ffff00"):
+        part = _part(RED, colour)
+        _show(eng, part, steps=1)                                         # at once, and the page is not sent again
+        assert cooler.part == (0, 176, _part_jpeg(part))
+    assert cooler.draws == 1 and cooler.parts == 4 and cooler.flash_writes == 1 and not cooler.violations
+    sizes = [len(_part_jpeg(first)), len(engine.frame_jpeg(first.whole, engine.DRAW_QUALITY))]
+    assert sizes[0] < sizes[1] * 0.6                                      # which is what it is for
+    assert eng._mode.sent_bytes == len(_part_jpeg(part))                  # a mode fits its quality to what is sent
+
+    other = _part(BLUE, "#ffffff")                                        # another page: that first, whole
+    _show(eng, other, steps=2)
+    assert cooler.screen == _drawn(BLUE) and cooler.draws == 2 and cooler.part == (0, 176, _part_jpeg(other))
+    _show(eng, RED, steps=1)                                              # a whole picture: the part is gone
+    assert cooler.screen == _drawn(RED) and cooler.part is None and not cooler.violations
+
+
+def test_a_part_is_sent_whole_to_a_cooler_that_cannot_place_it_and_when_it_does_not_fit(tmp_path, monkeypatch, cooler):
+    cooler.direct = 2                                                     # the patch before parts
+    eng = _engine(tmp_path, monkeypatch)
+    part = _part(RED, "#ffffff")
+    _show(eng, part)
+    assert cooler.screen == _drawn(part.whole) and cooler.parts == 0 and not cooler.violations
+
+    cooler.direct = 3
+    eng = _engine(tmp_path, monkeypatch)
+    odd = _part(RED, "#ffffff", size=(480, 270))                          # not whole blocks of a JPEG
+    outside = _part(RED, "#ffffff", at=(0, 400))
+    assert not odd.fits and not outside.fits and part.fits
+    for picture in (odd, outside):
+        _show(eng, picture)
+        assert cooler.screen == _drawn(picture.whole) and cooler.parts == 0 and not cooler.violations
+
+    cooler.direct = False                                                 # DeepCool's firmware: stored, whole
+    eng = _engine(tmp_path, monkeypatch)
+    _show(eng, part)
+    assert cooler.shown == ("jpg", 1) and cooler.still(1).size == (480, 640) and not cooler.violations
+
+
+def test_the_page_is_sent_again_when_the_cooler_has_lost_it(tmp_path, monkeypatch, cooler):
+    cooler.direct = 3
+    eng = _engine(tmp_path, monkeypatch)
+    _show(eng, _part(RED, "#ffffff"), steps=3)
+    assert cooler.parts == 1
+    cooler.drawn = cooler.part = None                                     # its own firmware showed a stored picture
+    part = _part(RED, "#00ff00")
+    _show(eng, part, steps=3)                                             # "no page": the page, then the part
+    assert cooler.screen == _drawn(RED) and cooler.draws == 2 and cooler.part == (0, 176, _part_jpeg(part))
+    assert not cooler.violations
+
+    eng._on_screen = None                                                 # and when the engine starts over
+    _show(eng, _part(RED, "#0000ff"), steps=3)
+    assert cooler.draws == 3 and cooler.parts == 3 and not cooler.violations
+
+
+def test_the_driver_sends_a_part_only_as_the_cooler_can_take_it(cooler):
+    cooler.direct = 3
+    cooler.mode, cooler.shown = device.MODE_MOTION, ("jpg", 0)
+    dev = device.Mystique()
+    page = device.encode_jpeg(RED)
+    part = device.encode_jpeg(Image.new("RGB", (160, 96), "#ffffff"), part=True)
+    with pytest.raises(device.NoPage):
+        dev.draw_jpeg(part, at=(16, 32))                                  # nothing was drawn yet
+    dev.draw_jpeg(page)
+    dev.draw_jpeg(part, at=(16, 32))
+    assert cooler.part == (16, 32, part) and device.part_box(part, (320, 544)) == (320, 544, 160, 96)
+    for bad, at in ((part, (321, 0)), (part, (0, 545)), (part, (-16, 0)),                  # not inside the screen
+                    (device.encode_jpeg(Image.new("RGB", (100, 96)), part=True), (0, 0)),   # not whole blocks
+                    (b"not a JPEG", (0, 0))):
+        with pytest.raises(ValueError):
+            dev.draw_jpeg(bad, at=at)
+    assert cooler.parts == 1 and not cooler.violations
+    assert device.encode_jpeg(Image.new("RGB", (160, 96))) != part and device.jpeg_size(device.encode_jpeg(Image.new("RGB", (160, 96)))) == (480, 640)

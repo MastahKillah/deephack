@@ -231,9 +231,11 @@ operations: confirm SWD access → dump → understand update verification → o
 to `captures/`, which is not in the repository). **It runs in the emulator, and since 19 Nov 2026 on the
 cooler** (see "On the cooler" below).
 
-It appends 504 bytes of code after the image and changes twenty bytes of it: five 4-byte jumps. (This
-is version 2. Version 1, which the cooler ran from 19 Nov 2026, was 472 bytes and four jumps: it had no
-hook in `lv_task_handler` and reported no version; version 2 is on the cooler since 20 Nov 2026.) The app carries it as a table of those bytes,
+It appends 792 bytes of code after the image and changes twenty bytes of it: five 4-byte jumps. (This
+is version 3, which can also draw a part of the picture: see "Version 3" below. **It has run in the
+emulator only.** Version 2, 504 bytes, is on the cooler since 20 Nov 2026 and is what the rest of this
+section describes. Version 1, which the cooler ran from 19 Nov 2026, was 472 bytes and four jumps: it had no
+hook in `lv_task_handler` and reported no version.) The app carries it as a table of those bytes,
 `deephack/firmware_patch.py`, written by `python tools/fw/patch.py --table`; a test compares the two.
 
 | where | stock | patched |
@@ -252,6 +254,7 @@ to 64 bytes. The reply's status byte says what to do:
 | `10` | go ahead, send the JPEG |
 | `11` | not now: the last frame is not on screen yet, or the buffers are still being made. Ask again |
 | `12` | refused: size 0 or more than 128 KiB |
+| `13` | version 3, for a part of the picture: no page of ours is under it. Draw the page first |
 | `00` | what the **stock** firmware answers to every command it does not know. `deephack.device` takes it for "no direct drawing here" and sends no picture data (data without an upload in progress would be left in the endpoint's buffer, and the endpoint would stay shut) |
 
 The byte after the status is the **version of the patch** (2 now; version 1 leaves it 0). A command
@@ -311,7 +314,72 @@ What was needed to know for it, all seen in the emulator:
   packet in 65 536 on average, so about one upload in 140 for a 30 KB picture would stall until the
   upload loop gives up. Not seen happening; read off the code.
 
-What the emulator run shows (`tests/test_direct_draw.py`): three frames in a row are on the emulated LCD,
+#### Version 3: a part of the picture
+
+*In the emulator only so far (23 Nov 2026). Nothing of it has been on the cooler.*
+
+The bus is the limit (820 KB a second, see "How many pictures a second"), so what helps is fewer bytes.
+A page with a video in it is mostly a picture that stands still: the NBA mode's highlights page is 29 KB
+a frame at the lowest quality, of which the video is 17. Version 3 takes **a JPEG of a rectangle** and
+puts it on the page that was drawn last.
+
+The command grows by four numbers: `AA 2E 20 <size:u32> <sum16:u16> <x:u16> <y:u16> <width:u16>
+<height:u16>`. Width 0 is the whole page, which is what an older driver sends (the bytes are zero
+there). One more status: `13`, "there is no page of ours under it" (nothing was drawn yet, or the stock
+firmware has shown a stored picture since): draw the page, then the part.
+
+It needed no decoder of its own, because of how the stock firmware draws a picture. Seen in the emulator:
+
+- **The decoder is told where to write, and the firmware works that out from the widget.** The image
+  draw routine (around `0x17A74`) takes the frame buffer LVGL is drawing into, adds
+  `(y1 * 480 + x1) * 2` for the picture's top left corner, and hands that address and the line length
+  (960 bytes) to the decoder's open routine (`0x3D428`), which programs `RGBASE` and `IMGSTR` with them
+  and `IMGSIZ` with the size it reads from the JPEG. So a small picture somewhere on the screen is
+  decoded straight into its place.
+- **Only when the area being redrawn is exactly the picture** (an 8 byte compare of the two rectangles
+  at `0x17AAC`), its width is a multiple of 4, and nothing is rotated, zoomed, recoloured or masked.
+  Otherwise the picture is decoded into RAM first (a buffer from the heap) and copied from there, and
+  LVGL keeps that copy by the picture's address. The stock firmware takes that path for its slides.
+- `lv_img_create` is at `0x158D0`, `lv_obj_set_pos` at `0x5F100`, `lv_obj_set_hidden` at `0x5EF64`. An
+  object's `ext_attr` is at +52, its children's list at +4; an image's `ext` begins with its source.
+- LVGL redraws the invalid area starting from the topmost object that covers it, and an image of the
+  raw format covers its area. So a new part redraws the part and nothing else.
+
+So the patch makes **a second picture widget, a child of the image screen's picture**, the first time a
+part comes, and gives it the part with `lv_img_set_src` after `lv_obj_set_pos`. The rest:
+
+- **Three buffers** now, 128 KiB each. A frame is received into the first one that neither picture
+  shows, so neither the page nor the part on screen is written over while LVGL may still decode it.
+- **A new page hides the part.** So does a look in the main loop that finds the picture widget showing
+  something that is not our page (the stock firmware's `08`): the part must not stay on top of a stored
+  picture.
+- **When the part appears, moves or changes size, the page is drawn whole again** (the patch gives the
+  picture widget its own page once more, which invalidates all of it). Without that LVGL would redraw
+  the bit of the page that came free, through the copy-in-RAM path, which the patch has no reason to
+  go near: its copy is kept by address, and our buffers are reused.
+- State: 60 bytes at `0x2000F000`.
+
+What the emulator run shows (`tests/test_direct_draw.py`): parts of 480 x 272 at y 176 are decoded into
+both frame buffers at that place and nowhere else, the screen is the page with the part on it; a smaller
+part elsewhere leaves the first one's place showing the page; a new page removes the part; after a
+stored picture is shown the part is gone and the next one is refused with `13`.
+
+**Not known**, and only the cooler can tell:
+
+- whether the hardware decoder does what the emulator's model of it does with a picture that is not
+  the whole screen (the model takes `IMGSIZ`, `RGBASE` and `IMGSTR` at their word; the stock firmware
+  only ever shows 480 x 640 there). The driver keeps to whole 16 x 16 blocks.
+- how long the cooler takes for a part. Every 100 ms the image screen redraws its picture (see "Display
+  path"), which now is the page and the part: two decodes. With version 2 a 29 KB frame took 50 ms on
+  the cooler, 8 more than its bytes and the 6 ms a small frame needs: the decode seems to cost by
+  content.
+- the 384 KiB of buffers on a heap that has run for days.
+
+In the app: a mode returns `modes.base.Part(page, picture, at)` for a picture of which one rectangle
+changed. The engine sends the page once and then the parts, to a cooler whose patch says 3; any other
+cooler gets whole pictures as before. The NBA mode's highlights are the first to use it.
+
+What the emulator run shows for whole pictures (`tests/test_direct_draw.py`): three frames in a row are on the emulated LCD,
 decoded alternately from the two buffers, with still one file on the card; a wrong sum and a stalled
 frame are handled as described; an upload and `08` work afterwards; the stock image refuses nothing and
 is sent nothing.

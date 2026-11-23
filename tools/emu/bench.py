@@ -102,8 +102,8 @@ class EmulatedCooler:
             def upload_gif(self, file_id, frames, duration_ms):
                 self._upload(super().upload_gif, file_id, frames, duration_ms)
 
-            def draw_jpeg(self, jpeg, patience=0.5):
-                self._upload(super().draw_jpeg, jpeg, patience)
+            def draw_jpeg(self, jpeg, patience=0.5, at=None):
+                self._upload(super().draw_jpeg, jpeg, patience, at)
 
             @staticmethod
             def _upload(send, *args):

@@ -52,7 +52,9 @@ CMD_DELETE_ALL = 0x14       # erases every stored image, no reboot
 
 CMD_DIRECT = 0x20           # <size:u32> <sum16:u16>: show a JPEG without storing it. Not in the stock firmware:
                             # only one patched with tools/fw/patch.py has it (the stock one answers status 0)
-DIRECT_GO, DIRECT_LATER, DIRECT_REFUSED = 0x10, 0x11, 0x12
+DIRECT_GO, DIRECT_LATER, DIRECT_REFUSED, DIRECT_NO_PAGE = 0x10, 0x11, 0x12, 0x13
+DIRECT_PARTS = 3            # the version of the patch from which a part of the picture can be drawn by itself
+PART_STEP = 16              # a part is so many pixels wide and high, or a multiple: whole blocks of a 4:2:0 JPEG
 DIRECT_MAX = 128 * 1024     # bytes of JPEG the patched firmware takes for one frame
 DIRECT_ASK = 0.004          # seconds between two asks while it says "later": it needs some 50 ms for a frame, and
                             # asking every 2 ms was 120 commands a second for 18 frames
@@ -250,17 +252,19 @@ class Mystique:
         time.sleep(1.0)
 
     # -- direct drawing (patched firmware only) ---------------------------
-    def _ask_direct(self, size: int, checksum: int) -> tuple[int, int]:
+    def _ask_direct(self, size: int, checksum: int, box: tuple[int, int, int, int] | None = None) -> tuple[int, int]:
         """Ask to send a frame; the firmware's answer (DIRECT_*, or 0 from a stock firmware) and the byte
-        after it, which is the version of the patch (0 from the first one and from a stock firmware)."""
-        self.dev.write(1, frame(CMD_DIRECT, struct.pack("<IH", size, checksum)), self.timeout)
+        after it, which is the version of the patch (0 from the first one and from a stock firmware).
+        `box`: (x, y, width, height) of a part. Without it the four are zeros, which says "the whole page"."""
+        payload = struct.pack("<IH", size, checksum) + (struct.pack("<4H", *box) if box else b"")
+        self.dev.write(1, frame(CMD_DIRECT, payload), self.timeout)
         r = bytes(self.dev.read(0x81, 64, self.timeout))
         if len(r) != 48 or r[0] != 0x55 or sum16(r[:46]) != struct.unpack_from("<H", r, 46)[0]:
             raise RuntimeError(f"unexpected reply to cmd {CMD_DIRECT:#04x}: {r.hex()}")
         return r[3], r[4]
 
-    def _direct(self, size: int, checksum: int) -> int:
-        return self._ask_direct(size, checksum)[0]
+    def _direct(self, size: int, checksum: int, box: tuple[int, int, int, int] | None = None) -> int:
+        return self._ask_direct(size, checksum, box)[0]
 
     def draw_version(self) -> int:
         """Which direct drawing patch the cooler's firmware has: 0 for none (DeepCool's firmware), else the
@@ -273,19 +277,31 @@ class Mystique:
         """True when the cooler runs a firmware that draws without storing."""
         return self.draw_version() > 0
 
-    def draw_jpeg(self, jpeg: bytes, patience: float = 0.5) -> None:
+    def draw_jpeg(self, jpeg: bytes, patience: float = 0.5, at: tuple[int, int] | None = None) -> None:
         """Show a 480x640 baseline JPEG now, without storing it: no flash write. Needs the patched firmware
         and the image mode with a stored still on show (the frame replaces it on screen until the next
         show_slot). Raises TimeoutError when the cooler is still busy with the last frame after `patience`
-        seconds, RuntimeError on a firmware that cannot do this (nothing is sent to it then)."""
-        if jpeg_size(jpeg) != (WIDTH, HEIGHT):
-            raise ValueError(f"need a {WIDTH}x{HEIGHT} baseline JPEG")
+        seconds, RuntimeError on a firmware that cannot do this (nothing is sent to it then).
+
+        `at`: (x, y), and the JPEG is **a part of the picture**: it is put there, on top of the page that
+        was drawn last, and stays until the next part or page (patch version DIRECT_PARTS or later; ask
+        draw_version()). Its width and height are multiples of PART_STEP. Raises NoPage when the page under
+        it is not one that was drawn (a stored picture is on show, or nothing was drawn yet): draw the
+        page, then the part."""
+        box = None
+        if at is None:
+            if jpeg_size(jpeg) != (WIDTH, HEIGHT):
+                raise ValueError(f"need a {WIDTH}x{HEIGHT} baseline JPEG")
+        else:
+            box = part_box(jpeg, at)
         if len(jpeg) > DIRECT_MAX:
             raise ValueError(f"frame too large: {len(jpeg)} bytes, the firmware takes {DIRECT_MAX}")
         for _ in range(max(1, round(patience / DIRECT_ASK))):
-            status = self._direct(len(jpeg), sum16(jpeg))
+            status = self._direct(len(jpeg), sum16(jpeg), box)
             if status == DIRECT_GO:
                 break
+            if status == DIRECT_NO_PAGE:
+                raise NoPage("the page under the part is not one that was drawn")
             if status != DIRECT_LATER:
                 raise RuntimeError("this firmware cannot draw without storing" if status == 0
                                    else f"the cooler refused the frame (status {status:#04x})")
@@ -293,6 +309,26 @@ class Mystique:
         else:
             raise TimeoutError("the cooler did not take the frame")
         self.dev.write(1, jpeg, self.timeout)       # the host controller cuts it into 64 byte packets
+
+
+class NoPage(RuntimeError):
+    """A part of the picture was to be drawn, and the page under it is not one that was drawn."""
+
+
+def part_box(jpeg: bytes, at: tuple[int, int]) -> tuple[int, int, int, int]:
+    """(x, y, width, height) of a part that is this JPEG, put at `at`. Raises ValueError for one the cooler
+    must not be sent. The size is read from the JPEG itself, because the cooler decodes what the JPEG says
+    into the place the command names: a JPEG larger than its command would be written over what follows
+    the frame buffer in the cooler's memory."""
+    size = jpeg_size(jpeg)
+    if size is None:
+        raise ValueError("need a baseline JPEG")
+    (x, y), (width, height) = at, size
+    if width % PART_STEP or height % PART_STEP or not width or not height:
+        raise ValueError(f"a part is a multiple of {PART_STEP} pixels wide and high, not {width}x{height}")
+    if x < 0 or y < 0 or x + width > WIDTH or y + height > HEIGHT:
+        raise ValueError(f"a part of {width}x{height} at {x}, {y} is not inside the screen")
+    return x, y, width, height
 
 
 def jpeg_size(data: bytes) -> tuple[int, int] | None:
@@ -311,11 +347,12 @@ def jpeg_size(data: bytes) -> tuple[int, int] | None:
     return None
 
 
-def encode_jpeg(image, quality: int = 92) -> bytes:
-    """Encode a PIL image the way the official app does: 480x640, baseline, 4:2:0, default Huffman tables."""
+def encode_jpeg(image, quality: int = 92, part: bool = False) -> bytes:
+    """Encode a PIL image the way the official app does: 480x640, baseline, 4:2:0, default Huffman tables.
+    `part`: the image is a part of the picture and keeps its size (see Mystique.draw_jpeg)."""
     from PIL import Image
 
-    if image.size != (WIDTH, HEIGHT):
+    if image.size != (WIDTH, HEIGHT) and not part:
         image = image.resize((WIDTH, HEIGHT), Image.LANCZOS)
     buf = io.BytesIO()
     image.convert("RGB").save(buf, "JPEG", quality=quality, subsampling="4:2:0", optimize=False, progressive=False)

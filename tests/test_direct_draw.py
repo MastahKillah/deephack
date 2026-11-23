@@ -34,13 +34,14 @@ def card(colour, box, quality=80) -> bytes:
     return device.encode_jpeg(picture, quality=quality)
 
 
-def on_screen(cooler, jpeg, tmp_path) -> bool:
-    """The emulated LCD shows this JPEG (RGB565 keeps 5 or 6 bits a channel: differences up to 7)."""
+def on_screen(cooler, picture, tmp_path) -> bool:
+    """The emulated LCD shows this JPEG, or this picture (RGB565 keeps 5 or 6 bits a channel: differences
+    up to 7)."""
     from PIL import Image, ImageChops
 
     cooler.screen(tmp_path / "screen.png")
-    difference = ImageChops.difference(Image.open(tmp_path / "screen.png").convert("RGB"),
-                                       Image.open(io.BytesIO(jpeg)).convert("RGB"))
+    wanted = Image.open(io.BytesIO(picture)) if isinstance(picture, bytes) else picture
+    difference = ImageChops.difference(Image.open(tmp_path / "screen.png").convert("RGB"), wanted.convert("RGB"))
     return max(high for _, high in difference.getextrema()) <= 7
 
 
@@ -50,9 +51,40 @@ def on_card(cooler) -> dict:
 
 
 def state(cooler) -> dict:
-    raw = bytes(cooler.machine.uc.mem_read(patch.STATE, 36))
-    names = ("first", "second", "size", "received", "sum", "expected", "started", "shown")
-    return dict(zip(names, struct.unpack_from("<8I", raw, 4)), phase=raw[0])
+    """The patch's own RAM (the layout is above SOURCE in patch.py)."""
+    raw = bytes(cooler.machine.uc.mem_read(patch.STATE, patch.STATE_SIZE))
+    names = ("first", "second", "third", "size", "received", "sum", "expected", "started", "shown")
+    return dict(zip(names, struct.unpack_from("<9I", raw, 4)), phase=raw[0], page=raw[2], part=raw[3])
+
+
+FRAME_BUFFERS = (0x800061A0, 0x8009C1C0)                    # the LCD's two, 480 x 640 x 2 bytes each
+
+
+def decoded(cooler, since: int) -> set:
+    """What the firmware has had its JPEG decoder do since: (width, height, x, y) on the screen, or
+    "elsewhere" for a picture decoded into other memory than a frame buffer."""
+    seen = set()
+    for address, width, height in cooler.machine.jpeg.decoded[since:]:
+        base = next((b for b in FRAME_BUFFERS if b <= address < b + 480 * 640 * 2), None)
+        seen.add("elsewhere" if base is None else (width, height, (address - base) // 2 % 480, (address - base) // 2 // 480))
+    return seen
+
+
+def part_of(colour, size=(480, 272), box=(40, 40, 200, 200)) -> bytes:
+    from PIL import Image, ImageDraw
+
+    picture = Image.new("RGB", size, colour)
+    ImageDraw.Draw(picture).ellipse(box, fill="white")
+    return device.encode_jpeg(picture, quality=80, part=True)
+
+
+def with_part(page: bytes, part: bytes, at):
+    """What the screen shows with a part on a page (for on_screen)."""
+    from PIL import Image
+
+    whole = Image.open(io.BytesIO(page)).convert("RGB")
+    whole.paste(Image.open(io.BytesIO(part)).convert("RGB"), at)
+    return whole
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -121,8 +153,7 @@ def test_patched_firmware_still_does_what_the_stock_one_does(cooler, tmp_path):
     assert on_card(cooler) == {f"img/000_{STORED_ID}/angle_0.jpg": cooler.stored}
     assert on_screen(cooler, cooler.stored, tmp_path)
     assert cooler.driver().uuid() == ""                       # a fresh card has no id; the command is answered
-    assert state(cooler) == dict.fromkeys(("first", "second", "size", "received", "sum", "expected", "started",
-                                           "shown", "phase"), 0)   # and the patch has not done anything yet
+    assert set(state(cooler).values()) == {0}                 # and the patch has not done anything yet
 
 
 def test_frames_are_drawn_from_ram_without_a_file(cooler, tmp_path):
@@ -137,7 +168,9 @@ def test_frames_are_drawn_from_ram_without_a_file(cooler, tmp_path):
         sources.append(struct.unpack_from("<I", decoder.reg, 0x18)[0])
     now = state(cooler)
     assert now["shown"] == 3 and now["phase"] == 0 and not decoder.errors
-    used = [next(b for b in (now["first"], now["second"]) if b + 16 <= s < b + 16 + patch.MAX_FRAME) for s in sources]
+    buffers = (now["first"], now["second"], now["third"])
+    assert all(buffers) and patch.STATE_SIZE == 60
+    used = [next(b for b in buffers if b + 16 <= s < b + 16 + patch.MAX_FRAME) for s in sources]
     assert used[0] != used[1] and used[1] != used[2]          # never the buffer that is on screen
     assert on_card(cooler) == {f"img/000_{STORED_ID}/angle_0.jpg": cooler.stored}      # nothing was written
 
@@ -217,3 +250,75 @@ def test_frames_are_shown_while_the_task_handler_never_returns(cooler, stock_ima
         assert on_screen(cooler, jpeg, tmp_path)
     assert state(cooler)["shown"] == shown + 3
     assert blocks[main_hook] == passes                        # all of it without the main loop coming round once
+
+
+def test_a_part_is_decoded_into_its_place_on_the_page(cooler, tmp_path):
+    """Version 3. A part of the picture is a JPEG of its own, shown by a second, small picture on top of
+    the page: the stock firmware decodes it straight into the frame buffer where that picture lies."""
+    driver, decoder = cooler.driver(), cooler.machine.jpeg
+    page = card("#602020", (40, 500, 440, 620))
+    driver.draw_jpeg(page)
+    cooler.run_for(0.3)
+    assert on_screen(cooler, page, tmp_path) and state(cooler)["part"] == 0
+    shown, since = state(cooler)["shown"], len(decoder.decoded)
+
+    buffers = []
+    for colour in ("#2060c0", "#c06020", "#20c060", "#c020c0"):
+        part = part_of(colour)
+        driver.draw_jpeg(part, at=(0, 176))
+        cooler.run_for(0.3)
+        assert on_screen(cooler, with_part(page, part, (0, 176)), tmp_path)
+        now = state(cooler)
+        buffers.append((now["page"], now["part"]))
+    assert state(cooler)["shown"] == shown + 4 and not decoder.errors
+    assert len({page_buffer for page_buffer, _ in buffers}) == 1          # the page stays where it is, and a part
+    assert all(part and part != page_buffer for page_buffer, part in buffers)      # never goes into its buffer
+    assert all(a[1] != b[1] for a, b in zip(buffers, buffers[1:]))        # nor into the last part's, which is on show
+    # Every decode went into a frame buffer: the page whole, the part at its place. (A bit of a picture
+    # would be decoded into RAM first and kept there by its address: the patch redraws the page whole
+    # instead, when the part appears or moves.)
+    assert decoded(cooler, since) == {(480, 640, 0, 0), (480, 272, 0, 176)}
+
+    small, since = part_of("#e0e000", (160, 96), (20, 20, 80, 80)), len(decoder.decoded)
+    driver.draw_jpeg(small, at=(304, 16))                                 # somewhere else, another size:
+    cooler.run_for(0.3)
+    assert on_screen(cooler, with_part(page, small, (304, 16)), tmp_path)    # the first one's place shows the page
+    now = decoded(cooler, since)                                          # (the last part may have been drawn once
+    assert now >= {(480, 640, 0, 0), (160, 96, 304, 16)} and "elsewhere" not in now      # more while this one came in)
+
+    other, since = card("#205050", (100, 100, 300, 300)), len(decoder.decoded)
+    driver.draw_jpeg(other)                                               # a new page: the part is gone
+    cooler.run_for(0.3)
+    assert on_screen(cooler, other, tmp_path) and state(cooler)["part"] == 0
+    cooler.run_for(0.3)
+    assert "elsewhere" not in decoded(cooler, since) and not decoder.errors
+
+
+def test_a_part_needs_a_page_of_ours_under_it(cooler, tmp_path):
+    driver = cooler.driver()
+    page, part = card("#404080", (60, 60, 420, 160)), part_of("#ffffff")
+    driver.draw_jpeg(page)
+    cooler.run_for(0.3)
+    driver.draw_jpeg(part, at=(0, 176))
+    cooler.run_for(0.3)
+    assert state(cooler)["part"] != 0
+    stored = next(iter(on_card(cooler).values()))
+    driver.upload_jpeg(LOOP_ID, card("#101010", (0, 0, 20, 20)))          # the stock firmware shows a picture of its
+    cooler.run_for(1.0)                                                   # own: the part must not stay on top of it
+    driver.show_slot(0)
+    cooler.run_for(0.6)
+    assert state(cooler)["part"] == 0 and on_screen(cooler, stored, tmp_path)
+    sent = cooler.machine.usb.delivered
+    with pytest.raises(device.NoPage):
+        driver.draw_jpeg(part, at=(0, 176))
+    assert cooler.machine.usb.delivered == sent + 1                       # the question, and no picture data after it
+    driver.draw_jpeg(page)                                                # the page again, and the part is taken
+    cooler.run_for(0.3)
+    driver.draw_jpeg(part, at=(0, 176))
+    cooler.run_for(0.3)
+    assert on_screen(cooler, with_part(page, part, (0, 176)), tmp_path)
+
+    with pytest.raises(ValueError):                                       # the driver: not past the screen's edge,
+        driver.draw_jpeg(part, at=(0, 400))                               # which would be past the frame buffer's end
+    with pytest.raises(ValueError):
+        driver.draw_jpeg(part_of("#ffffff", (480, 270)), at=(0, 0))       # and whole blocks only

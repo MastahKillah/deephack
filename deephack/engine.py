@@ -23,7 +23,7 @@ from PySide6.QtGui import QImage
 from . import device, firmware, render, ytdlp
 from .config import GIF_SLOT_ID, SLOT_ID, Config, book_id
 from .modes import BY_ID, MODES, Mode
-from .modes.base import Animation, Dashboard, Flipbook
+from .modes.base import Animation, Dashboard, Flipbook, Part
 
 LIGHTS = {"screen": device.LIGHT_SCREEN, "motherboard": device.LIGHT_MOTHERBOARD, "warning": device.LIGHT_WARNING}
 RESHOW_DELAY = 1.5           # the firmware picks up the edges of an image shown a moment after a light change
@@ -155,6 +155,10 @@ class Engine(QThread):
         self._flash_since = 0.0                  # when its wait for the cooler's answer began
         self._drawing = False                    # ... and that is how pictures get there now (not during a slide show)
         self._still: tuple[int, bytes] = (-1, b"")   # frame seq of the picture last drawn, and its JPEG
+        self._parts = False                      # ... and its patch can draw a part of the picture by itself
+        self._part: Part | None = None           # the mode's last picture, when only a part of it changed
+        self._page = None                        # what the whole picture drawn last was (see _draw_part)
+        self._page_kept: Image.Image | None = None
         self._play: tuple[int, list[bytes], float] = (-1, [], 0.0)   # frame seq of the animation played from here,
                                                                      # its frames as JPEGs, and when it started
         self._again: float | None = None         # the device step wants to run again in this many seconds
@@ -239,7 +243,10 @@ class Engine(QThread):
         self._frame = None
         self._emit_placeholder()
 
-    def _set_frame(self, img: Image.Image | Animation) -> None:
+    def _set_frame(self, img: Image.Image | Animation | Part) -> None:
+        self._part = img if isinstance(img, Part) else None      # only a part of it changed: see _draw_part
+        if self._part is not None:
+            img = self._part.whole          # everything else here deals with whole pictures
         self._frame = img
         self._frame_seq += 1
         self.frameChanged.emit(*_qt_frames(img), False)
@@ -277,6 +284,8 @@ class Engine(QThread):
             traceback.print_exc()
             mode.status, img = "Mode error, see console", None
         if img is not None:
+            if isinstance(img, Part):
+                img = img.whole
             self._preview_frame = img
             self.previewChanged.emit(mode.id, *_qt_frames(img), False)
         elif self._preview_frame is None and mode.placeholder != self._preview_shown:
@@ -342,6 +351,7 @@ class Engine(QThread):
                 patch, bcd = self._dev.draw_version(), getattr(self._dev.dev, "bcdDevice", 0)
                 self._firmware = {"bcd": bcd, "version": firmware.version(bcd), "patch": patch}
                 self._can_draw = patch > 0
+                self._parts = patch >= device.DIRECT_PARTS
                 self._veiled = self._can_draw     # a deephack that was killed may have left a drawn frame up
             except device.DeviceBusy:
                 self._dev, self._dev_state = None, "busy"
@@ -394,6 +404,8 @@ class Engine(QThread):
             if self._drawing:
                 if isinstance(self._frame, Animation):
                     self._draw_animation(self._frame, now)
+                elif self._part is not None and self._parts and self._part.fits:
+                    self._draw_part(self._part, now)
                 else:
                     self._draw_still(self._frame, now)
                 return
@@ -478,8 +490,9 @@ class Engine(QThread):
             self._slot_digest.pop(device.TYPE_JPG, None)
         return main
 
-    def _draw(self, what, jpeg, now: float, again: float) -> bool:
+    def _draw(self, what, jpeg, now: float, again: float, at: tuple[int, int] | None = None) -> bool:
         """Put a picture on screen straight from USB: nothing is stored. True once `what` is on screen.
+        `at`: it is a part of the picture, to be put there on the page that was drawn last (_draw_part).
 
         `what` names the picture, `jpeg()` makes its data when it has to be sent, and an unchanged one is
         sent again every `again` seconds. Needs the direct drawing firmware (tools/fw). It draws over a
@@ -491,6 +504,7 @@ class Engine(QThread):
         if self._on_screen != "drawn":
             self._show_stored(self._ground(), device.TYPE_JPG, afresh=True)
             self._on_screen, self._drawn, self._draw_from, self._refused = "drawn", None, now + DRAW_SETTLE, None
+            self._page = None
             self._again = DRAW_RETRY
             return False
         if now < self._draw_from:
@@ -498,7 +512,10 @@ class Engine(QThread):
             return False
         if self._drawn != what or now - self._drawn_at >= again:
             try:
-                self._dev.draw_jpeg(jpeg(), patience=DRAW_PATIENCE)
+                if at is None:
+                    self._dev.draw_jpeg(jpeg(), patience=DRAW_PATIENCE)
+                else:
+                    self._dev.draw_jpeg(jpeg(), patience=DRAW_PATIENCE, at=at)
             except TimeoutError:              # busy with the last frame: the next step tries again
                 if self._refused is None:
                     self._refused = now
@@ -506,8 +523,39 @@ class Engine(QThread):
                     self._on_screen = None
                 self._again = DRAW_RETRY
                 return False
+            except device.NoPage:             # the cooler shows something else than our page now: that first
+                self._page = None
+                self._again = DRAW_RETRY
+                return False
             self._drawn, self._drawn_at, self._veiled, self._refused = what, now, True, None
+            if at is None:
+                self._page = what             # a whole picture: the page a part would lie on
         return True
+
+    def _draw_part(self, part: Part, now: float) -> None:
+        """Draw a picture of which only a part changed: the page under it once, then only the parts.
+
+        The page is named by the object it is, which the mode keeps the same while the page is (and which
+        is held on to here, so that its name cannot pass to another). The cooler says so when the page is
+        not under the part any more, and gets it again."""
+        page = ("page", id(part.page))
+        if self._on_screen != "drawn" or self._page != page:
+            self._page_kept = part.page
+            if self._draw(page, lambda: frame_jpeg(part.page), now, REDRAW_STILL):
+                self._again = DRAW_RETRY      # and now the part, without waiting for the mode's next picture
+            return
+
+        def jpeg() -> bytes:
+            if self._still[0] != self._frame_seq:
+                quality = self._mode is not None and self._mode.quality or DRAW_QUALITY
+                self._still = (self._frame_seq, device.encode_jpeg(part.picture, quality=quality, part=True))
+                if self._mode is not None:
+                    self._mode.sent_bytes = len(self._still[1])
+            return self._still[1]
+
+        if self._draw(("part", self._frame_seq), jpeg, now, REDRAW_STILL, at=part.at) and self._frame_seq != self._uploaded_seq:
+            self._uploaded_seq = self._frame_seq
+            self._last_upload_wall = time.time()
 
     def _draw_book(self, book: Flipbook, now: float) -> None:
         """Draw the book's current frame: any number of frames will do, and none is stored."""

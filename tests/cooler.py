@@ -31,6 +31,8 @@ class CoolerModel:
                                                 # or 1 for the first patch, 2 and up for that version of it
         self.drawn: bytes | None = None         # the JPEG drawn from USB that is on screen in place of the stored still
         self.draws = 0
+        self.part: tuple[int, int, bytes] | None = None     # (x, y, JPEG) of the part drawn on top of it (patch 3)
+        self.parts = 0
         self._drawing: dict | None = None       # a frame that is coming in
         self._animated = False                  # an animation has been on the image screen since it was entered
         self.stuck = False                      # ... and a frame was drawn after: no further frame is taken (patch 1)
@@ -136,7 +138,7 @@ class CoolerModel:
             if payload[0] not in (device.MODE_SITUATIONAL, device.MODE_MOTION, device.MODE_RECORDER):
                 self._violate(f"unknown display mode {payload[0]}")
             if payload[0] != self.mode:
-                self.drawn = None               # the image screen loads its stored picture when it is entered
+                self.drawn = self.part = None               # the image screen loads its stored picture when it is entered
                 self._animated = self.stuck = False
             self.mode = payload[0]
         elif cmd == device.CMD_SITUATION_MODE:
@@ -154,7 +156,7 @@ class CoolerModel:
                 self._violate("show a stored image without switching back to image mode first (deephack's rule)")
             shown = ("gif" if kind == device.TYPE_GIF else "jpg", index)
             if shown != self.shown:
-                self.drawn = None               # "show" for the slot already selected leaves a drawn frame up
+                self.drawn = self.part = None               # "show" for the slot already selected leaves a drawn frame up
             self._animated = self._animated or kind == device.TYPE_GIF
             self.shown = shown
         elif cmd == device.CMD_DELETE_SLOT:
@@ -168,13 +170,16 @@ class CoolerModel:
         elif cmd == device.CMD_GET_UUID:
             reply = b"\x00" + self.uuid.encode()
         elif cmd == device.CMD_DIRECT and self.direct:
-            size, total = struct.unpack_from("<IH", payload)
-            if not 0 < size <= device.DIRECT_MAX:
+            size, total, x, y, width, height = struct.unpack_from("<IH4H", payload)
+            box = (x, y, width, height) if width and int(self.direct) >= device.DIRECT_PARTS else None    # (an older
+            if not 0 < size <= device.DIRECT_MAX:                                # patch does not look at those bytes)
                 status = device.DIRECT_REFUSED
             elif self.stuck:
                 status = device.DIRECT_LATER
+            elif box and self.screen[0] != "drawn":
+                status = device.DIRECT_NO_PAGE      # a part goes on a page that was drawn, and only while that is on show
             else:
-                self._drawing = {"size": size, "sum": total, "data": b""}
+                self._drawing = {"size": size, "sum": total, "data": b"", "box": box}
                 status = device.DIRECT_GO
             reply = bytes([status, int(self.direct) if int(self.direct) > 1 else 0])    # the first patch: no version
         elif cmd not in NO_EFFECT and cmd not in (device.CMD_FACTORY_RESET, device.CMD_DELETE_ALL):
@@ -196,12 +201,22 @@ class CoolerModel:
         self.stuck = self._animated and int(self.direct) < 2
         if device.sum16(frame["data"]) != frame["sum"]:
             self._violate("a drawn frame does not match its sum16: the firmware does not show it")
+        elif frame["box"]:
+            x, y, width, height = frame["box"]
+            if device.jpeg_size(frame["data"]) != (width, height):
+                self._violate("a part whose JPEG is not the size its command said: the decoder would write past its place")
+            elif width % 16 or height % 16 or x + width > device.WIDTH or y + height > device.HEIGHT:
+                self._violate(f"a part of {width}x{height} at {x}, {y}: not whole blocks, or not inside the screen")
+            elif self.screen[0] != "drawn":
+                self._violate("a part with no drawn page under it any more")
+            else:
+                self.part, self.parts = (x, y, frame["data"]), self.parts + 1
         elif device.jpeg_size(frame["data"]) != (device.WIDTH, device.HEIGHT):
             self._violate(f"drew something that is not a {device.WIDTH}x{device.HEIGHT} baseline JPEG")
         elif self.mode != device.MODE_MOTION or self.shown is None or self.shown[0] != "jpg":
             self._violate("a frame drawn with no stored still on show: it is dropped, or an animation takes the screen back")
         else:
-            self.drawn, self.draws = frame["data"], self.draws + 1
+            self.drawn, self.draws, self.part = frame["data"], self.draws + 1, None     # a new page: the part is gone
 
     # ---- uploads: 0F, then a 64 byte header and the data in 64 byte packets per file, then dcldfinish
     def _upload_packet(self, data: bytes) -> None:
@@ -259,7 +274,7 @@ class CoolerModel:
 
     def _finish(self, data: bytes) -> None:
         up, self._upload = self._upload, None
-        self.drawn = None                       # the firmware leaves its upload screen and loads the stored picture
+        self.drawn = self.part = None                       # the firmware leaves its upload screen and loads the stored picture
         if data != FINISH:
             self._violate("malformed dcldfinish")
         if up["stage"] == "data":

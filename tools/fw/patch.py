@@ -12,7 +12,7 @@ has it: without this assembler, and without DeepCool's image. Do that after ever
 compares the two).
 
 The stock image (v2.70 only, checked by hash) is DeepCool's and is read from the installed app. The
-patch appends about 500 bytes of code after it and redirects five places in it:
+patch appends about 800 bytes of code after it and redirects five places in it:
 
     where                         stock                         patched
     0x109A4  main, before loop    sets a "running" flag         ... and clears the patch's state
@@ -23,20 +23,34 @@ patch appends about 500 bytes of code after it and redirects five places in it:
 
 The new command, on endpoint 1 like the others:
 
-    AA 2E 20 <size:u32> <sum16 of the JPEG:u16> ...      reply status (payload byte 0):
+    AA 2E 20 <size:u32> <sum16 of the JPEG:u16> <x:u16> <y:u16> <width:u16> <height:u16> ...
+    Width 0: the JPEG is the whole page, 480 x 640. Otherwise it is a part of the picture, that size, to be
+    put at x, y on the page that was drawn last (version 3). Reply status (payload byte 0):
         10  go ahead: send the JPEG in packets of up to 64 bytes, nothing after it
         11  not now: the last frame is not on screen yet, or the buffers are still being made. Ask again
         12  refused: size 0 or more than 128 KiB
+        13  a part, and no page of ours is under it (none drawn yet, or the stock firmware has shown a
+            stored picture since): draw the page, then the part
     The byte after the status is the patch's version (VERSION; 0 from the first patch, which had none).
     The stock firmware answers any unknown command with status 0, so 0 means "no direct drawing here".
 
-How it works. The frame is received inside the USB interrupt, into the one of two 128 KiB buffers that
-is not on screen (they are taken from the firmware's 8 MiB heap the first time the command is used and
-kept). When all of it is in and the sum matches, the main loop gives the buffer to the picture widget
-of the image screen with lv_img_set_src, exactly as the stock firmware does with a file it has read
-into RAM; LVGL redraws and the hardware decoder writes into the frame buffer. No file, no screen
-change. A frame that stalls for two seconds is given up, so a host that dies half way cannot leave
-the cooler taking commands for picture data.
+How it works. The frame is received inside the USB interrupt, into the one of three 128 KiB buffers that
+neither picture on screen shows (they are taken from the firmware's 8 MiB heap the first time the
+command is used and kept). When all of it is in and the sum matches, the main loop gives the buffer to
+the picture widget of the image screen with lv_img_set_src, exactly as the stock firmware does with a
+file it has read into RAM; LVGL redraws and the hardware decoder writes into the frame buffer. No file,
+no screen change. A frame that stalls for two seconds is given up, so a host that dies half way cannot
+leave the cooler taking commands for picture data.
+
+A part of the picture (version 3) goes to a second, small picture: an lv_img the patch makes as the
+child of the picture widget, puts at x, y and gives the part's buffer. The stock firmware decodes a
+picture straight into the frame buffer where its widget lies, when the area to redraw is exactly that
+widget's, and LVGL starts a redraw at the topmost object that covers the area: so a new part costs its
+own decode and nothing else. A new page hides the part; so does the stock firmware showing a stored
+picture. When the part appears, moves or changes size the page is drawn whole again, because a bit of a
+picture is decoded another way (into RAM, and kept there by its address) that the patch stays clear of.
+The size in the command must be the JPEG's own: the firmware decodes what the JPEG says into the place
+the command names (deephack.device.part_box reads it from the JPEG and checks it against the screen).
 
 "The main loop" is two places. lv_task_handler only returns when no task is due, and it can go without
 returning for as long as the image screen's timer is faster than the screen's work: while an animation
@@ -49,7 +63,7 @@ It needs the image screen (mode 2) with at least one stored picture: with none, 
 hides the picture widget. A frame that arrives on another screen is dropped. The JPEG must be what
 the stock firmware shows: 480 x 640, baseline, 4:2:0 (deephack.device.encode_jpeg).
 
-RAM: 36 bytes at 0x2000F000, above the firmware's stack (which starts at 0x2000B418); the emulated
+RAM: 60 bytes at 0x2000F000, above the firmware's stack (which starts at 0x2000B418); the emulated
 firmware never touches anything up there.
 """
 from __future__ import annotations
@@ -66,12 +80,14 @@ APP = 0xE000                                # where the image runs
 STATE = 0x2000F000                          # the patch's own RAM
 MAX_FRAME = 0x20000                         # bytes of JPEG a buffer holds
 COMMAND = 0x20
-GO, LATER, REFUSED = 0x10, 0x11, 0x12
-VERSION = 2                                 # of this patch, in every reply to the command (see CHANGES)
+GO, LATER, REFUSED, NO_PAGE = 0x10, 0x11, 0x12, 0x13
+VERSION = 3                                 # of this patch, in every reply to the command (see CHANGES)
 CHANGES = {
     1: "the first: draws a JPEG from USB. Answers 0 where the version is now",
     2: "frames are also shown while lv_task_handler does not return (#22); the reply has the version",
+    3: "a part of the picture can be drawn by itself, on top of the page that was drawn last (#47)",
 }
+STATE_SIZE = 60                             # bytes of the patch's RAM (see the layout above SOURCE)
 TIMEOUT_MS = 2000
 
 # the stock firmware's own routines and data (real addresses, v2.70)
@@ -80,6 +96,9 @@ SYMBOLS = {
     "lv_ll_get_head": 0x38E5C,              # lv_ll_get_head(list): its first entry
     "lv_mem_alloc": 0x5C3C8,
     "lv_img_set_src": 0x58D34,
+    "lv_img_create": 0x158D0,               # lv_img_create(parent, copy)
+    "lv_obj_set_pos": 0x5F100,              # lv_obj_set_pos(object, x, y), relative to its parent
+    "lv_obj_set_hidden": 0x5EF64,           # lv_obj_set_hidden(object, hidden)
     "reply": 0x34D84,                       # reply(command, 0, status): builds and sends the answer
     "usb_send": 0x3488C,                    # usb_send(IN endpoint, data, length)
     "memclr": 0x29D50,                      # memclr(address, length)
@@ -94,6 +113,7 @@ WIDGET = 0x20001074                         # the image screen's picture (an lv_
 RXCR1 = 0x40009510                          # USB: endpoint 1 OUT control (4 flush, 8 ready)
 IMAGE_SCREEN = 0x90E
 HEADER = 1 | 480 << 10 | 640 << 21          # lv_img_header_t: raw, 480 x 640
+EXT = 52                                    # lv_obj_t: where its ext_attr is (an lv_img's begins with its src)
 
 # (address, the stock bytes there, what replaces them)
 HOOKS = [
@@ -106,9 +126,13 @@ HOOKS = [
 STOCK_CALLS = {0x109A8: "lv_task_handler", 0x64088: "lv_ll_get_head", 0x2F158: "reply"}
 BRANCHES = {"b", "bl", "cbz", "cbnz"} | {"b" + c for c in "eq ne hs lo mi pl vs vc hi ls ge lt gt le".split()}
 
-# state: +0 u8 phase (0 idle, 1 receiving, 2 ready to show)   +1 u8 buffers wanted   +2 u8 buffer on screen
-#        +4, +8 the two buffers   +12 size   +16 received   +20 running sum   +24 expected sum
-#        +28 tick at start   +32 frames shown
+# state: +0 u8 phase (0 idle, 1 receiving, 2 ready to show)   +1 u8 buffers wanted
+#        +2 u8 page: which buffer the picture widget shows (1 to 3; 0: none of ours yet)
+#        +3 u8 part: which buffer the small picture on top of it shows (0: none, it is hidden)
+#        +4, +8, +12 the three buffers   +16 size   +20 received   +24 running sum   +28 expected sum
+#        +32 tick at start   +36 frames shown   +40 u8 the buffer being filled   +41 u8 1: it is a part
+#        +44 u16 x, +46 u16 y of the part   +48 its lv_img_header_t (which has its size)
+#        +52, +56 the same two words of the part before it: where the small picture is now
 SOURCE = f"""
 init_hook:
     movs    r1, #1
@@ -116,71 +140,156 @@ init_hook:
     movw    r0, #{STATE & 0xFFFF}
     movt    r0, #{STATE >> 16}
     movs    r1, #0
-    movs    r2, #36
+    movs    r2, #{STATE_SIZE}
 init_clear:
     subs    r2, #4
     str     r1, [r0, r2]
     bne     init_clear
     bx      lr
 
+hide_part:                              @ r4 = state, r6 = the picture widget: the part goes, the page is whole
+    push    {{r5, lr}}
+    ldrb    r0, [r4, #3]
+    cmp     r0, #0
+    beq     hide_done
+    movs    r0, #0
+    strb    r0, [r4, #3]
+    adds    r0, r6, #4
+    bl      lv_ll_get_head              @ the widget's child, if it has one
+    cmp     r0, #0
+    beq     hide_done
+    movs    r1, #1
+    bl      lv_obj_set_hidden
+hide_done:
+    pop     {{r5, pc}}
+
 show:                                   @ make the buffers when asked to, and show a frame that is all in
-    push    {{r4, r5, r6, lr}}
+    push    {{r3, r4, r5, r6, r7, lr}}
     movw    r4, #{STATE & 0xFFFF}
     movt    r4, #{STATE >> 16}
     ldrb    r0, [r4, #1]
-    cbz     r0, main_show
+    cmp     r0, #0
+    beq     show_frame
     movs    r5, #4
-main_alloc:
+show_alloc:
     ldr     r0, [r4, r5]
-    cbnz    r0, main_next
+    cmp     r0, #0
+    bne     show_next
     movw    r0, #{(MAX_FRAME + 16) & 0xFFFF}
     movt    r0, #{(MAX_FRAME + 16) >> 16}
     bl      lv_mem_alloc
-    cbz     r0, main_next
-    movw    r1, #{HEADER & 0xFFFF}
-    movt    r1, #{HEADER >> 16}
-    str     r1, [r0, #0]                @ an lv_img_dsc_t in front of the data, as the stock loader makes it
-    movs    r1, #0
+    cmp     r0, #0
+    beq     show_next
+    movs    r1, #0                      @ an lv_img_dsc_t in front of the data, as the stock loader makes it
+    str     r1, [r0, #0]                @ (its header is written when a frame is shown: page or part)
     str     r1, [r0, #4]
     str     r1, [r0, #12]
     add.w   r1, r0, #16
     str     r1, [r0, #8]
     str     r0, [r4, r5]
-main_next:
+show_next:
     adds    r5, #4
-    cmp     r5, #12
-    bne     main_alloc
+    cmp     r5, #16
+    bne     show_alloc
     movs    r0, #0
     strb    r0, [r4, #1]                @ one try per request
-main_show:
-    ldrb    r0, [r4, #0]
-    cmp     r0, #2
-    bne     main_done
+show_frame:
     movw    r0, #{SCREEN & 0xFFFF}
     movt    r0, #{SCREEN >> 16}
     ldrh    r0, [r0]
     movw    r1, #{IMAGE_SCREEN}
     cmp     r0, r1
-    bne     main_drop
-    ldrb    r0, [r4, #2]
-    eor     r0, r0, #1
-    strb    r0, [r4, #2]                @ the buffer just filled is the one on screen now
-    add.w   r1, r4, r0, lsl #2
-    ldr     r1, [r1, #4]
-    ldr     r0, [r4, #12]
-    str     r0, [r1, #4]                @ data_size
-    movw    r0, #{WIDGET & 0xFFFF}
-    movt    r0, #{WIDGET >> 16}
-    ldr     r0, [r0]
+    bne     show_elsewhere
+    movw    r6, #{WIDGET & 0xFFFF}
+    movt    r6, #{WIDGET >> 16}
+    ldr     r6, [r6]                    @ the picture widget
+    ldrb    r0, [r4, #0]
+    cmp     r0, #2
+    bne     show_guard
+    ldrb.w  r5, [r4, #40]
+    ldr.w   r5, [r4, r5, lsl #2]        @ the buffer that was filled
+    ldr     r0, [r4, #16]
+    str     r0, [r5, #4]                @ data_size
+    ldrb.w  r0, [r4, #41]
+    cmp     r0, #0
+    bne     show_part
+    movw    r0, #{HEADER & 0xFFFF}
+    movt    r0, #{HEADER >> 16}
+    str     r0, [r5, #0]
+    ldrb.w  r0, [r4, #40]
+    strb    r0, [r4, #2]                @ the page is this buffer now
+    bl      hide_part
+    mov     r0, r6
+    mov     r1, r5
     bl      lv_img_set_src
-    ldr     r0, [r4, #32]
+    b       show_count
+show_part:
+    ldr     r0, [r4, #48]
+    str     r0, [r5, #0]                @ raw, as wide and high as the command said
+    adds    r0, r6, #4
+    bl      lv_ll_get_head
+    cmp     r0, #0
+    bne     show_have
+    str     r0, [r4, #56]               @ (0: no part has this header, so "it was somewhere else" below)
+    mov     r0, r6
+    movs    r1, #0
+    bl      lv_img_create               @ the first part: a picture of its own, the widget's child
+    cmp     r0, #0
+    beq     show_drop
+show_have:
+    mov     r7, r0
+    ldrh    r1, [r4, #44]
+    ldrh    r2, [r4, #46]
+    bl      lv_obj_set_pos
+    mov     r0, r7
+    mov     r1, r5
+    bl      lv_img_set_src
+    mov     r0, r7
+    movs    r1, #0
+    bl      lv_obj_set_hidden
+    ldrb.w  r0, [r4, #40]
+    strb    r0, [r4, #3]
+    ldr     r0, [r4, #44]
+    ldr     r1, [r4, #48]
+    ldr     r2, [r4, #52]
+    ldr     r3, [r4, #56]
+    cmp     r0, r2
+    bne     show_moved
+    cmp     r1, r3
+    beq     show_count
+show_moved:                             @ the small picture is new, or was somewhere else or another size: the
+    str     r0, [r4, #52]               @ page is drawn whole again with it. (LVGL would redraw the bit of the
+    str     r1, [r4, #56]               @ page that came free, and a bit of a picture is not decoded into the
+    ldrb    r1, [r4, #2]                @ frame buffer but into RAM first, kept there by address: a path the
+    ldr.w   r1, [r4, r1, lsl #2]        @ stock firmware takes for its slides, and this patch never.)
+    mov     r0, r6
+    bl      lv_img_set_src
+show_count:
+    ldr     r0, [r4, #36]
     adds    r0, #1
-    str     r0, [r4, #32]
-main_drop:
+    str     r0, [r4, #36]
+show_drop:
     movs    r0, #0
     strb    r0, [r4, #0]                @ only now may the next frame start
-main_done:
-    pop     {{r4, r5, r6, pc}}
+    pop     {{r3, r4, r5, r6, r7, pc}}
+show_guard:                             @ nothing to show. Is the page still ours? The stock firmware may have
+    ldrb    r0, [r4, #3]                @ shown a stored picture: the part must not stay on top of that
+    cmp     r0, #0
+    beq     show_done
+    ldrb    r0, [r4, #2]
+    ldr.w   r0, [r4, r0, lsl #2]
+    ldr     r1, [r6, #{EXT}]
+    ldr     r1, [r1, #0]                @ what the picture widget shows
+    cmp     r0, r1
+    beq     show_done
+    bl      hide_part
+show_done:
+    pop     {{r3, r4, r5, r6, r7, pc}}
+show_elsewhere:                         @ another screen: a frame that came for this one is dropped
+    ldrb    r0, [r4, #0]
+    cmp     r0, #2
+    beq     show_drop
+    pop     {{r3, r4, r5, r6, r7, pc}}
 
 main_hook:
     push    {{r4, lr}}
@@ -207,28 +316,75 @@ command_ours:
     movw    r3, #{COMMAND_COPY & 0xFFFF}
     movt    r3, #{COMMAND_COPY >> 16}
     ldr.w   r1, [r3, #3]                @ size
-    ldrh.w  r3, [r3, #7]                @ sum16
     movs    r2, #{REFUSED}
-    cbz     r1, command_out
+    cmp     r1, #0
+    beq     command_out
     cmp.w   r1, #{MAX_FRAME}
     bhi     command_out
     movs    r2, #{LATER}
     ldr     r0, [r4, #4]
-    cbz     r0, command_want
+    cmp     r0, #0
+    beq     command_want
     ldr     r0, [r4, #8]
-    cbz     r0, command_want
+    cmp     r0, #0
+    beq     command_want
+    ldr     r0, [r4, #12]
+    cmp     r0, #0
+    beq     command_want
     ldrb    r0, [r4, #0]
     cmp     r0, #2
     beq     command_out
-    str     r1, [r4, #12]
+    ldrh.w  r5, [r3, #13]               @ width of a part; 0: the whole page
+    movs    r6, #0
+    cmp     r5, #0
+    beq     command_take
+    movs    r2, #{NO_PAGE}              @ a part goes on a page of ours, and only while that is on show
+    ldrb    r0, [r4, #2]
+    cmp     r0, #0
+    beq     command_out
+    ldr.w   r0, [r4, r0, lsl #2]
+    movw    r6, #{WIDGET & 0xFFFF}
+    movt    r6, #{WIDGET >> 16}
+    ldr     r6, [r6]
+    ldr     r6, [r6, #{EXT}]
+    ldr     r6, [r6, #0]
+    cmp     r0, r6
+    bne     command_out
+    ldrh.w  r0, [r3, #15]               @ height
+    lsls    r6, r0, #21
+    orr.w   r6, r6, r5, lsl #10
+    adds    r6, #1                      @ lv_img_header_t: raw, width, height
+    str     r6, [r4, #48]
+    ldrh.w  r0, [r3, #9]
+    strh    r0, [r4, #44]               @ x
+    ldrh.w  r0, [r3, #11]
+    strh    r0, [r4, #46]               @ y
+    movs    r6, #1
+command_take:
+    strb.w  r6, [r4, #41]
+    str     r1, [r4, #16]
+    ldrh.w  r0, [r3, #7]                @ sum16
+    str     r0, [r4, #28]
     movs    r0, #0
-    str     r0, [r4, #16]
     str     r0, [r4, #20]
-    str     r3, [r4, #24]
+    str     r0, [r4, #24]
+    ldrb    r1, [r4, #2]
+    ldrb    r2, [r4, #3]
+    movs    r0, #1                      @ into the first buffer that neither picture shows
+command_pick:
+    cmp     r0, r1
+    beq     command_skip
+    cmp     r0, r2
+    bne     command_picked
+command_skip:
+    adds    r0, #1
+    b       command_pick
+command_picked:
+    strb.w  r0, [r4, #40]
     movw    r0, #{TICKS & 0xFFFF}
     movt    r0, #{TICKS >> 16}
     ldr     r0, [r0]
-    str     r0, [r4, #28]
+    str     r0, [r4, #32]
     movs    r0, #1
     strb    r0, [r4, #0]
     movs    r2, #{GO}
@@ -270,27 +426,26 @@ usb_hook:                               @ r4 = the packet, r1 = where its length
     movw    r3, #{TICKS & 0xFFFF}
     movt    r3, #{TICKS >> 16}
     ldr     r3, [r3]
-    ldr     r5, [r2, #28]
+    ldr     r5, [r2, #32]
     subs    r3, r3, r5
     cmp.w   r3, #{TIMEOUT_MS}
     bhi     usb_expired
     ldrb    r0, [r1]                    @ bytes in this packet
-    ldr     r3, [r2, #12]
-    ldr     r5, [r2, #16]
+    ldr     r3, [r2, #16]
+    ldr     r5, [r2, #20]
     subs    r3, r3, r5
     cmp     r0, r3
     it      hi
     movhi   r0, r3                      @ no more than the frame still needs
-    ldrb    r3, [r2, #2]
-    eor     r3, r3, #1
-    add.w   r3, r2, r3, lsl #2
-    ldr     r3, [r3, #4]                @ the buffer that is not on screen
+    ldrb.w  r3, [r2, #40]
+    ldr.w   r3, [r2, r3, lsl #2]        @ the buffer being filled: one that neither picture shows
     adds    r3, #16
     add     r3, r5
     add     r5, r0
-    str     r5, [r2, #16]
-    ldr     r5, [r2, #20]
-    cbz     r0, usb_copied
+    str     r5, [r2, #20]
+    ldr     r5, [r2, #24]
+    cmp     r0, #0
+    beq     usb_copied
 usb_copy:
     ldrb    r7, [r4], #1
     strb    r7, [r3], #1
@@ -298,12 +453,12 @@ usb_copy:
     subs    r0, #1
     bne     usb_copy
 usb_copied:
-    str     r5, [r2, #20]
-    ldr     r0, [r2, #16]
-    ldr     r3, [r2, #12]
+    str     r5, [r2, #24]
+    ldr     r0, [r2, #20]
+    ldr     r3, [r2, #16]
     cmp     r0, r3
     bne     usb_arm
-    ldr     r0, [r2, #24]
+    ldr     r0, [r2, #28]
     uxth    r5, r5
     movs    r3, #2
     cmp     r0, r5

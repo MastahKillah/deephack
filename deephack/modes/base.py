@@ -11,6 +11,7 @@ description and keep `active` up to date in `frame()`; the Auto mode gives them 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cached_property
 
 from PIL import Image
 
@@ -21,6 +22,35 @@ class Animation:
     with the direct drawing firmware stores none: the engine draws each frame when it is due.)"""
     frames: list[Image.Image]
     duration_ms: int               # length of one loop
+
+
+@dataclass(frozen=True, eq=False)
+class Part:
+    """A picture of which only one rectangle changed since the last one: a video on a page that stands still.
+
+    `page` is the picture without it, and **the same object for as long as it is the same page**; `picture`
+    is what lies on it at `at` (x, y). A cooler whose direct drawing patch can do it (version 3) is sent the
+    page once and after that only the pictures, which are a fraction of the bytes; the window, and every
+    other cooler, get `whole`. One rectangle at a time: a picture somewhere else takes the last one's place,
+    and where that was the page shows again.
+
+    The picture's width and height must be multiples of 16 and it must lie inside the screen (`fits`): the
+    cooler's JPEG decoder writes whole blocks. One that does not fit is sent whole."""
+    page: Image.Image
+    picture: Image.Image
+    at: tuple[int, int]
+
+    @cached_property
+    def whole(self) -> Image.Image:
+        out = self.page.copy()
+        out.paste(self.picture, self.at)
+        return out
+
+    @property
+    def fits(self) -> bool:
+        (x, y), (width, height) = self.at, self.picture.size
+        return (width > 0 and height > 0 and width % 16 == 0 and height % 16 == 0
+                and x >= 0 and y >= 0 and x + width <= self.page.width and y + height <= self.page.height)
 
 
 @dataclass

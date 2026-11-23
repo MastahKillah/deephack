@@ -29,7 +29,7 @@ from .. import highlights, render
 from ..config import config_dir
 from ..render import H, W
 from . import video
-from .base import Mode, Setting
+from .base import Mode, Part, Setting
 
 API = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/"
 LOGO_HOST_SUFFIX = ".espncdn.com"
@@ -42,6 +42,8 @@ REEL_HOURS = 24          # hours after tip-off in which a game's highlights are 
 LOOK_EVERY = 600.0       # seconds between two looks for them: they come half an hour to an hour after the final,
                          # and YouTube's search does not find them every time
 REEL_TOP, REEL_SIZE = 176, (W, 270)       # where the video is on its page: the whole width, as wide pictures are
+REEL_PART = 288          # rows of the page that change while it plays: the video and the line under it. A multiple
+                         # of 16, so that a cooler that can is sent these rows only (base.Part)
 
 TEAMS = (
     ("ATL", "Atlanta Hawks"), ("BOS", "Boston Celtics"), ("BKN", "Brooklyn Nets"), ("CHA", "Charlotte Hornets"),
@@ -368,16 +370,17 @@ def render_reel(team: str, game: Game) -> Image.Image:
     return img.convert("RGB")
 
 
-def draw_reel(page: Image.Image, frame, at: float, length: float) -> Image.Image:
-    """The page with a frame of the video on it, and a line under it for how far the video is."""
-    out = page.copy()
-    out.paste(video.picture(frame, "fit", REEL_SIZE), (0, REEL_TOP))
+def draw_reel(page: Image.Image, frame, at: float, length: float) -> Part:
+    """The page with a frame of the video on it, and a line under it for how far the video is: as the
+    rows of the page that this changes, which is all a cooler with the newest patch is sent."""
+    out = page.crop((0, REEL_TOP, W, REEL_TOP + REEL_PART))
+    out.paste(video.picture(frame, "fit", REEL_SIZE), (0, 0))
     if length > 0:
-        y = REEL_TOP + REEL_SIZE[1] + 6
+        y = REEL_SIZE[1] + 6
         d = ImageDraw.Draw(out)
         d.rectangle([20, y, W - 20, y + 3], fill=(60, 66, 88))
         d.rectangle([20, y, 20 + (W - 40) * min(1.0, max(0.0, at / length)), y + 3], fill=ORANGE)
-    return out
+    return Part(page, out, (0, REEL_TOP))
 
 
 class Nba(Mode):
@@ -535,7 +538,7 @@ class Nba(Mode):
         self._reel_of, self._reel_over, self._reel_seq = (key, render_reel(team, game)), False, 0
         return True
 
-    def _reel_frame(self) -> Image.Image | None:
+    def _reel_frame(self) -> Part | None:
         """The highlights' next picture, when there is one. Ends them when the video has."""
         reel = self._reel
         if self._reel_over or reel.state == "failed":

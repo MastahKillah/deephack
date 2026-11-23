@@ -10,6 +10,7 @@ import pytest
 from deephack import highlights
 from deephack.highlights import Seen, judge, pick
 from deephack.modes import nba, video
+from deephack.modes.base import Part
 from deephack.musicvideo import Candidate
 
 AWAY, HOME, DAY = "Boston Celtics", "Golden State Warriors", date(2026, 11, 22)
@@ -160,8 +161,13 @@ def test_the_last_games_highlights_play_once_and_then_the_scores_are_back(tmp_pa
         await steps(mode, 2)
         assert video.LEAST_QUALITY <= mode.quality < video.QUALITY           # less sharp, and not fewer pictures
         assert mode.status.startswith("Highlights: BOS at GS · 0:00 of 9:52") and mode.active       # Auto keeps it on screen
-        page = pictures[-1]
+        last = pictures[-1]
+        assert isinstance(last, Part) and last.fits and last.at == (0, nba.REEL_TOP)       # only the video's rows change:
+        assert last.picture.size == (480, nba.REEL_PART) and all(p.page is last.page for p in pictures)     # one page
+        assert nba.REEL_TOP + nba.REEL_PART <= 468                           # (the points per period begin below them)
+        page = last.whole
         middle = (240, nba.REEL_TOP + nba.REEL_SIZE[1] // 2)
+        assert last.page.getpixel(middle) == (0, 0, 0)                       # the page by itself has a hole there
         assert page.size == (480, 640) and page.getpixel(middle) != scores.getpixel(middle)          # the video, in the middle
         assert page.getpixel((240, 20)) != (0, 0, 0) and page.getpixel((240, 620)) != (0, 0, 0)      # with the score round it
         assert page.getpixel((104, 544)) != page.getpixel((104, 520))        # the points per period, which the feed's

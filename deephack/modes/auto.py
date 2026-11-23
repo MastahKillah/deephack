@@ -22,7 +22,7 @@ import traceback
 from PIL import Image
 
 from .agenda import Calendar
-from .base import Animation, Mode, Setting, parse_order
+from .base import Animation, Mode, Part, Setting, parse_order
 from .claude_usage import ClaudeUsage
 from .countdown import Countdown
 from .live import Live
@@ -135,9 +135,10 @@ class Auto(Mode):
         if (self.chosen, number) == self._sent and not fading:
             return None
         self._sent = (self.chosen, number)
-        img = self._faded(img, now)
+        part = img if isinstance(img, Part) else None
+        img = self._faded(part.whole if part else img, now)
         self._showing = self.chosen
-        return img
+        return part if part is not None and self._fade is None else img     # (a fade is of whole pictures)
 
     async def close(self) -> None:
         for child in self.children.values():
