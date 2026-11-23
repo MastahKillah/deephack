@@ -5,6 +5,12 @@ few minutes (never play by play: every redraw is a write to the cooler's flash).
 
 Data and logos come from ESPN's public (undocumented) scoreboard feed. Logos are downloaded on first use
 and cached in %APPDATA%\\deephack\\cache\\nba; nothing is bundled with the app.
+
+**Highlights** (a setting, off unless switched on; needs the direct drawing firmware). When the picked
+team's game is over, its highlights are looked for on YouTube (highlights.py: both teams and the day in
+the title, or none), every ten minutes until they are there, and played once, between the final score
+above and the points per quarter below. Then the scores are back. The "Highlights" button plays the
+last game's again, or ends them.
 """
 from __future__ import annotations
 
@@ -15,13 +21,14 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from PIL import Image, ImageDraw
 
-from .. import render
+from .. import highlights, render
 from ..config import config_dir
 from ..render import H, W
+from . import video
 from .base import Mode, Setting
 
 API = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/"
@@ -29,6 +36,12 @@ LOGO_HOST_SUFFIX = ".espncdn.com"
 RETRY_SECONDS = 120
 SEARCH_DAYS = 5          # league view: how far to look back / ahead for two games each
 GAME_HOURS = 2.5         # roughly how long a game lasts, tip-off to final
+# Highlights
+REEL_HOURS = 24          # hours after tip-off in which a game's highlights are played by themselves (a game
+                         # in the American evening is over at breakfast in Europe, and seen after work)
+LOOK_EVERY = 600.0       # seconds between two looks for them: they come half an hour to an hour after the final,
+                         # and YouTube's search does not find them every time
+REEL_TOP, REEL_SIZE = 176, (W, 270)       # where the video is on its page: the whole width, as wide pictures are
 
 TEAMS = (
     ("ATL", "Atlanta Hawks"), ("BOS", "Boston Celtics"), ("BKN", "Brooklyn Nets"), ("CHA", "Charlotte Hornets"),
@@ -157,6 +170,15 @@ def fetch_live(team: str, game: Game) -> Game | None:
             if g and team in (g.away.abbr, g.home.abbr) and abs((g.when - game.when).total_seconds()) < 12 * 3600:
                 return g
     return None
+
+
+def played_on(game: Game) -> date:
+    """The day a game was played, as it is counted in the United States (and written in a video's title)."""
+    return (game.when.astimezone(timezone.utc) - timedelta(hours=5)).date()
+
+
+def reel_key(game: Game) -> str:
+    return f"{played_on(game)}:{game.away.abbr}@{game.home.abbr}"
 
 
 # ------------------------------------------------------------------ logos
@@ -319,6 +341,45 @@ def render_live(team: str, game: Game) -> Image.Image:
     return img.convert("RGB")
 
 
+def render_reel(team: str, game: Game) -> Image.Image:
+    """The page a finished game's highlights play on: the teams and the final score above, room for the
+    video in the middle, the points per period below (as on the scoreboard)."""
+    board = render_live(team, game)
+    ours = game.away if game.away.abbr == team else game.home
+    tint = _rgb(ours.color, BG_TOP)
+    img = render.vertical_gradient(tuple(round(c * 0.45 + b * 0.55) for c, b in zip(tint, BG_TOP)), BG_BOTTOM).convert("RGBA")
+    img.paste(board.crop((0, 468, W, H)), (0, 468))
+    d = ImageDraw.Draw(img)
+    f = render.font
+    a, h = _points(game.away.score), _points(game.home.score)
+    for side, cx, behind in ((game.away, 60, a < h), (game.home, W - 60, h < a)):
+        mark = logo(side, 76)
+        if mark is not None:
+            img.alpha_composite(mark, (cx - mark.width // 2, 22 + (76 - mark.height) // 2))
+            d = ImageDraw.Draw(img)
+        else:
+            d.ellipse([cx - 34, 26, cx + 34, 94], fill=(60, 68, 96))
+        d.text((cx, 108), side.abbr, font=f(render.BOLD, 22), fill=TEXT, anchor="ma")
+        d.text((W / 2 + (-62 if side is game.away else 62), 62), side.score or "0", font=f(render.BOLD, 46),
+               fill=DIM if behind else TEXT, anchor="mm")
+    d.text((W / 2, 58), "–", font=f(render.LIGHT, 36), fill=DIM, anchor="mm")
+    d.text((W / 2, 118), f"{game.detail or 'Final'} · highlights".upper(), font=f(render.BOLD, 15), fill=MUTED, anchor="mm")
+    d.rectangle([0, REEL_TOP, W, REEL_TOP + REEL_SIZE[1] - 1], fill=(0, 0, 0))
+    return img.convert("RGB")
+
+
+def draw_reel(page: Image.Image, frame, at: float, length: float) -> Image.Image:
+    """The page with a frame of the video on it, and a line under it for how far the video is."""
+    out = page.copy()
+    out.paste(video.picture(frame, "fit", REEL_SIZE), (0, REEL_TOP))
+    if length > 0:
+        y = REEL_TOP + REEL_SIZE[1] + 6
+        d = ImageDraw.Draw(out)
+        d.rectangle([20, y, W - 20, y + 3], fill=(60, 66, 88))
+        d.rectangle([20, y, 20 + (W - 40) * min(1.0, max(0.0, at / length)), y + 3], fill=ORANGE)
+    return out
+
+
 class Nba(Mode):
     id = "nba"
     title = "NBA"
@@ -334,7 +395,18 @@ class Nba(Mode):
                  ("10", "Scoreboard, every 10 minutes"), ("off", "Keep this view")),
                 hint="With a team picked, its games in progress show as a big scoreboard. "
                      "Each update is a write to the cooler's flash."),
+        Setting("highlights", "After your team's game", "choice", "off",
+                (("off", "The score"), ("play", "Its highlights, once, when YouTube has them")), live=True,
+                hint="Looked for every ten minutes after the final: a video that names both teams and the day, the "
+                     "whole game's if there is one, from the NBA or another channel YouTube has verified. Then the "
+                     "scores again. The Highlights button plays the last game's any time, or ends them. Needs the "
+                     "direct drawing firmware."),
+        video.SOUND,
+        Setting("highlights_key", "Key for the highlights", "shortcut", "", action="highlights",
+                hint="Plays the last game's highlights, or ends them: whatever window is in front, while the NBA is "
+                     "on the cooler. Empty: no key."),
     )
+    actions = (("highlights", "Highlights"),)
 
     def __init__(self, values=None):
         super().__init__(values)
@@ -342,6 +414,18 @@ class Nba(Mode):
         self._shown = None
         self._games: tuple[list[Game], list[Game], Game | None] | None = None
         self.placeholder = ("NBA", "Fetching games…")
+        # highlights:
+        self._seen = highlights.Seen(config_dir() / "nba-highlights.json")
+        self._find, self._make_player, self._details = highlights.find, video.Player, fetch_live
+        self._reel = None                                  # the video's player, while highlights play
+        self._reel_of: tuple[str, Image.Image] | None = None       # (which game's, the page they play on)
+        self._reel_over = False                            # the video ended (said by its player, in its thread)
+        self._reel_seq = 0                                 # the frame shown last
+        self._looking: asyncio.Future | None = None        # the search, while it runs
+        self._next_look = 0.0                              # when the next one may begin
+        self._asked = False                                # the button: play them now, whatever the setting says
+        self._note, self._note_until = "", 0.0             # what the status line says about them, and how long
+        self._said = ""                                    # the status line without it
 
     @property
     def live_minutes(self) -> int | None:
@@ -371,8 +455,121 @@ class Nba(Mode):
             soon = [s for s in starts if 0 < s < refresh]
             self._next = now + (min(soon) + 30 if soon else refresh)
 
+    # ------------------------------------------------------------ highlights
+    def act(self, action: str) -> None:
+        if action == "highlights":
+            if self._reel is not None:                     # playing: that is enough of them
+                self._reel_over = True
+            else:
+                self._asked, self._next_look, self._note = True, 0.0, ""
+
+    def _tell(self, note: str) -> None:
+        """Say something about the highlights at the end of the status line, until the next look and a bit."""
+        self._note, self._note_until = note, time.monotonic() + LOOK_EVERY + 30
+
+    def _noted(self) -> str:
+        return self._note if time.monotonic() < self._note_until else ""
+
+    def _last_game(self) -> Game | None:
+        """The picked team's last finished game."""
+        team = self.values["team"]
+        if team == "all" or self._games is None:
+            return None
+        return next((g for g in reversed(self._games[0]) if team in (g.away.abbr, g.home.abbr)), None)
+
+    def _end_reel(self, played: bool) -> None:
+        reel, self._reel = self._reel, None
+        if reel is not None:
+            reel.stop()
+            if played and self._reel_of:
+                self._seen.put(self._reel_of[0], played=True)
+        self._reel_of, self._reel_over, self._asked = None, False, False
+        self._shown, self._next = None, 0.0                # the scores again, at once
+
+    def _reel_ended(self) -> None:                         # (in the player's thread)
+        self._reel_over = True
+
+    async def _highlights(self) -> bool:
+        """Look for the last game's highlights when they are due, and start them. True while they play."""
+        game = self._last_game()
+        if game is None or not self.direct:
+            if self._reel is not None:
+                self._end_reel(False)
+            self._asked = False
+            return False
+        key, kept = reel_key(game), self._seen.get(reel_key(game))
+        if self._reel is not None:
+            return True
+        recent = datetime.now().astimezone() - game.when <= timedelta(hours=REEL_HOURS)
+        if not (self._asked or self.values["highlights"] == "play" and recent and not kept.get("played")):
+            return False
+        link, now = kept.get("link"), time.monotonic()
+        if not link:
+            if self._looking is not None and self._looking.done():
+                looking, self._looking = self._looking, None
+                self._next_look = now + LOOK_EVERY
+                try:
+                    found = looking.result()
+                except Exception:                          # noqa: BLE001  (no net: later)
+                    found = None
+                if found is not None:
+                    link = found.link
+                    self._seen.put(key, link=link)
+                else:
+                    self._asked = False
+                    self._tell(" · no highlights on YouTube yet")
+            elif self._looking is None and now >= self._next_look:
+                self._tell(" · looking for the highlights")
+                self._looking = asyncio.ensure_future(asyncio.to_thread(
+                    self._find, TEAM_NAMES.get(game.away.abbr, game.away.abbr), TEAM_NAMES.get(game.home.abbr, game.home.abbr),
+                    played_on(game)))
+        if not link:
+            return False
+        self._note = ""
+        team = self.values["team"]
+        try:                                               # the scoreboard knows the points per period; the
+            game = await asyncio.to_thread(self._details, team, game) or game        # team's list of games does not
+        except (OSError, ValueError):
+            pass
+        self._reel = self._make_player(link, on_end=self._reel_ended)
+        self._reel_of, self._reel_over, self._reel_seq = (key, render_reel(team, game)), False, 0
+        return True
+
+    def _reel_frame(self) -> Image.Image | None:
+        """The highlights' next picture, when there is one. Ends them when the video has."""
+        reel = self._reel
+        if self._reel_over or reel.state == "failed":
+            if not self._reel_over:                        # it will not play: forget which video it was, and look
+                self._seen.put(self._reel_of[0], link="")  # again later (not at once: it would fail over and over)
+                self._next_look = time.monotonic() + LOOK_EVERY
+                self._tell(" · the highlights would not play")
+            self._end_reel(played=self._reel_over)
+            return None
+        try:
+            level = min(100, max(0, int(self.values.get("sound") or 0))) / 100
+        except ValueError:
+            level = 0.0
+        reel.set_sound(bool(level) and self.audible)
+        reel.volume = level
+        reel.ask()
+        seq, frame = reel.latest()
+        game = self._last_game()
+        self.status = (f"Highlights: {game.away.abbr} at {game.home.abbr}" if game else "Highlights") + (
+            f" · {video.clock_text(reel.position)} of {video.clock_text(reel.duration)}" if reel.duration else " · opening…")
+        if frame is None or seq == self._reel_seq:
+            return None
+        self._reel_seq = seq
+        return draw_reel(self._reel_of[1], frame, reel.position, reel.duration)
+
+    async def close(self) -> None:
+        if self._reel is not None:
+            self._reel.stop()
+
     def claiming(self, now: datetime | None = None) -> bool:
-        """For Auto: from an hour before the picked team's tip-off until about an hour after the final."""
+        """For Auto: from an hour before the picked team's tip-off until about an hour after the final, and
+        while its highlights play."""
+        if self._reel is not None:
+            return True
         if self.values["team"] == "all" or self._games is None:
             return False
         past, upcoming, live = self._games
@@ -383,12 +580,19 @@ class Nba(Mode):
 
     async def frame(self):
         self.active = self.claiming()
+        if await self._highlights():
+            self.tick = video.TICK                         # as sharp as the cooler can take in the video's time
+            self.quality = video.quality_for(self.quality or video.QUALITY, self.sent_bytes, self._reel.rate)
+            return self._reel_frame()
+        self.tick, self.quality = None, None
+        if self._said:                                     # (the scores are fetched now and then; what is said
+            self.status = self._said + self._noted()       # about the highlights changes in between)
         if time.monotonic() < self._next:
             return None
         try:
             past, upcoming, live, image = await asyncio.to_thread(self._load)
         except (OSError, ValueError) as e:
-            self.status = f"Score feed unreachable ({type(e).__name__})"
+            self.status, self._said = f"Score feed unreachable ({type(e).__name__})", ""
             self._next = time.monotonic() + RETRY_SECONDS
             return None
         self._schedule(upcoming, live)
@@ -396,13 +600,15 @@ class Nba(Mode):
         self.active = self.claiming()
         if live is not None:
             self.status = f"LIVE {live.away.abbr} {live.away.score or 0} – {live.home.score or 0} {live.home.abbr} · {live_label(live)}"
+            self._said = ""
             if ("live", live) == self._shown:
                 return None
             self._shown = ("live", live)
             return image
         nxt = upcoming[0] if upcoming else None
-        self.status = (f"Next: {nxt.away.abbr} @ {nxt.home.abbr}, {_day_label(nxt.when).lower()} {nxt.when:%H:%M}" if nxt
-                       else "No upcoming games")
+        self._said = (f"Next: {nxt.away.abbr} @ {nxt.home.abbr}, {_day_label(nxt.when).lower()} {nxt.when:%H:%M}" if nxt
+                      else "No upcoming games")
+        self.status = self._said + self._noted()
         key = (self.values["team"], tuple(past), tuple(upcoming), datetime.now().date())   # the date: "Today" labels roll over
         if key == self._shown:
             return None
