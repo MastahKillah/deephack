@@ -384,8 +384,12 @@ def test_the_pet_names_the_song_only_when_pictures_cost_nothing(monkeypatch):
     assert asyncio.run(stored.frame()) is None
 
 
-def test_playback_says_what_plays():
-    from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status
+def test_playback_says_what_plays(monkeypatch):
+    import sys
+
+    Status = SimpleNamespace(PLAYING="playing", PAUSED="paused")                       # Windows' own is not asked: no test
+    monkeypatch.setitem(sys.modules, "winrt.windows.media.control", SimpleNamespace(  # should need a media player
+        GlobalSystemMediaTransportControlsSessionManager=None, GlobalSystemMediaTransportControlsSessionPlaybackStatus=Status))
 
     class Session:
         status, props = Status.PLAYING, SimpleNamespace(title=" Numb ", artist="Linkin Park")

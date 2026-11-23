@@ -125,7 +125,8 @@ def test_a_drawn_scene_of_a_real_city_moves_like_any_other():
     mode = scene.Scene({"weather": "snow", "time": "night", "skyline": "chisinau"})
     mode.direct = True
     first = asyncio.run(mode.frame())
-    assert first is not None and first.size == (480, 640) and mode.tick == scene.WEATHER_TICK
+    assert first is not None and first.size == (480, 640)
+    assert mode.tick in (scene.WEATHER_TICK, scene.FAST_TICK)                              # faster while a car is passing
     other = scene.Scene({"weather": "snow", "time": "night", "skyline": "anywhere"})
     other.direct = True
     assert asyncio.run(other.frame()).tobytes() != first.tobytes()
