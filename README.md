@@ -169,7 +169,8 @@ To build the app on your own PC: `pip install -e .[package]`, then
 ## Protocol
 
 Reverse engineered from the official app (v1.2.15, Electron) by attaching to its debug port and logging
-its USB transfers; the tooling is in [`tools/`](tools). Tested against one device. It came with firmware
+its USB transfers; the tooling is in [`tools/`](tools). How it was done, from the first logged transfer to
+the patched firmware, is told in short in [docs/reversing.md](docs/reversing.md). Tested against one device. It came with firmware
 2.71 (USB `bcdDevice` `0x0247`: the low byte is the minor version as a number, 0x47 = 71) and has since
 been downgraded to 2.70, the only version DeepCool gives out; the protocol is the same on both.
 
