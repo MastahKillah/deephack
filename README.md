@@ -303,6 +303,13 @@ Claude Pet (a frame of 15 to 19 KB whenever it moves: four a second for 2 % of o
 twenty-six a second while it dances for 8 %) and for the Visualizer, which gets twenty-six a second (the spectrum 20 to 37 KB each, drawn and encoded in a millisecond; 9 % of one CPU core, half of it the USB traffic).
 A picture over the firmware's 128 KiB is sent at a lower JPEG quality.
 
+**A part of the picture** (version 3 of the patch): when only one rectangle of a picture changes, a video
+on a page that stands still, the page is sent once and after that only the rectangle, a JPEG of its
+own that the cooler puts in its place. The NBA mode's highlights are 21 KB a frame that way where the
+whole page was 29, and sharper for it. The cooler shows a picture every 36 ms and no faster, however
+small it is: about 27 a second is its ceiling, and what a part buys is reaching that. A cooler with an
+older version of the patch gets whole pictures; Settings says when a newer one can be put on.
+
 Two things the engine works around, both seen on the cooler:
 
 - To get a stored picture back after drawing, `08` (show) is not enough for the slot that is already
