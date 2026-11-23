@@ -436,12 +436,16 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   A window in which nothing moves: one picture, and then next to none (one more in ten seconds); the
   first picture after it moved again was on the cooler within 0.15 s. Minimised and closed are said on
   the cooler, and the window is shown again when it is back.
-  **Not seen:** a part of the screen with something moving in it. The PC was locked during all of this
-  (nobody at it), and a locked PC's screen is one standing dark picture to every program, deephack
-  included; windows are drawn all the same, which is why they could be measured. The part's code is
-  the same but for the one call. Choosing the part with a real mouse was not tried either, for the
-  same reason, and the camera that watches the cooler was not connected: what the cooler showed was
-  checked by the pictures that were sent to it, not by looking at it.
+  The PC was locked during all of this (nobody at it), and a locked PC's screen is one standing dark
+  picture to every program, deephack included; windows are drawn all the same, which is why they could
+  be measured. The camera that watches the cooler was not connected: what the cooler showed was
+  checked by the pictures that were sent to it. **A part of the screen** was tried by its owner the
+  day after (23 Nov 2026), dragged out with the mouse on a 4K screen scaled to 125 %, with something
+  moving in it: it showed on the cooler as it should. Not measured for a part: pictures a second and
+  the delay. Not tried: two screens with different scaling.
+- **The Christmas look of Countdown** (23 Nov 2026): on the cooler, snow and lights, the whole app took
+  7 % of one CPU core (seen from outside the running app, over 20 s; its pictures a second were not
+  counted, the mode asks for ten). Drawing one picture takes 1.6 ms.
 - **Sound with the picture** (Video and TikTok, 22 Nov 2026; the sound comes from the PC, the cooler only
   shows). The picture goes by what the PC's sound output says it has played, and is chosen 120 ms ahead
   of it (`LEAD` in `deephack/modes/video.py`). Measured at the moment the cooler had taken a frame: the
