@@ -231,9 +231,10 @@ operations: confirm SWD access → dump → understand update verification → o
 to `captures/`, which is not in the repository). **It runs in the emulator, and since 19 Nov 2026 on the
 cooler** (see "On the cooler" below).
 
-It appends 792 bytes of code after the image and changes twenty bytes of it: five 4-byte jumps. (This
-is version 3, which can also draw a part of the picture: see "Version 3" below. It is on the cooler
-since 23 Nov 2026. Version 2, 504 bytes, was on it from 20 Nov 2026 and is what the rest of this
+It appends 1044 bytes of code and a picture of 10 780 after the image and changes twenty bytes of it: five
+4-byte jumps. (This is version 5: see "Version 3" for drawing a part of the picture and "Versions 4 and
+5" for reading memory and the start screen. Version 3, 792 bytes, was on the cooler on 23 Nov 2026, and
+version 4 after it the same day. Version 2, 504 bytes, was on it from 20 Nov 2026 and is what the rest of this
 section describes. Version 1, which the cooler ran from 19 Nov 2026, was 472 bytes and four jumps: it had no
 hook in `lv_task_handler` and reported no version.) The app carries it as a table of those bytes,
 `deephack/firmware_patch.py`, written by `python tools/fw/patch.py --table`; a test compares the two.
@@ -255,6 +256,8 @@ to 64 bytes. The reply's status byte says what to do:
 | `11` | not now: the last frame is not on screen yet, or the buffers are still being made. Ask again |
 | `12` | refused: size 0 or more than 128 KiB |
 | `13` | version 3, for a part of the picture: no page of ours is under it. Draw the page first |
+
+Command `21` (version 4) reads memory: see "Versions 4 and 5".
 | `00` | what the **stock** firmware answers to every command it does not know. `deephack.device` takes it for "no direct drawing here" and sends no picture data (data without an upload in progress would be left in the endpoint's buffer, and the endpoint would stay shut) |
 
 The byte after the status is the **version of the patch** (2 now; version 1 leaves it 0). A command
@@ -394,6 +397,53 @@ blocks.
 In the app: a mode returns `modes.base.Part(page, picture, at)` for a picture of which one rectangle
 changed. The engine sends the page once and then the parts, to a cooler whose patch says 3; any other
 cooler gets whole pictures as before. The NBA mode's highlights are the first to use it.
+
+#### Versions 4 and 5: reading memory, the bootloader, and our own start screen
+
+**Version 4** (on the cooler 23 Nov 2026, 908 bytes) adds command `21`: `AA 2E 21 <address:u32>
+<count:u8>`, and the reply carries up to 39 bytes of the cooler's memory from there. It only reads.
+`tools/fw/dump.py` uses it. It was made for one thing: the bootloader, which is in no file.
+
+**The bootloader** (`captures/bootloader.bin`, 0 to `0xE000`, of which `0x6160` are used; read twice
+in 0.9 s). It says what it does on a debug port: "Deep Cool bootloader start", "Check if FW_update.bin
+is existed.", "File size", "Uninstall APP", "Install APP", "Reboot". Read off its code, not seen running:
+
+- At every start it mounts the SD card and looks for `SD:FW_update.bin`. Without one it jumps to the
+  firmware at `0xE000`.
+- With one: if there is no `SD:FW_Backups.bin` yet and there is an `SD:FW_APP.bin`, that is copied to
+  it. Then the install routine (`0x658`):
+  - **it erases the firmware's whole area, 4 KiB at a time from `0xE000` to `0x7FFFF`**, whatever the
+    file's size;
+  - **it reads the file 4 KiB at a time** (into a buffer filled with `FF`) **and writes each piece**, from
+    `0xE000` on, until the file ends or the piece at `0x7F000` is written. There is no check of the
+    size and none of the content: a file longer than `0x72000` bytes (466 944) loses its end.
+- After a good install the file is copied to `FW_APP.bin` and `FW_Backups.bin` and **only then
+  deleted**: a start that is cut short finds it again and installs it again. If the file cannot be
+  opened, `FW_Backups.bin` is installed instead.
+- So the chip's flash is 512 KiB, the firmware's area is all of it above the bootloader, and DeepCool's
+  image leaves 15 848 bytes of it free.
+
+**Version 5: the start screen.** While it starts the cooler shows DeepCool's logo for four seconds
+(screen `01`, see "Screens"): pictures from `ui.bin` on the serial flash, which nothing reaches. The
+patch puts a picture of its own over them. Seen in the emulator:
+
+- The main loop comes round for the first time about a second after the start, with the "ready" byte
+  (`0x200051A8`) still 0 and **nothing drawn yet**: LVGL only draws from `lv_task_handler`.
+- The start screen is an LVGL object whose address is at `0x20000994` then; its children are the four
+  logo pictures and two labels.
+- So on its first call the patch copies its JPEG from the flash into RAM (where the decoder is known to
+  read), makes an `lv_img` as the start screen's child and gives it the JPEG. It covers the screen, LVGL
+  starts its redraw at the topmost object that covers the area, and the pictures under it are never
+  decoded. The emulated screen shows our picture from the first redraw, decoded once into the frame
+  buffer, and the firmware goes on as before after its four seconds.
+
+The picture is `tools/fw/logo.jpg`, drawn by `tools/fw/logo.py`: 480 x 640, 10 780 bytes. It is that
+small because its JPEG has **Huffman tables made for it** (Pillow's `optimize`), not the standard ones
+DeepCool's app and deephack send. **The cooler's decoder takes those** (23 Nov 2026, drawn on the cooler
+with command `20` and photographed: the same picture, 11.6 KB against 14.5; a busy picture 33.1 KB
+against 34.8). The firmware reads the tables from the file and programs the decoder with them, so this
+was to be expected, but the emulator's model could not show it. It would make every frame the app draws
+smaller too: a fifth for pictures with flat areas, a twentieth for busy ones.
 
 What the emulator run shows for whole pictures (`tests/test_direct_draw.py`): three frames in a row are on the emulated LCD,
 decoded alternately from the two buffers, with still one file on the card; a wrong sum and a stalled

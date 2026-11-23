@@ -124,11 +124,16 @@ def cooler(stock_image, tmp_path_factory):
 def test_patch_only_adds_code_and_five_jumps(stock_image):
     patched = patch.build(stock_image)
     assert len(patch.HOOKS) == 5
-    assert patched[len(stock_image):] == patch.assemble(patch.APP + len(stock_image))[0]
+    code = patch.assemble(patch.APP + len(stock_image))[0]
+    assert patched[len(stock_image):] == code + patch.logo()              # the code, then the start screen's picture
     changed = [at for at in range(len(stock_image)) if patched[at] != stock_image[at]]
     hooks = {address - patch.APP + i for address, _, _ in patch.HOOKS for i in range(4)}
     assert changed and set(changed) <= hooks
-    assert len(patched) - len(stock_image) < 1024
+    assert len(code) < 2048
+    # The bootloader (read from the cooler) writes the file 4 KiB at a time from 0xE000 to the end of the
+    # flash at 0x80000 and stops there: a longer image would lose its end without a word.
+    assert patch.MOST == 0x80000 - patch.APP and len(patched) <= patch.MOST
+    assert device.jpeg_size(patch.logo()) == (480, 640) and patch.logo() == (ROOT / "tools" / "fw" / "logo.jpg").read_bytes()
 
 
 def test_patch_refuses_another_image(stock_image):
@@ -169,7 +174,7 @@ def test_frames_are_drawn_from_ram_without_a_file(cooler, tmp_path):
     now = state(cooler)
     assert now["shown"] == 3 and now["phase"] == 0 and not decoder.errors
     buffers = (now["first"], now["second"], now["third"])
-    assert all(buffers) and patch.STATE_SIZE == 60
+    assert all(buffers) and patch.STATE_SIZE == 64
     used = [next(b for b in buffers if b + 16 <= s < b + 16 + patch.MAX_FRAME) for s in sources]
     assert used[0] != used[1] and used[1] != used[2]          # never the buffer that is on screen
     assert on_card(cooler) == {f"img/000_{STORED_ID}/angle_0.jpg": cooler.stored}      # nothing was written
@@ -345,3 +350,35 @@ def test_stock_firmware_is_not_asked_for_its_memory_twice():
     cooler = bench.EmulatedCooler()
     with pytest.raises(RuntimeError, match="cannot be asked"):
         cooler.driver().peek(patch.APP, 8)
+
+
+def test_our_picture_is_on_the_start_screen(stock_image, tmp_path):
+    """Version 5. The cooler shows DeepCool's logo for four seconds when it starts, a picture from a file
+    nothing reaches. The patch puts its own over it before anything is drawn."""
+    from PIL import Image, ImageChops
+
+    machine = boot.Machine(patch.build(stock_image), None, flash=bench.fat.build({"ui.bin": bench.uibin.stock()}))
+    machine.sd.load(bench.fat.build({}, megabytes=64, cluster_sectors=8, label="COOLER"))
+    machine.block_budget = 0
+    main_hook = patch.assemble(patch.APP + len(stock_image))[1]["main_hook"]
+    logo = Image.open(io.BytesIO(patch.logo())).convert("RGB")
+
+    def differs() -> int:
+        boot.screenshot(machine, tmp_path / "start.png")
+        return max(high for _, high in ImageChops.difference(Image.open(tmp_path / "start.png").convert("RGB"), logo).getextrema())
+
+    while not machine.blocks[main_hook]:                                  # until the main loop comes round first
+        machine.run(blocks=20_000)
+        assert sum(machine.blocks.values()) < bench.BOOT_LIMIT and machine.stuck is None
+    assert not machine.jpeg.decoded                                       # nothing has been drawn before that
+    machine.run(blocks=200_000)
+    assert not machine.uc.mem_read(bench.READY, 1)[0]                     # the start screen is on,
+    assert differs() <= 7                                                 # and it is our picture, all of it
+    assert [(width, height) for _, width, height in machine.jpeg.decoded] == [(480, 640)] and not machine.jpeg.errors
+    assert machine.jpeg.decoded[0][0] in FRAME_BUFFERS                    # decoded straight into the frame buffer
+    while not machine.uc.mem_read(bench.READY, 1)[0]:
+        machine.run(blocks=250_000)
+        assert sum(machine.blocks.values()) < bench.BOOT_LIMIT and machine.stuck is None
+    machine.run(blocks=400_000)
+    assert differs() > 100 and machine.stuck is None                      # four seconds later the firmware goes on
+    assert len(machine.jpeg.decoded) == 1 and bytes(machine.uc.mem_read(patch.STATE + 60, 1)) == b"\x01"    # once

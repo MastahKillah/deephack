@@ -69,7 +69,19 @@ parts of the cooler that no file holds can be looked at: the bootloader below th
 lies after it. An address that is not memory stops the cooler until it is switched off and on:
 deephack.device.Mystique.peek keeps to the flash and the RAM.
 
-RAM: 60 bytes at 0x2000F000, above the firmware's stack (which starts at 0x2000B418); the emulated
+The start screen (version 5). While it starts the cooler shows DeepCool's logo for four seconds: a
+picture from a file on its serial flash, which nothing reaches over USB. The patch puts deephack's own
+over it: logo.jpg (made by logo.py), which lies after the patch's code in the image. The first time the
+main loop comes round, which is before LVGL has drawn anything, the JPEG is copied into RAM and given
+to a new picture that is the start screen's child and covers all of it; LVGL starts a redraw at the
+topmost object that covers the area, so DeepCool's pictures under it are not drawn at all.
+
+The image may not be longer than 0x72000 bytes (466 944): the bootloader, read from the cooler with
+command 21, erases the firmware's whole area up to the end of the chip's flash at 0x80000 and then
+writes the update file 4 KiB at a time until there, whatever its size. So patch and logo together have
+15 848 bytes.
+
+RAM: 64 bytes at 0x2000F000, above the firmware's stack (which starts at 0x2000B418); the emulated
 firmware never touches anything up there.
 """
 from __future__ import annotations
@@ -89,14 +101,15 @@ COMMAND = 0x20
 PEEK = 0x21                                 # read memory (version 4)
 PEEK_MOST = 39                              # bytes a reply carries
 GO, LATER, REFUSED, NO_PAGE = 0x10, 0x11, 0x12, 0x13
-VERSION = 4                                 # of this patch, in every reply to the command (see CHANGES)
+VERSION = 5                                 # of this patch, in every reply to the command (see CHANGES)
 CHANGES = {
     1: "the first: draws a JPEG from USB. Answers 0 where the version is now",
     2: "frames are also shown while lv_task_handler does not return (#22); the reply has the version",
     3: "a part of the picture can be drawn by itself, on top of the page that was drawn last (#47)",
     4: "a command that reads the cooler's memory, to look at its bootloader",
+    5: "deephack's own picture while the cooler starts, in place of DeepCool's logo",
 }
-STATE_SIZE = 60                             # bytes of the patch's RAM (see the layout above SOURCE)
+STATE_SIZE = 64                             # bytes of the patch's RAM (see the layout above SOURCE)
 TIMEOUT_MS = 2000
 
 # the stock firmware's own routines and data (real addresses, v2.70)
@@ -118,6 +131,10 @@ TICKS = 0x200071DC                          # milliseconds since start
 COMMAND_COPY = 0x20000674                   # the command being handled; its payload starts at +3
 REPLY = 0x200006A4                          # where the firmware builds its 48 byte answers
 SCREEN = 0x20000732                         # u16: the screen on show
+READY = 0x200051A8                          # u8: set when the start screen's four seconds are over
+START_SCREEN = 0x20000994                   # the start screen (an lv_obj), while it is on
+LOGO = Path(__file__).with_name("logo.jpg")  # what is shown on it: see logo.py
+MOST = 0x72000                              # bytes of image the bootloader writes: from 0xE000 to the flash's end
 WIDGET = 0x20001074                         # the image screen's picture (an lv_img)
 RXCR1 = 0x40009510                          # USB: endpoint 1 OUT control (4 flush, 8 ready)
 IMAGE_SCREEN = 0x90E
@@ -142,7 +159,10 @@ BRANCHES = {"b", "bl", "cbz", "cbnz"} | {"b" + c for c in "eq ne hs lo mi pl vs 
 #        +32 tick at start   +36 frames shown   +40 u8 the buffer being filled   +41 u8 1: it is a part
 #        +44 u16 x, +46 u16 y of the part   +48 its lv_img_header_t (which has its size)
 #        +52, +56 the same two words of the part before it: where the small picture is now
-SOURCE = f"""
+#        +60 u8 the start screen has been seen to (1)
+def source(logo_at: int, logo_size: int) -> str:
+    """The patch's code, for a logo of `logo_size` bytes at address `logo_at`."""
+    return f"""
 init_hook:
     movs    r1, #1
     strb    r1, [r0]                    @ what the call replaced
@@ -155,6 +175,53 @@ init_clear:
     str     r1, [r0, r2]
     bne     init_clear
     bx      lr
+
+logo:                                   @ r4 = state. Our picture over the start screen's, once
+    push    {{r4, r5, r6, lr}}
+    movs    r0, #1
+    strb.w  r0, [r4, #60]
+    movw    r0, #{READY & 0xFFFF}
+    movt    r0, #{READY >> 16}
+    ldrb    r0, [r0]
+    cmp     r0, #0
+    bne     logo_out                    @ the start screen is over already (not when this is first called)
+    movw    r6, #{START_SCREEN & 0xFFFF}
+    movt    r6, #{START_SCREEN >> 16}
+    ldr     r6, [r6]
+    cmp     r6, #0
+    beq     logo_out
+    movw    r0, #{(logo_size + 16) & 0xFFFF}
+    movt    r0, #{(logo_size + 16) >> 16}
+    bl      lv_mem_alloc
+    cmp     r0, #0
+    beq     logo_out
+    mov     r5, r0
+    movw    r0, #{HEADER & 0xFFFF}
+    movt    r0, #{HEADER >> 16}
+    str     r0, [r5, #0]                @ an lv_img_dsc_t as the stock loader makes it: raw, 480 x 640
+    movw    r3, #{logo_size & 0xFFFF}
+    movt    r3, #{logo_size >> 16}
+    str     r3, [r5, #4]
+    add.w   r1, r5, #16
+    str     r1, [r5, #8]
+    movs    r0, #0
+    str     r0, [r5, #12]
+    movw    r2, #{logo_at & 0xFFFF}
+    movt    r2, #{logo_at >> 16}
+logo_copy:                              @ the JPEG, from the flash into RAM: where the decoder is known to read
+    ldrb    r0, [r2], #1
+    strb    r0, [r1], #1
+    subs    r3, #1
+    bne     logo_copy
+    mov     r0, r6
+    movs    r1, #0
+    bl      lv_img_create               @ a child of the start screen, made last: on top of what is there
+    cmp     r0, #0
+    beq     logo_out
+    mov     r1, r5
+    bl      lv_img_set_src
+logo_out:
+    pop     {{r4, r5, r6, pc}}
 
 hide_part:                              @ r4 = state, r6 = the picture widget: the part goes, the page is whole
     push    {{r5, lr}}
@@ -176,6 +243,11 @@ show:                                   @ make the buffers when asked to, and sh
     push    {{r3, r4, r5, r6, r7, lr}}
     movw    r4, #{STATE & 0xFFFF}
     movt    r4, #{STATE >> 16}
+    ldrb.w  r0, [r4, #60]
+    cmp     r0, #0
+    bne     show_started
+    bl      logo
+show_started:
     ldrb    r0, [r4, #1]
     cmp     r0, #0
     beq     show_frame
@@ -574,11 +646,27 @@ def _branch_target(code: bytes) -> int:
     return 4 + offset - (s << 25)
 
 
+def logo() -> bytes:
+    """The start screen's picture: a JPEG the cooler can decode, as it lies in the image after the code."""
+    jpeg = LOGO.read_bytes()
+    if jpeg[:2] != b"\xff\xd8" or jpeg[-2:] != b"\xff\xd9":
+        raise ValueError(f"{LOGO.name} is not a JPEG")
+    return jpeg
+
+
 def assemble(base: int) -> tuple[bytes, dict[str, int]]:
-    """The patch's code for address `base`, and where its labels are."""
+    """The patch's code for address `base`, and where its labels are. (The logo lies after it: its address
+    depends on how long the code is, and the code has that address in it. Wherever it is, the code is as
+    long: so it is assembled for a made-up address first.)"""
+    size = len(logo())
+    length = len(_assemble(base, source(base, size))[0])
+    return _assemble(base, source(base + length, size))
+
+
+def _assemble(base: int, text: str) -> tuple[bytes, dict[str, int]]:
     ks = _assembler()
     code, labels = b"", {}
-    for routine in SOURCE.strip().split("\n\n"):        # one at a time: each starts with the label it is entered at
+    for routine in text.strip().split("\n\n"):          # one at a time: each starts with the label it is entered at
         prologue = "".join(f".equ {name}, {address:#x}\n" for name, address in {**SYMBOLS, **labels}.items())
         labels[routine.split(":")[0]] = base + len(code)   # (a routine can call the ones before it)
         part, _ = ks.asm(prologue + routine, base + len(code))
@@ -609,7 +697,9 @@ def build(stock: bytes) -> bytes:
         raise ValueError("not the firmware this patch is for (MYSTIQUE_2.70.bin): every address in it would be wrong")
     base = APP + len(stock)
     code, labels = assemble(base)
-    image = bytearray(stock + code)
+    image = bytearray(stock + code + logo())
+    if len(image) > MOST:
+        raise ValueError(f"the image is {len(image)} bytes: the bootloader writes {MOST} and no more")
     for address, expected, replacement in HOOKS:
         at = address - APP
         old = bytes(image[at:at + 4])
@@ -692,7 +782,9 @@ def main() -> int:
         return 0
     if a.table:
         TABLE.write_text(table(stock), encoding="utf8", newline="\n")
-        print(f"{TABLE}: version {VERSION}, {len(build(stock)) - len(stock)} bytes of code, {len(HOOKS)} jumps")
+        added = len(build(stock)) - len(stock)
+        print(f"{TABLE}: version {VERSION}, {added - len(logo())} bytes of code and a logo of {len(logo())}, "
+              f"{MOST - len(build(stock))} bytes of room left, {len(HOOKS)} jumps")
         return 0
     image = build(stock)
     out = Path(a.output)

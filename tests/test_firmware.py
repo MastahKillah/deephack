@@ -77,7 +77,7 @@ def test_the_patch_goes_on_deepcools_image_only():
     with pytest.raises(ValueError, match="not DeepCool's"):
         firmware.direct_image(STOCK)
     assert firmware.PATCH_VERSION == firmware_patch.VERSION == max(firmware_patch.CHANGES)
-    assert len(firmware_patch.CODE) < 1024 and all(len(bytes.fromhex(j)) == 4 for j in firmware_patch.JUMPS.values())
+    assert firmware_patch.STOCK_SIZE + len(firmware_patch.CODE) <= 0x72000 and all(len(bytes.fromhex(j)) == 4 for j in firmware_patch.JUMPS.values())
 
 
 def test_deepcools_image_is_found_checked_and_kept(images, tmp_path):
