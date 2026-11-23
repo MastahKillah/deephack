@@ -166,15 +166,17 @@ def _even(value: float) -> int:
     return max(2, round(value / 2) * 2)
 
 
-def picture(frame, fit: str = "fill") -> Image.Image:
+def picture(frame, fit: str = "fill", size: tuple[int, int] = (W, H)) -> Image.Image:
     """A decoded frame as the screen's picture: filling it (the middle of a wider picture) or whole, with bars.
+    `size`: another size than the screen's, for a picture that is part of one.
 
     Cut and scaled by ffmpeg's filters while it is still YUV, and only the 480 x 640 that are left are
     turned into RGB: 1.3 ms of CPU for a frame of 854 x 480. (Scaling the whole frame up first and
     cutting the picture out of that took 6 to 9.)"""
     import av
 
-    key = (frame.width, frame.height, frame.format.name, fit)
+    W, H = size                                  # noqa: N806  (the size asked for, under the names used below)
+    key = (frame.width, frame.height, frame.format.name, fit, size)
     with _graphs_lock:
         if key not in _graphs:
             if len(_graphs) > 8:
@@ -224,10 +226,17 @@ class Player:
 
     Sound: `set_sound(True)` and the video's sound is played (`speaker` makes what plays it, see
     sound.py), as loud as `volume` says. The picture then goes by what is being heard. `silent` says
-    why there is none when there should be."""
+    why there is none when there should be.
 
-    def __init__(self, source: str, resolve=resolve, clock=time.monotonic, on_end=None, on_error=None, speaker=Speaker):
+    `follow`: something outside that says which moment of the video belongs on screen now (music that
+    plays elsewhere, and the video is its picture). The picture goes by it as it goes by its own sound:
+    frames that are behind are left out, frames that are ahead wait. `seek()` for a jump too large for
+    that."""
+
+    def __init__(self, source: str, resolve=resolve, clock=time.monotonic, on_end=None, on_error=None, speaker=Speaker,
+                 follow=None):
         self.source, self._resolve, self._clock = source, resolve, clock
+        self._follow, self._seek = follow, None
         self._on_end, self._on_error, self._skipped = on_end, on_error, False
         self.title, self.duration, self.position = "", 0.0, 0.0
         self.rate = 0.0                          # pictures a second the video has; 0 while that is not known
@@ -260,6 +269,10 @@ class Player:
         """Leave the video that is playing and open what `resolve` names now, from its beginning."""
         self._skipped = True
         self._hush()
+
+    def seek(self, at: float) -> None:
+        """Go on from another place in the video. It is opened anew there: a second or two."""
+        self._seek, self._again = max(0.0, at), True
 
     def set_sound(self, on: bool) -> None:
         """With sound or without. A video that is playing is opened anew for it, where it is."""
@@ -303,6 +316,8 @@ class Player:
                     if self._skipped:
                         self._skipped, self._resume = False, 0.0
                     self._again = False
+                    if self._seek is not None:
+                        self._resume, self._seek = self._seek, None
                     address, options, title, *more = self._resolve(self.source)
                     self.title = title or self.title
                     try:
@@ -419,6 +434,8 @@ class Player:
                 if speaker is not None and now - self._asked > HUSH:
                     speaker.pause()                          # nobody is looking: the sound waits, and with it the picture
                 heard = speaker.position() if speaker is not None else None
+                if heard is None and self._follow is not None:
+                    heard = self._follow()                   # what is heard elsewhere
                 if heard is not None:
                     base = (now, heard + LEAD)
                 elif base is None:
