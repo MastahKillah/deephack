@@ -396,6 +396,25 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   second, 16 to 45 KB each, 36 ms to send, 11 % of one CPU core. Between two videos the picture stood
   for 0.76 s. After "next" or "previous" the other video was on the cooler 0.65 to 0.81 s later (four
   presses). Nothing stored.
+- **Twelve hours without a pause** (22 Nov 2026, 21:10, to 23 Nov, 09:10; `tools/longrun.py`, which writes
+  a line a minute). One process, the cooler drawn on all the time, 668,000 pictures: **not one refused,
+  not one error, no stall**; the longest wait between two pictures was 2.5 s, between two TikTok videos.
+  - *A YouTube video of ten hours, for seven:* 16.5 pictures a second in the middle minute, 15.3 in the
+    worst. The stream was opened once and read to the end of the seven hours: **the address did not run
+    out**, so what the player does when one does is still unseen. Memory: 217 MB after the first half
+    hour, 236 at the end, some 3 MB an hour. Threads (35) and handles stood still.
+  - *TikTok, for two hours:* 245 videos, 233 of them different, none refused by TikTok. 15.5 a second
+    in the middle minute; the minutes with several short videos in them are lower (11 in the worst),
+    since each new video is a second or two without a picture. **Memory grew by 77 MB (204 to 281) and
+    the handles by 295 (1097 to 1392), about one handle and a third of a megabyte a video.** That is its
+    own issue.
+  - *Scene, for two hours:* drawn when something in it moves, 6 to 15 pictures a second; memory stood
+    still (280 to 285 MB), which also says the 77 MB of before were not given back.
+  - *A live stream (news), for one hour:* played like a video, 15.6 a second in the middle minute, one
+    opening, no error.
+  The PC was in use for other things in the first hour (a build and the tests, which cost a minute at
+  15.5), and locked and idle after that. Not run: eight hours of each, as the issue asked; an animation,
+  a sleep and a wake-up of the PC in between.
 - **The PC's screen on the cooler** (Mirror, 22 Nov 2026; `deephack/modes/mirror.py`, `deephack/capture.py`).
   A window of 960 x 1280 in which everything moves 60 times a second, shown filling the screen: 15.8
   pictures a second on the cooler and 21 % of one CPU core for the whole of deephack (JPEGs of 37 KB at
