@@ -54,6 +54,11 @@ CMD_DIRECT = 0x20           # <size:u32> <sum16:u16>: show a JPEG without storin
                             # only one patched with tools/fw/patch.py has it (the stock one answers status 0)
 DIRECT_GO, DIRECT_LATER, DIRECT_REFUSED, DIRECT_NO_PAGE = 0x10, 0x11, 0x12, 0x13
 DIRECT_PARTS = 3            # the version of the patch from which a part of the picture can be drawn by itself
+CMD_PEEK = 0x21             # <address:u32> <count:u8>: read memory. The patch's, from its version 4
+PEEK_VERSION, PEEK_MOST = 4, 39
+READABLE = ((0x0000_0000, 0x0008_0000), (0x2000_0000, 0x2001_0000), (0x8000_0000, 0x8080_0000))
+                            # what peek may be asked for: the chip's flash, its RAM, the SDRAM. An address
+                            # that is not memory stops the cooler until it is switched off and on
 PART_STEP = 16              # a part is so many pixels wide and high, or a multiple: whole blocks of a 4:2:0 JPEG
 DIRECT_MAX = 128 * 1024     # bytes of JPEG the patched firmware takes for one frame
 DIRECT_ASK = 0.004          # seconds between two asks while it says "later": it needs some 50 ms for a frame, and
@@ -272,6 +277,22 @@ class Mystique:
         refuses it, the stock one says 'ok' as it does to anything it does not know."""
         status, version = self._ask_direct(0, 0)
         return max(1, version) if status == DIRECT_REFUSED else 0
+
+    def peek(self, address: int, count: int) -> bytes:
+        """`count` bytes of the cooler's memory from `address` (patch version 4). Only its flash and RAM:
+        READABLE. Raises ValueError for anything else, RuntimeError on a firmware without the command."""
+        if not any(low <= address and address + count <= high for low, high in READABLE) or count < 0:
+            raise ValueError(f"{count} bytes at {address:#x} are not all memory the cooler can be asked for")
+        out = b""
+        while len(out) < count:
+            n = min(PEEK_MOST, count - len(out))
+            self.dev.write(1, frame(CMD_PEEK, struct.pack("<IB", address + len(out), n)), self.timeout)
+            r = bytes(self.dev.read(0x81, 64, self.timeout))
+            if len(r) != 48 or r[0] != 0x55 or r[2] != CMD_PEEK or sum16(r[:46]) != struct.unpack_from("<H", r, 46)[0]:
+                raise RuntimeError("this firmware cannot be asked for its memory" if len(r) == 48 and r[2] == 0
+                                   else f"unexpected reply to cmd {CMD_PEEK:#04x}: {r.hex()}")
+            out += r[3:3 + n]
+        return out
 
     def can_draw(self) -> bool:
         """True when the cooler runs a firmware that draws without storing."""

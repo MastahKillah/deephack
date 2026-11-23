@@ -322,3 +322,26 @@ def test_a_part_needs_a_page_of_ours_under_it(cooler, tmp_path):
         driver.draw_jpeg(part, at=(0, 400))                               # which would be past the frame buffer's end
     with pytest.raises(ValueError):
         driver.draw_jpeg(part_of("#ffffff", (480, 270)), at=(0, 0))       # and whole blocks only
+
+
+def test_memory_can_be_read(cooler, stock_image):
+    """Version 4: command 21 gives up to 39 bytes of the cooler's memory a reply."""
+    driver = cooler.driver()
+    assert driver.draw_version() >= device.PEEK_VERSION
+    assert driver.peek(patch.APP, 8) == stock_image[:8]                   # the stack pointer and the reset handler
+    assert driver.peek(patch.APP + 0x1000, 500) == stock_image[0x1000:0x1000 + 500]     # more than one reply holds
+    at = patch.APP + len(stock_image)
+    assert driver.peek(at, 64) == patch.assemble(at)[0][:64]              # the patch itself
+    raw = driver.peek(patch.STATE, patch.STATE_SIZE)                      # RAM: the patch's own state
+    assert raw == bytes(cooler.machine.uc.mem_read(patch.STATE, patch.STATE_SIZE))
+    assert driver.peek(patch.APP, 0) == b""
+    for address, count in ((0x4000_0000, 4), (0x0007_FFFF, 2), (0x7000_0000, 16), (0x2000_FFF0, 32)):
+        with pytest.raises(ValueError):                                   # registers, the end of the flash, the
+            driver.peek(address, count)                                   # serial flash's window: not asked for
+    assert driver.uuid() == ""                                            # and the other commands go on as before
+
+
+def test_stock_firmware_is_not_asked_for_its_memory_twice():
+    cooler = bench.EmulatedCooler()
+    with pytest.raises(RuntimeError, match="cannot be asked"):
+        cooler.driver().peek(patch.APP, 8)

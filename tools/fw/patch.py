@@ -63,6 +63,12 @@ It needs the image screen (mode 2) with at least one stored picture: with none, 
 hides the picture widget. A frame that arrives on another screen is dropped. The JPEG must be what
 the stock firmware shows: 480 x 640, baseline, 4:2:0 (deephack.device.encode_jpeg).
 
+A second command, 21, reads the cooler's memory (version 4): AA 2E 21 <address:u32> <count:u8>, and the
+reply carries up to 39 bytes from there in place of status and the rest. It only reads. It is how the
+parts of the cooler that no file holds can be looked at: the bootloader below the firmware, and what
+lies after it. An address that is not memory stops the cooler until it is switched off and on:
+deephack.device.Mystique.peek keeps to the flash and the RAM.
+
 RAM: 60 bytes at 0x2000F000, above the firmware's stack (which starts at 0x2000B418); the emulated
 firmware never touches anything up there.
 """
@@ -80,12 +86,15 @@ APP = 0xE000                                # where the image runs
 STATE = 0x2000F000                          # the patch's own RAM
 MAX_FRAME = 0x20000                         # bytes of JPEG a buffer holds
 COMMAND = 0x20
+PEEK = 0x21                                 # read memory (version 4)
+PEEK_MOST = 39                              # bytes a reply carries
 GO, LATER, REFUSED, NO_PAGE = 0x10, 0x11, 0x12, 0x13
-VERSION = 3                                 # of this patch, in every reply to the command (see CHANGES)
+VERSION = 4                                 # of this patch, in every reply to the command (see CHANGES)
 CHANGES = {
     1: "the first: draws a JPEG from USB. Answers 0 where the version is now",
     2: "frames are also shown while lv_task_handler does not return (#22); the reply has the version",
     3: "a part of the picture can be drawn by itself, on top of the page that was drawn last (#47)",
+    4: "a command that reads the cooler's memory, to look at its bootloader",
 }
 STATE_SIZE = 60                             # bytes of the patch's RAM (see the layout above SOURCE)
 TIMEOUT_MS = 2000
@@ -305,10 +314,59 @@ loop_hook:                              @ r0 = the task list, for the call this 
     pop.w   {{r4, lr}}
     b.w     lv_ll_get_head
 
+peek:                                   @ command 21: up to 39 bytes of memory, in a reply of the usual form
+    push    {{r4, r5, r6, lr}}
+    movw    r4, #{REPLY & 0xFFFF}
+    movt    r4, #{REPLY >> 16}
+    mov     r0, r4
+    movs    r1, #48
+    bl      memclr
+    movw    r0, #0x2e55
+    strh    r0, [r4, #0]
+    movs    r0, #{PEEK}
+    strb    r0, [r4, #2]
+    movw    r3, #{COMMAND_COPY & 0xFFFF}
+    movt    r3, #{COMMAND_COPY >> 16}
+    ldr.w   r1, [r3, #3]                @ address
+    ldrb    r2, [r3, #7]                @ count
+    cmp     r2, #{PEEK_MOST}
+    it      hi
+    movhi   r2, #{PEEK_MOST}
+    adds    r3, r4, #3
+    cmp     r2, #0
+    beq     peek_tail
+peek_copy:
+    ldrb    r0, [r1], #1
+    strb    r0, [r3], #1
+    subs    r2, #1
+    bne     peek_copy
+peek_tail:
+    movw    r0, #0x4948
+    movt    r0, #0x4344
+    str.w   r0, [r4, #42]               @ "HIDC"
+    movs    r0, #0
+    movs    r1, #0
+peek_sum:
+    ldrb    r2, [r4, r1]
+    add     r0, r2
+    adds    r1, #1
+    cmp     r1, #46
+    bne     peek_sum
+    strh    r0, [r4, #46]               @ sum16
+    movs    r0, #1                      @ endpoint 1 IN
+    mov     r1, r4
+    movs    r2, #48
+    pop.w   {{r4, r5, r6, lr}}
+    b.w     usb_send
+
 command_hook:                           @ r0 = command, r1 = 0, r2 = 0; runs in the USB interrupt
     cmp     r0, #{COMMAND}
     beq     command_ours
+    cmp     r0, #{PEEK}
+    beq     command_peek
     b.w     reply
+command_peek:
+    b.w     peek
 command_ours:
     push    {{r4, r5, r6, lr}}
     movw    r4, #{STATE & 0xFFFF}
