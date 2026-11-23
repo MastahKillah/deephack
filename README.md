@@ -310,6 +310,12 @@ whole page was 29, and sharper for it. The cooler shows a picture every 36 ms an
 small it is: about 27 a second is its ceiling, and what a part buys is reaching that. A cooler with an
 older version of the patch gets whole pictures; Settings says when a newer one can be put on.
 
+**Its own start screen** (version 6 of the patch): while the PC starts, the cooler shows deephack's logo
+where DeepCool's was, from the first moment until deephack takes the screen over. DeepCool's logo is a
+picture in a file on the cooler that nothing reaches over USB; the patch carries its own (11 KB, in the
+flash that is free behind the firmware) and puts it on top before anything is drawn. The patch can also
+be asked for the cooler's memory, which is how its bootloader was read: see `docs/firmware-analysis.md`.
+
 Two things the engine works around, both seen on the cooler:
 
 - To get a stored picture back after drawing, `08` (show) is not enough for the slot that is already
