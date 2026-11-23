@@ -1,7 +1,9 @@
 """Where a drawn frame's time goes (issue #47): frames of several sizes sent to the cooler as fast as it
 takes them, with the clock read at every step.
 
-    python tools/drawbench.py [--frames 60] [--sizes 3,8,15,25,40,60,90]
+    python tools/drawbench.py [--frames 60] [--sizes 3,8,15,25,40,60,90] [--part 480x288+0+176]
+
+--part: the frames are parts of the picture, that size at that place, on a page drawn once (patch 3).
 
 For a frame the host asks (command 20), the cooler says "go ahead" or "later", the host sends the JPEG,
 and asks for the next: "later" until the cooler has shown this one. So a frame costs
@@ -32,24 +34,27 @@ from deephack import device  # noqa: E402
 from deephack.config import Config, config_dir  # noqa: E402
 
 
-def picture(seed: int, rough: float) -> Image.Image:
+WHOLE = (device.WIDTH, device.HEIGHT)
+
+
+def picture(seed: int, rough: float, size: tuple[int, int] = WHOLE) -> Image.Image:
     """Something to compress: soft blobs of colour with noise over them, the more noise the larger the
     JPEG, and another picture for every seed."""
     rnd = random.Random(seed)
     small = Image.frombytes("RGB", (12, 16), bytes(rnd.randrange(256) for _ in range(12 * 16 * 3)))
-    soft = small.resize((device.WIDTH, device.HEIGHT), Image.Resampling.BICUBIC)
-    noise = Image.frombytes("RGB", (device.WIDTH, device.HEIGHT), rnd.randbytes(device.WIDTH * device.HEIGHT * 3))
+    soft = small.resize(size, Image.Resampling.BICUBIC)
+    noise = Image.frombytes("RGB", size, rnd.randbytes(size[0] * size[1] * 3))
     return Image.blend(soft, noise, rough)
 
 
-def jpegs(kilobytes: float, count: int = 6) -> list[bytes]:
+def jpegs(kilobytes: float, count: int = 6, size: tuple[int, int] = WHOLE, quality: int = 80) -> list[bytes]:
     """A few different JPEGs of about that size (a frame like the last is not a fair test of anything)."""
+    encode = lambda seed, rough: device.encode_jpeg(picture(seed, rough, size), quality=quality, part=size != WHOLE)
     low, high = 0.0, 1.0
     for _ in range(14):
         rough = (low + high) / 2
-        size = len(device.encode_jpeg(picture(0, rough), quality=80)) / 1024
-        low, high = (rough, high) if size < kilobytes else (low, rough)
-    return [device.encode_jpeg(picture(seed, rough), quality=80) for seed in range(count)]
+        low, high = (rough, high) if len(encode(0, rough)) / 1024 < kilobytes else (low, rough)
+    return [encode(seed, rough) for seed in range(count)]
 
 
 def prepare(dev: device.Mystique, slot: int) -> None:
@@ -62,15 +67,16 @@ def prepare(dev: device.Mystique, slot: int) -> None:
     time.sleep(0.5)
 
 
-def run(dev: device.Mystique, frames: list[bytes], count: int, pause: float = 0.0) -> dict:
-    """Send `count` frames one after the other; `pause`: wait that long after each before asking again."""
+def run(dev: device.Mystique, frames: list[bytes], count: int, pause: float = 0.0, at: tuple[int, int] | None = None) -> dict:
+    """Send `count` frames one after the other; `pause`: wait that long after each before asking again.
+    `at`: they are parts of the picture, for that place."""
     busy, ask, send, cycle, asks, sent_at = [], [], [], [], [], None
     for i in range(count + 3):
         jpeg = frames[i % len(frames)]
-        check, n = device.sum16(jpeg), 0
+        check, n, box = device.sum16(jpeg), 0, device.part_box(jpeg, at) if at else None
         while True:
             asked = time.perf_counter()
-            status = dev._direct(len(jpeg), check)
+            status = dev._direct(len(jpeg), check, box)
             answered = time.perf_counter()
             n += 1
             if status == device.DIRECT_GO:
@@ -101,7 +107,13 @@ def main() -> int:
     ap.add_argument("--frames", type=int, default=60)
     ap.add_argument("--sizes", default="3,8,15,25,40,60,90", help="kilobytes, with commas")
     ap.add_argument("--pause", type=float, default=0.0, help="seconds to wait after a frame before asking for the next")
+    ap.add_argument("--quality", type=int, default=80, help="JPEG quality of the test pictures: lower for smaller ones than 26 KB")
+    ap.add_argument("--part", default="", help="WIDTHxHEIGHT+X+Y: draw parts of the picture of that size there (patch 3)")
     args = ap.parse_args()
+    size, at = WHOLE, None
+    if args.part:
+        width, height, x, y = (int(n) for n in args.part.replace("x", "+").split("+"))
+        size, at = (width, height), (x, y)
     lock = QLockFile(str(config_dir() / "app.lock"))
     lock.setStaleLockTime(0)
     if not lock.tryLock(100):
@@ -119,9 +131,15 @@ def main() -> int:
         print(f"patch version {version}; a question and its answer take {statistics.median(timed) * 1000:.2f} ms "
               f"(the fastest {min(timed) * 1000:.2f})", flush=True)
         prepare(dev, slot)
+        if at:
+            if version < device.DIRECT_PARTS:
+                raise SystemExit(f"parts need patch {device.DIRECT_PARTS}")
+            dev.draw_jpeg(jpegs(30, 1)[0], patience=2.0)     # the page the parts lie on
+            time.sleep(0.3)
+            print(f"parts of {size[0]} x {size[1]} at {at[0]}, {at[1]}, on a page drawn once")
         print(f"{'KB':>6} {'busy':>7} {'ask':>6} {'send':>7} {'= frame':>8} {'a second':>9} {'KB/s':>6} {'asks':>5} {'worst':>7}")
         for kilobytes in (float(k) for k in args.sizes.split(",")):
-            r = run(dev, jpegs(kilobytes), args.frames, args.pause)
+            r = run(dev, jpegs(kilobytes, size=size, quality=args.quality), args.frames, args.pause, at)
             print(f"{r['kb']:6.1f} {r['busy']:6.1f}  {r['ask']:5.1f}  {r['send']:6.1f}  {r['cycle']:7.1f}  {1000 / r['cycle']:8.1f}  "
                   f"{r['rate']:5.0f}  {r['asks']:4.0f}  {r['worst']:6.0f}", flush=True)
         dev.set_mode(device.MODE_SITUATIONAL)                # leave the screen as the app finds it at its start

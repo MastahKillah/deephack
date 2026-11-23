@@ -232,8 +232,8 @@ to `captures/`, which is not in the repository). **It runs in the emulator, and 
 cooler** (see "On the cooler" below).
 
 It appends 792 bytes of code after the image and changes twenty bytes of it: five 4-byte jumps. (This
-is version 3, which can also draw a part of the picture: see "Version 3" below. **It has run in the
-emulator only.** Version 2, 504 bytes, is on the cooler since 20 Nov 2026 and is what the rest of this
+is version 3, which can also draw a part of the picture: see "Version 3" below. It is on the cooler
+since 23 Nov 2026. Version 2, 504 bytes, was on it from 20 Nov 2026 and is what the rest of this
 section describes. Version 1, which the cooler ran from 19 Nov 2026, was 472 bytes and four jumps: it had no
 hook in `lv_task_handler` and reported no version.) The app carries it as a table of those bytes,
 `deephack/firmware_patch.py`, written by `python tools/fw/patch.py --table`; a test compares the two.
@@ -316,7 +316,8 @@ What was needed to know for it, all seen in the emulator:
 
 #### Version 3: a part of the picture
 
-*In the emulator only so far (23 Nov 2026). Nothing of it has been on the cooler.*
+*Written in the emulator and flashed to the cooler on 23 Nov 2026: see "Version 3 on the cooler" at
+the end of this part.*
 
 The bus is the limit (820 KB a second, see "How many pictures a second"), so what helps is fewer bytes.
 A page with a video in it is mostly a picture that stands still: the NBA mode's highlights page is 29 KB
@@ -364,16 +365,31 @@ both frame buffers at that place and nowhere else, the screen is the page with t
 part elsewhere leaves the first one's place showing the page; a new page removes the part; after a
 stored picture is shown the part is gone and the next one is refused with `13`.
 
-**Not known**, and only the cooler can tell:
+**Version 3 on the cooler** (23 Nov 2026; flashed with `tools/fw/flash.py patched`, off the bus for
+11.8 s, back answering as version 3):
 
-- whether the hardware decoder does what the emulator's model of it does with a picture that is not
-  the whole screen (the model takes `IMGSIZ`, `RGBASE` and `IMGSTR` at their word; the stock firmware
-  only ever shows 480 x 640 there). The driver keeps to whole 16 x 16 blocks.
-- how long the cooler takes for a part. Every 100 ms the image screen redraws its picture (see "Display
-  path"), which now is the page and the part: two decodes. With version 2 a 29 KB frame took 50 ms on
-  the cooler, 8 more than its bytes and the 6 ms a small frame needs: the decode seems to cost by
-  content.
-- the 384 KiB of buffers on a heap that has run for days.
+- **The hardware decoder does what the emulator's model of it does.** A test page with two white frames,
+  parts of 480 x 272 and of 160 x 96 drawn into them 27 times a second, photographed with the webcam: each
+  part fills its frame exactly, nothing of the page shows through, no stripes; where no part lies the
+  page is whole. (Whole 16 x 16 blocks only were tried; the driver sends nothing else.)
+- **It holds.** 1087 parts in 40 s and several runs of some hundreds, with pages between: the cooler
+  answered after each, and a part was still taken at the end.
+- **The cooler shows a picture every 36 ms and no faster, whatever its size** (`tools/drawbench.py`,
+  `--quality 25` for small pictures). Whole pictures of 12.6, 13.9, 17.9 and 21.9 KB: 36.1 to 36.2 ms
+  each, 27.7 a second; what the bytes do not take, the cooler makes the host wait ("later" 26 to 68
+  times). Above some 22 KB the bytes take longer than that and the bus is the limit again (26.5 KB:
+  36.7 ms, 30 KB: 49.6). Parts of 480 x 288: 38.4 ms from 7 to 18 KB, so 26 a second, 2 ms more than a
+  whole picture; a part of 160 x 96 and 3.7 KB: 18.4 ms. So "the bus is the limit" was true of pictures
+  over 22 KB only; under that it is the cooler's own round, most likely one redraw of its screen.
+- **So a part does not make a page faster than 27 a second; it makes it reach that, and sharper.** The
+  NBA mode's highlights page: 29 KB a frame whole at JPEG quality 45, the least the app goes to; 21 KB
+  as a part of 480 x 288 at quality 51, 27.5 a second.
+- **Other USB traffic slows it.** The same highlights while the webcam was sending pictures: 16.2 a
+  second, 59 ms for a frame of 21 KB. Earlier the same day the page had gone 19 a second whole and, an
+  hour later with nothing changed on the cooler, 26; what else was on the bus then is not known.
+
+**Not known:** the 384 KiB of buffers on a heap that has run for days, and sizes that are not whole
+blocks.
 
 In the app: a mode returns `modes.base.Part(page, picture, at)` for a picture of which one rectangle
 changed. The engine sends the page once and then the parts, to a cooler whose patch says 3; any other
