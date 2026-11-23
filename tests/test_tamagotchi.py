@@ -409,3 +409,112 @@ def test_playback_says_what_plays(monkeypatch):
     assert not asyncio.run(playback.playing()) and playback.title == "Numb"            # kept while it pauses
     session.status, session.props = Status.PLAYING, None
     assert asyncio.run(playback.playing()) and (playback.title, playback.artist) == ("", "")
+
+
+# ------------------------------------------------------------------ the album's cover behind the dance
+def _a_cover(colour=(40, 160, 220), size=(300, 300)) -> bytes:
+    import io
+
+    from PIL import Image
+
+    picture = Image.new("RGB", size, colour)
+    picture.paste((250, 240, 60), (0, 0, size[0] // 2, size[1] // 2))
+    data = io.BytesIO()
+    picture.save(data, "PNG")
+    return data.getvalue()
+
+
+def test_the_pet_dances_in_front_of_the_cover_and_the_bass_still_flashes():
+    limits, art = {"seven_day": (40, None)}, _a_cover()
+    plain = pet.render_frame(0, limits, "dancing", glow=3)
+    quiet, loud = (pet.render_frame(0, limits, "dancing", glow=glow, art=art) for glow in (0, pet.GLOWS - 1))
+    assert quiet.size == (480, 640) and quiet.tobytes() != plain.tobytes()
+    left, right = quiet.getpixel((60, 250)), quiet.getpixel((420, 400))                # the cover's two colours show
+    assert left[0] > left[2] and right[2] > right[0]
+    assert quiet.tobytes() != loud.tobytes()                                           # ... and the bass is over them
+    purple = lambda c: c[0] + c[2] - 2 * c[1]
+    assert purple(loud.getpixel((420, 400))) > purple(quiet.getpixel((420, 400)))
+    assert loud.getpixel((2, 300)) != quiet.getpixel((2, 300))                         # at the edges too: the cooler's light
+    assert sum(quiet.getpixel((240, 4))) < sum(quiet.getpixel((240, 300)))            # darker where the words are
+    wide = pet.render_frame(0, limits, "dancing", art=_a_cover(size=(640, 200)))       # any shape of picture fills it
+    assert wide.getpixel((5, 300)) != (0, 0, 0) and wide.getpixel((475, 300)) != (0, 0, 0)
+    assert pet.render_frame(0, limits, "dancing", glow=3, art=b"not a picture").tobytes() == plain.tobytes()
+    assert pet.render_frame(0, limits, "working", art=art).tobytes() == pet.render_frame(0, limits, "working").tobytes()
+
+
+def test_the_cover_is_a_setting_and_only_for_pictures_that_cost_nothing(monkeypatch):
+    world = SimpleNamespace(clock=100.0)
+
+    async def is_playing(self):
+        return True
+
+    async def not_busy(self):
+        return False
+
+    monkeypatch.setattr(pet.Playback, "playing", is_playing)
+    monkeypatch.setattr(pet.Activity, "busy", not_busy)
+    monkeypatch.setattr(pet.time, "monotonic", lambda: world.clock)
+    monkeypatch.setattr(pet, "read_limits", lambda path: {"seven_day": (40, None)})
+    setting = {s.key: s for s in pet.Tamagotchi.settings}["cover"]
+    assert setting.default == "art" and [value for value, _ in setting.choices] == ["art", "plain"]
+
+    def dancing(values, direct=True):
+        mode = pet.Tamagotchi({"reacts": "music", **values}, listener=_Sound())
+        mode.direct = direct
+        mode._playback.art = _a_cover()
+        picture = asyncio.run(mode.frame())
+        return mode, picture
+
+    with_cover, a = dancing({})
+    without, b = dancing({"cover": "plain"})
+    assert with_cover._playback.want_art and not without._playback.want_art            # the cover is not even read
+    assert a.tobytes() != b.tobytes()
+    stored, _ = dancing({}, direct=False)
+    assert not stored._playback.want_art                                               # DeepCool's firmware: its own colours
+
+    with_cover._playback.art = _a_cover((200, 40, 40))                                 # the next album
+    world.clock += 0.01
+    assert asyncio.run(with_cover.frame()).tobytes() != a.tobytes()
+
+
+def test_a_tracks_cover_is_read_once_and_asked_for_again_while_there_is_none(monkeypatch):
+    import sys
+
+    from deephack.modes import now_playing
+
+    Status = SimpleNamespace(PLAYING="playing")
+    monkeypatch.setitem(sys.modules, "winrt.windows.media.control", SimpleNamespace(
+        GlobalSystemMediaTransportControlsSessionManager=None, GlobalSystemMediaTransportControlsSessionPlaybackStatus=Status))
+    reads, covers = [], {"thumb-a": b"cover a", "thumb-b": b"cover b", None: None}
+
+    async def read(ref):
+        reads.append(ref)
+        return covers[ref]
+
+    monkeypatch.setattr(now_playing, "_read_thumbnail", read)
+    props = SimpleNamespace(title="One", artist="A", thumbnail=None)
+    session = SimpleNamespace(get_playback_info=lambda: SimpleNamespace(playback_status="playing"))
+
+    async def properties():
+        return props
+
+    session.try_get_media_properties_async = properties
+    playback = pet.Playback()
+    playback._manager = SimpleNamespace(get_current_session=lambda: session)
+    look = lambda: asyncio.run(playback.playing())
+
+    assert look() and playback.art is None and reads == []                             # nobody wants the cover: not read
+    playback.want_art = True
+    assert look() and playback.art is None and reads == [None]                         # the player has none yet
+    props.thumbnail = "thumb-a"
+    assert look() and playback.art == b"cover a"                                       # ... and now it has
+    count = len(reads)
+    assert look() and look() and len(reads) == count                                   # read once for a track
+    props.title, props.thumbnail = "Two", None
+    assert look() and playback.art == b"cover a"                                       # the next track: the old one stays for now
+    props.thumbnail = "thumb-b"
+    assert look() and playback.art == b"cover b"
+    props.title, props.thumbnail = "Three", None                                       # a track without a cover
+    for _ in range(pet.Playback.ART_TRIES + 3):
+        look()
+    assert playback.art is None and reads.count(None) == 2 + pet.Playback.ART_TRIES    # asked a few times, then no more

@@ -13,8 +13,9 @@ With the direct drawing firmware (`direct`, set by the engine) pictures cost not
 anew whenever it moves:
 
 - it dances to the music itself: a step and a hop for every beat (see Beat), and the background lights up
-  with the bass, which the cooler's light follows. The song's title and artist are written above it
-  (only here: on DeepCool's firmware every new song would be a rewrite of the stored animation)
+  with the bass, which the cooler's light follows. The song's title and artist are written above it,
+  and the album's cover is behind it, in large pixels and darkened, with the bass's colour over it
+  (both only here: on DeepCool's firmware every new song would be a rewrite of the stored animation)
 - states start at once: no waiting for the music to settle, Claude Code's logs are looked at every few
   seconds, and while the picked NBA team plays the score is asked for every minute
 - it does things that are not part of a loop: a blink now and then, a wave, a yawn before it sleeps
@@ -23,13 +24,14 @@ anew whenever it moves:
 from __future__ import annotations
 
 import asyncio
+import io
 import random
 import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from functools import lru_cache
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance
 
 from .. import render
 from ..audio import LISTENER
@@ -404,12 +406,13 @@ def _song_font(text: str, which: int):
 
 
 @lru_cache(maxsize=8)
-def _song(title: str, artist: str) -> Image.Image:
+def _song(title: str, artist: str, pale: bool = False) -> Image.Image:
     """Title and artist as a picture to lay over the top of the pet's: the title as large as fits in
-    one line (three times, or twice, the small letters' size), cut short with dots if it still does not."""
+    one line (three times, or twice, the small letters' size), cut short with dots if it still does not.
+    `pale`: the artist in a lighter grey, for a backdrop that is not the pet's own dark one."""
     out = Image.new("RGBA", (W, 120), (0, 0, 0, 0))
     y = 0
-    for which, (text, colour, scales) in enumerate(((title, TEXT, (3, 2)), (artist, MUTED, (2,)))):
+    for which, (text, colour, scales) in enumerate(((title, TEXT, (3, 2)), (artist, PALE if pale else MUTED, (2,)))):
         if not text:
             continue
         fnt = _song_font(text, which)
@@ -448,6 +451,47 @@ def _dance_floor(glow: int) -> Image.Image:
     return render.vertical_gradient(top, bottom)
 
 
+PALE = (214, 208, 218)                           # small words over a cover: the usual grey gets lost on a light one
+COVER_PIXEL = 4                                  # the cover's pixels are this large: it is the pet's world
+COVER_LIGHT, COVER_EDGE = 0.62, 0.72              # how much of its light is left, and of that at the top and bottom
+COVER_FLASH = (0.12, 0.6)                        # how much of the bass's colour is over it: quiet, and at the loudest
+
+
+@lru_cache(maxsize=2)
+def _cover(art: bytes) -> Image.Image | None:
+    """An album's cover as the dance's backdrop: filling the picture, in large pixels, and darkened,
+    more so where the song's name and the percentages are written. None for what is no picture."""
+    try:
+        cover = Image.open(io.BytesIO(art)).convert("RGB")
+    except (OSError, ValueError):
+        return None
+    small = (W // COVER_PIXEL, H // COVER_PIXEL)
+    scale = max(small[0] / cover.width, small[1] / cover.height)
+    size = (max(small[0], round(cover.width * scale)), max(small[1], round(cover.height * scale)))
+    cover = cover.resize(size, Image.Resampling.LANCZOS)
+    left, top = (size[0] - small[0]) // 2, (size[1] - small[1]) // 2
+    cover = ImageEnhance.Brightness(cover.crop((left, top, left + small[0], top + small[1]))).enhance(COVER_LIGHT)
+    shade = Image.new("L", small, 0)                 # darker bands, fading out towards the middle
+    d = ImageDraw.Draw(shade)
+    for y in range(small[1]):
+        y_real = y * COVER_PIXEL
+        edge = max(0.0, 1 - y_real / 150) if y_real < 150 else max(0.0, (y_real - 420) / 120) if y_real > 420 else 0.0
+        d.line([(0, y), (small[0], y)], fill=round(255 * (1 - COVER_EDGE) * min(1.0, edge)))
+    cover = Image.composite(Image.new("RGB", small, (8, 6, 10)), cover, shade)
+    return cover.resize((W, H), Image.Resampling.NEAREST)
+
+
+@lru_cache(maxsize=GLOWS * 2)
+def _cover_floor(art: bytes, glow: int) -> Image.Image | None:
+    """The cover with the bass's colour over it, the more of it the louder: it still flashes, and the
+    cooler's light, which goes by the picture's edges, still pulses."""
+    cover = _cover(art)
+    if cover is None:
+        return None
+    quiet, loud = COVER_FLASH
+    return Image.blend(cover, render.vertical_gradient(*DANCE_LOUD), quiet + (loud - quiet) * glow / (GLOWS - 1))
+
+
 def _confetti(d: ImageDraw.ImageDraw, f: int, team: tuple[int, int, int]) -> None:
     rng = random.Random(9)
     for _ in range(30):
@@ -470,18 +514,22 @@ def _rain(d: ImageDraw.ImageDraw, f: int) -> None:
 
 
 def render_frame(frame: int, limits: dict | None, state: str | None = None, result: Result | None = None, *,
-                 pose: Pose | None = None, risen: int | None = None, glow: int = 0, song: tuple[str, str] | None = None) -> Image.Image:
+                 pose: Pose | None = None, risen: int | None = None, glow: int = 0, song: tuple[str, str] | None = None,
+                 art: bytes | None = None) -> Image.Image:
     """One frame of the pet. `state` is an activity (working, dancing, sleeping, cheering, sulking, and
     yawning, which has no loop of its own); without one the pet shows the mood of the fullest plan limit.
 
     A pet that is drawn anew for every picture is not bound to its loops: `pose` is the pet itself when it
     is not the loop's, `risen` how far up the dance's notes are and `glow` how lit its background is.
-    `song`: (title, artist) of what it dances to, written above it."""
+    `song`: (title, artist) of what it dances to, written above it. `art`: that song's cover, to dance in front of."""
     windows = [(label, limits[key][0]) for key, label in (("five_hour", "5H"), ("seven_day", "WEEK")) if limits and key in limits]
     worst = max((p for _, p in windows), default=None)
     mood = mood_for(worst)
     state = state or mood
-    if state == "dancing" and glow:
+    floor = _cover_floor(art, glow) if state == "dancing" and art else None
+    if floor is not None:
+        img = floor.copy()
+    elif state == "dancing" and glow:
         img = _dance_floor(glow).copy()
     else:
         img = render.vertical_gradient(*BACKGROUNDS.get(state, (BG_TOP, BG_BOTTOM)))
@@ -519,7 +567,7 @@ def render_frame(frame: int, limits: dict | None, state: str | None = None, resu
     elif state == "dancing":
         _notes(d, frame, risen)
         if song and any(song):
-            words = _song(*song)
+            words = _song(*song, pale=floor is not None)
             img.paste(words, (0, SONG_TOP), words)
     elif state == "cheering" and result:
         _confetti(d, frame, result.color)
@@ -535,7 +583,7 @@ def render_frame(frame: int, limits: dict | None, state: str | None = None, resu
     for i, (label, pct) in enumerate(windows):
         cx = W / 2 if len(windows) == 1 else W * (0.27 + 0.46 * i)
         colour = RED if pct >= 85 else AMBER if pct >= 60 else TEXT
-        pixel_text(d, label, cx, top, 4, MUTED, "m")
+        pixel_text(d, label, cx, top, 4, PALE if floor is not None else MUTED, "m")
         pixel_text(d, f"{pct}%", cx, top + 44, 10 if len(windows) == 1 else 8, colour, "m")
     return img
 
@@ -567,6 +615,9 @@ class Tamagotchi(Mode):
                      "is stored: the pet reacts at once, dances to the beat, and the percentages follow within "
                      "seconds whatever is picked here. Limits come from the claude-hud usage snapshot, like the "
                      "Claude Code mode."),
+        Setting("cover", "Behind the dancing pet", "choice", "art", (("art", "The album's cover"), ("plain", "Its own colours")),
+                hint="The cover of what plays, in large pixels and darkened, with the bass's flashes over it. With the "
+                     "direct drawing firmware; on DeepCool's own the pet keeps its own colours."),
     )
 
     def __init__(self, values=None, team: str = "all", listener=None):
@@ -668,16 +719,18 @@ class Tamagotchi(Mode):
                 pose = replace(pose, arms=(0, up))
         self.tick = FAST_TICK if scene == "dancing" or self._counted != real else SLOW_TICK
         song = (self._playback.title, self._playback.artist) if scene == "dancing" else None
+        art = self._playback.art if scene == "dancing" and self._playback.want_art else None
         look = (scene, f, pose, risen, glow, tuple(sorted(self._counted.items())),
-                result.line if result and scene in ("cheering", "sulking") else None, song)
+                result.line if result and scene in ("cheering", "sulking") else None, song, art)
         if look == self._look:
             return None
         self._look = look
         limits = {key: (value, None) for key, value in self._counted.items()} or None
-        return render_frame(f, limits, scene, result, pose=pose, risen=risen, glow=glow, song=song)
+        return render_frame(f, limits, scene, result, pose=pose, risen=risen, glow=glow, song=song, art=art)
 
     async def frame(self):
         now = time.monotonic()
+        self._playback.want_art = self.direct and self.values["cover"] == "art"
         self._activity.every = BUSY_CHECK_DRAWN if self.direct else CHECK_SECONDS
         busy = await self._activity.busy()
         self.active = busy

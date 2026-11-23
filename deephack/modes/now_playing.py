@@ -149,9 +149,16 @@ def render_track(track: Track, layout: str = "full", progress: tuple[float, floa
 class Playback:
     """Whether the system's current media session is playing, and what: for modes that need no more."""
 
+    ART_TRIES = 8                                # looks for a track's cover: players hand it out after the title
+
     def __init__(self):
         self._manager = None
         self.title = self.artist = ""            # of what plays, as far as the player says; kept while it pauses
+        self.want_art = False                    # whoever wants the cover too says so
+        self.art: bytes | None = None            # the cover of what plays (the one before, until this one's is there)
+        self._art_for: tuple | None = None       # the track `art` is of
+        self._art_asked: tuple | None = None     # ... and the one it is being looked for, how often so far
+        self._art_tries = 0
 
     async def playing(self) -> bool:
         try:
@@ -165,9 +172,26 @@ class Playback:
             if playing:
                 props = await session.try_get_media_properties_async()
                 self.title, self.artist = ((props.title or "").strip(), (props.artist or "").strip()) if props else ("", "")
+                if self.want_art:
+                    await self._cover(props)
             return playing
         except (ImportError, OSError, AttributeError):
             return False
+
+    async def _cover(self, props) -> None:
+        """Read the cover of what plays, once per track. A track that has none after ART_TRIES looks has none."""
+        track = (self.title, self.artist)
+        if track == self._art_for:
+            return
+        if track != self._art_asked:
+            self._art_asked, self._art_tries = track, 0
+        self._art_tries += 1
+        try:
+            art = await _read_thumbnail(props.thumbnail) if props is not None else None
+        except (OSError, AttributeError):
+            art = None
+        if art or self._art_tries >= self.ART_TRIES:
+            self.art, self._art_for = art, track
 
 
 class NowPlaying(Mode):
