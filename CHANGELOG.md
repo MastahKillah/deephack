@@ -8,6 +8,14 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
+## Unreleased
+
+- **Photo Frame: "Fill and move across".** A new choice under Fit. A photo that is wider or taller than
+  the screen fills it and moves slowly from one side to the other while it is up, every other photo the
+  other way. It needs the direct drawing firmware; without it the photo fills the screen and stands.
+- How often the cooler gets a picture goes by how fast the photo moves: 27 a second for a photo that is
+  up 15 seconds, 5 a second for one that is up 5 minutes, one every two or three seconds for an hour.
+
 ## 0.14.0 (2026-11-24)
 
 - **Photo Frame: one photo fades into the next.** With the direct drawing firmware a change is a
