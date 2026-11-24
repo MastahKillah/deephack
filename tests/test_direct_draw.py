@@ -391,3 +391,35 @@ def test_our_picture_is_on_the_start_screen(stock_image, tmp_path):
     while child:
         children, child = children + 1, struct.unpack("<I", bytes(machine.uc.mem_read(child + 0x64, 4)))[0]
     assert children == 5                                                  # its four pictures, and ours: put there once
+
+
+def test_the_screen_can_be_read_back_from_the_cooler(cooler, tmp_path):
+    """tools/screen.py: the frame buffer that is on the glass, through command 21. What a JPEG became,
+    pixel for pixel, which is how tuned Huffman tables and parts were checked on the real cooler."""
+    from PIL import Image, ImageChops
+
+    sys.path.insert(0, str(ROOT / "tools"))
+    import screen
+
+    driver = cooler.driver()
+    shown, drawing = screen.buffers(driver)
+    assert {shown, drawing} == set(FRAME_BUFFERS)                         # LVGL's own record of them
+    jpeg = card("#307050", (40, 300, 440, 600))
+    driver.draw_jpeg(jpeg)
+    cooler.run_for(0.3)
+    lines = (100, 450, 590)                                               # (a line is 25 questions: slow in here)
+    raw = screen.read(driver, lines)
+    assert len(raw) == len(lines) * 960
+    wanted = Image.open(io.BytesIO(jpeg)).convert("RGB")
+    got = screen.picture(raw)
+    for i, y in enumerate(lines):
+        difference = ImageChops.difference(got.crop((0, i, 480, i + 1)), wanted.crop((0, y, 480, y + 1)))
+        assert max(high for _, high in difference.getextrema()) <= 7      # (RGB565)
+    tuned = device.encode_jpeg(Image.open(io.BytesIO(jpeg)), quality=80, tuned=True)
+    plain = device.encode_jpeg(Image.open(io.BytesIO(jpeg)), quality=80)
+    seen = []
+    for data in (plain, tuned):
+        driver.draw_jpeg(data)
+        cooler.run_for(0.3)
+        seen.append(screen.read(driver, lines))
+    assert seen[0] == seen[1] and len(tuned) < len(plain)                 # the same picture from fewer bytes

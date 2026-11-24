@@ -89,7 +89,7 @@ def frame_jpeg(img: Image.Image, best: int = STILL_QUALITIES[0]) -> bytes:
     for quality in sorted({best, *STILL_QUALITIES}, reverse=True):
         if quality > best:
             continue
-        jpeg = device.encode_jpeg(img, quality=quality)
+        jpeg = device.encode_jpeg(img, quality=quality, tuned=True)
         if len(jpeg) <= device.DIRECT_MAX:
             break
     return jpeg
@@ -548,7 +548,7 @@ class Engine(QThread):
         def jpeg() -> bytes:
             if self._still[0] != self._frame_seq:
                 quality = self._mode is not None and self._mode.quality or DRAW_QUALITY
-                self._still = (self._frame_seq, device.encode_jpeg(part.picture, quality=quality, part=True))
+                self._still = (self._frame_seq, device.encode_jpeg(part.picture, quality=quality, part=True, tuned=True))
                 if self._mode is not None:
                     self._mode.sent_bytes = len(self._still[1])
             return self._still[1]
@@ -565,7 +565,7 @@ class Engine(QThread):
 
         def jpeg() -> bytes:
             if book.index not in frames:
-                frames[book.index] = device.encode_jpeg(book.frames[book.index], quality=DRAW_QUALITY)
+                frames[book.index] = device.encode_jpeg(book.frames[book.index], quality=DRAW_QUALITY, tuned=True)
             return frames[book.index]
 
         if self._draw((book.key, book.index), jpeg, now, REDRAW):

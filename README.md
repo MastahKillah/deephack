@@ -301,7 +301,10 @@ for 2 % of one CPU core), for Scene (a frame of 17 to 25 KB: up to thirty a seco
 while rain or snow falls, a few otherwise; 2.6 % of one CPU core over a clear day, 3.5 % in rain), for
 Claude Pet (a frame of 15 to 19 KB whenever it moves: four a second for 2 % of one CPU core,
 twenty-six a second while it dances for 8 %) and for the Visualizer, which gets twenty-six a second (the spectrum 20 to 37 KB each, drawn and encoded in a millisecond; 9 % of one CPU core, half of it the USB traffic).
-A picture over the firmware's 128 KiB is sent at a lower JPEG quality.
+A picture over the firmware's 128 KiB is sent at a lower JPEG quality. Drawn pictures carry Huffman
+tables made for them, which the cooler's decoder turns into the same pixels as the standard ones (read
+back from its frame buffer and compared): an empty screen is 2 KB that way and not 5, a page with flat
+areas a quarter to a half smaller, a busy one a twentieth.
 
 **A part of the picture** (version 3 of the patch): when only one rectangle of a picture changes, a video
 on a page that stands still, the page is sent once and after that only the rectangle, a JPEG of its

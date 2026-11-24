@@ -76,7 +76,7 @@ def test_a_picture_too_large_for_the_firmware_is_drawn_at_a_lower_quality(tmp_pa
     noise = Image.frombytes("RGB", (480, 640), random.Random(1).randbytes(480 * 640 * 3))
     assert len(device.encode_jpeg(noise, quality=92)) > device.DIRECT_MAX
     assert len(engine.frame_jpeg(noise)) <= device.DIRECT_MAX
-    assert engine.frame_jpeg(RED) == device.encode_jpeg(RED, quality=92)   # as good as a stored one when it fits
+    assert engine.frame_jpeg(RED) == device.encode_jpeg(RED, quality=92, tuned=True)   # as good as a stored one when it fits
     cooler.direct = True
     eng = _engine(tmp_path, monkeypatch)
     _show(eng, noise)
@@ -218,7 +218,7 @@ def _part(page, colour, at=(0, 176), size=(480, 288)):
 
 
 def _part_jpeg(part, quality=engine.DRAW_QUALITY):
-    return device.encode_jpeg(part.picture, quality=quality, part=True)
+    return device.encode_jpeg(part.picture, quality=quality, part=True, tuned=True)
 
 
 def test_a_picture_of_which_a_part_changes_is_sent_once_and_then_only_the_part(tmp_path, monkeypatch, cooler):
@@ -303,3 +303,26 @@ def test_the_driver_sends_a_part_only_as_the_cooler_can_take_it(cooler):
             dev.draw_jpeg(bad, at=at)
     assert cooler.parts == 1 and not cooler.violations
     assert device.encode_jpeg(Image.new("RGB", (160, 96))) != part and device.jpeg_size(device.encode_jpeg(Image.new("RGB", (160, 96)))) == (480, 640)
+
+
+def test_drawn_pictures_have_huffman_tables_of_their_own_and_stored_ones_do_not(tmp_path, monkeypatch, cooler):
+    """The cooler decodes either to the same pixels (seen on the cooler), and the tuned ones are smaller."""
+    import io
+
+    picture = Image.new("RGB", (480, 640), "#203040")
+    plain, tuned = device.encode_jpeg(picture, quality=85), device.encode_jpeg(picture, quality=85, tuned=True)
+    assert len(tuned) < len(plain) * 0.5 and device.jpeg_size(tuned) == (480, 640)       # an empty screen: 2 KB, not 5.4
+    assert Image.open(io.BytesIO(tuned)).tobytes() == Image.open(io.BytesIO(plain)).tobytes()      # the same picture
+    assert engine.frame_jpeg(picture, 85) == tuned
+
+    cooler.direct = 3
+    eng = _engine(tmp_path, monkeypatch)
+    _show(eng, picture)
+    assert cooler.screen == ("drawn", device.encode_jpeg(picture, quality=engine.STILL_QUALITIES[0], tuned=True))
+    _show(eng, _part(picture, "#ffffff"), steps=3)
+    assert cooler.part[2] == device.encode_jpeg(Image.new("RGB", (480, 288), "#ffffff"), quality=engine.DRAW_QUALITY, part=True, tuned=True)
+
+    cooler.direct = False                                                 # stored: as DeepCool's app writes it
+    eng = _engine(tmp_path, monkeypatch)
+    _show(eng, picture)
+    assert cooler.stills[1][1] == device.encode_jpeg(picture) and not cooler.violations

@@ -461,8 +461,26 @@ small because its JPEG has **Huffman tables made for it** (Pillow's `optimize`),
 DeepCool's app and deephack send. **The cooler's decoder takes those** (23 Nov 2026, drawn on the cooler
 with command `20` and photographed: the same picture, 11.6 KB against 14.5; a busy picture 33.1 KB
 against 34.8). The firmware reads the tables from the file and programs the decoder with them, so this
-was to be expected, but the emulator's model could not show it. It would make every frame the app draws
-smaller too: a fifth for pictures with flat areas, a twentieth for busy ones.
+was to be expected, but the emulator's model could not show it.
+
+**Tuned tables for every drawn frame, and the cooler's screen read back** (24 Nov 2026). With command
+`21` the frame buffer itself can be read: `tools/screen.py` writes what is on the glass to a PNG in six
+seconds, pixel for pixel. LVGL's record of its two buffers (`lv_disp_buf_t`: buf1, buf2, the one being
+drawn into, the size in pixels) is at `0x200005A4`; the buffers are at `0x80006A00` and `0x8009CA20` on
+the cooler, not where the emulator has them (`0x800061A0`, `0x8009C1C0`): they come from the heap, after
+what the real `ui.bin` needed. Only the buffer LVGL is not drawing into is read, line by line: with a
+part on a page the hidden one shows the page where the part belongs for a few milliseconds of every
+redraw.
+
+That made an exact test possible. Huffman coding loses nothing, so a picture sent with the standard
+tables and with its own must decode to the same bytes. On the cooler: 21 pictures (one colour, a
+gradient, single-pixel checker, noise from none to all, text, the modes' own pages) at qualities from 45
+to 92, and ten parts from 16 x 16 to 480 x 288: **the same frame buffer every time**, and the page
+around each part untouched to the pixel. The bytes saved: 61 % for a screen of one colour (2.1 KB where
+the standard tables need 5.4, which was the least any picture could be), 25 to 45 % for pages with flat
+areas, 10 to 16 % for the pet and the city, 3 to 5 % for a page full of text or a basketball crowd. The
+app now sends every drawn frame that way (`device.encode_jpeg(..., tuned=True)`); it costs half a
+millisecond a frame to encode. What is stored on the cooler stays as DeepCool's app writes it.
 
 What the emulator run shows for whole pictures (`tests/test_direct_draw.py`): three frames in a row are on the emulated LCD,
 decoded alternately from the two buffers, with still one file on the card; a wrong sum and a stalled

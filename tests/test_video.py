@@ -207,7 +207,7 @@ def test_the_engine_draws_a_modes_pictures_at_the_quality_it_asks_for(tmp_path, 
     monkeypatch.setattr(engine, "_stored_count", lambda kind: 1)
     monkeypatch.setattr(engine, "DRAW_SETTLE", 0.0)
     qualities, real = [], device.encode_jpeg
-    monkeypatch.setattr(device, "encode_jpeg", lambda img, quality=92: (qualities.append(quality), real(img, quality))[1])
+    monkeypatch.setattr(device, "encode_jpeg", lambda img, quality=92, **how: (qualities.append(quality), real(img, quality, **how))[1])
     eng = engine.Engine(Config(tmp_path / "config.json"))
     eng.config.set("mode", "video")
     eng._make_mode()
@@ -324,7 +324,7 @@ def test_the_engine_tells_a_mode_how_large_its_picture_was(tmp_path, monkeypatch
         eng._set_frame(picture)
         eng._device_step(True)
     assert cooler.draws >= 1
-    assert eng._mode.sent_bytes == len(device.encode_jpeg(picture, quality=video.QUALITY))     # the JPEG as it went out
+    assert eng._mode.sent_bytes == len(device.encode_jpeg(picture, quality=video.QUALITY, tuned=True))     # the JPEG as it went out
 
 
 def test_the_mode_makes_its_pictures_smaller_when_they_are_too_large(clip):

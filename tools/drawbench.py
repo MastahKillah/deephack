@@ -47,9 +47,9 @@ def picture(seed: int, rough: float, size: tuple[int, int] = WHOLE) -> Image.Ima
     return Image.blend(soft, noise, rough)
 
 
-def jpegs(kilobytes: float, count: int = 6, size: tuple[int, int] = WHOLE, quality: int = 80) -> list[bytes]:
+def jpegs(kilobytes: float, count: int = 6, size: tuple[int, int] = WHOLE, quality: int = 80, tuned: bool = False) -> list[bytes]:
     """A few different JPEGs of about that size (a frame like the last is not a fair test of anything)."""
-    encode = lambda seed, rough: device.encode_jpeg(picture(seed, rough, size), quality=quality, part=size != WHOLE)
+    encode = lambda seed, rough: device.encode_jpeg(picture(seed, rough, size), quality=quality, part=size != WHOLE, tuned=tuned)
     low, high = 0.0, 1.0
     for _ in range(14):
         rough = (low + high) / 2
@@ -108,6 +108,7 @@ def main() -> int:
     ap.add_argument("--sizes", default="3,8,15,25,40,60,90", help="kilobytes, with commas")
     ap.add_argument("--pause", type=float, default=0.0, help="seconds to wait after a frame before asking for the next")
     ap.add_argument("--quality", type=int, default=80, help="JPEG quality of the test pictures: lower for smaller ones than 26 KB")
+    ap.add_argument("--tuned", action="store_true", help="the pictures have Huffman tables of their own, as the app's have")
     ap.add_argument("--part", default="", help="WIDTHxHEIGHT+X+Y: draw parts of the picture of that size there (patch 3)")
     args = ap.parse_args()
     size, at = WHOLE, None
@@ -139,7 +140,7 @@ def main() -> int:
             print(f"parts of {size[0]} x {size[1]} at {at[0]}, {at[1]}, on a page drawn once")
         print(f"{'KB':>6} {'busy':>7} {'ask':>6} {'send':>7} {'= frame':>8} {'a second':>9} {'KB/s':>6} {'asks':>5} {'worst':>7}")
         for kilobytes in (float(k) for k in args.sizes.split(",")):
-            r = run(dev, jpegs(kilobytes, size=size, quality=args.quality), args.frames, args.pause, at)
+            r = run(dev, jpegs(kilobytes, size=size, quality=args.quality, tuned=args.tuned), args.frames, args.pause, at)
             print(f"{r['kb']:6.1f} {r['busy']:6.1f}  {r['ask']:5.1f}  {r['send']:6.1f}  {r['cycle']:7.1f}  {1000 / r['cycle']:8.1f}  "
                   f"{r['rate']:5.0f}  {r['asks']:4.0f}  {r['worst']:6.0f}", flush=True)
         dev.set_mode(device.MODE_SITUATIONAL)                # leave the screen as the app finds it at its start

@@ -192,7 +192,7 @@ def test_stored_frames_are_flipped_no_faster_than_the_firmware_shows_them(tmp_pa
 
 # ------------------------------------------------------------------ engine: frames drawn straight from USB
 def _drawn(frame):
-    return ("drawn", device.encode_jpeg(frame, quality=engine.DRAW_QUALITY))
+    return ("drawn", device.encode_jpeg(frame, quality=engine.DRAW_QUALITY, tuned=True))
 
 
 def test_the_direct_drawing_firmware_is_drawn_on_and_nothing_is_stored(tmp_path, monkeypatch, cooler):
