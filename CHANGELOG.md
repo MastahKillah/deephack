@@ -8,6 +8,14 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
+## Unreleased
+
+- **Photo Frame: one photo fades into the next.** With the direct drawing firmware a change is a
+  crossfade of one second, 27 pictures a second on the cooler. "A cut" in the mode's settings switches
+  it off.
+- **Photo Frame: a new photo as often as every 15 seconds** with the direct drawing firmware, where
+  nothing is written to the cooler's flash. On DeepCool's own firmware the shortest stays 15 minutes.
+
 ## 0.13.1 (2026-11-24)
 
 - **A firmware update is sent only when the cooler has room for it.** The app asks the cooler first (a

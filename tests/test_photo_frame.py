@@ -80,6 +80,100 @@ def test_skips_unreadable_files_and_reports_empty_folders(tmp_path, monkeypatch)
     assert asyncio.run(m.frame()) is not None and m.status == "b.jpg"
 
 
+# ---- on a cooler that draws from USB: short intervals, and one photo fades into the next
+def drawing(tmp_path, monkeypatch, **values):
+    """Two photos, red and blue, by name; a mode on a cooler that draws; and the clock its fades go by."""
+    for name, colour in (("1.png", (200, 0, 0)), ("2.png", (0, 0, 200))):
+        (tmp_path / "pics").mkdir(exist_ok=True)
+        Image.new("RGB", (480, 640), colour).save(tmp_path / "pics" / name)
+    m = mode(tmp_path, monkeypatch, order="name", fit="fill", **{"interval": "0.25", **values})
+    m.direct, clock = True, [100.0]
+    m._clock = lambda: clock[0]
+    return m, clock
+
+
+def test_one_photo_fades_into_the_next_on_a_cooler_that_draws(tmp_path, monkeypatch):
+    m, clock = drawing(tmp_path, monkeypatch)
+    first = asyncio.run(m.frame())
+    assert first.getpixel((240, 320)) == (200, 0, 0) and m.tick is None and m.quality is None
+    m._since = time.time() - 10
+    assert asyncio.run(m.frame()) is None                    # 15 seconds are not over
+    m._since, m.sent_bytes = time.time() - 16, 90_000        # (the first photo was 90 KB as a still: that says
+    begun = asyncio.run(m.frame())                           # nothing about a fade's pictures)
+    assert m.status == "2.png" and begun.getpixel((240, 320)) == (200, 0, 0)
+    assert m.tick == pf.FADE_TICK and m.quality == pf.FADE_QUALITY
+    reds = []
+    for at in (0.1, 0.3, 0.5, 0.7, 0.9):
+        clock[0] = 100.0 + at * pf.FADE
+        r, g, b = asyncio.run(m.frame()).getpixel((240, 320))
+        assert abs(r + b - 200) <= 1 and g == 0              # a mix of the two
+        reds.append(r)
+    assert reds == sorted(reds, reverse=True) and reds[0] > 190 and abs(reds[2] - 100) <= 1 and reds[4] < 10
+    assert reds[0] - reds[1] < reds[1] - reds[2]             # it starts slowly
+    clock[0] = 100.0 + pf.FADE
+    last = asyncio.run(m.frame())                            # the new photo itself, as a still again
+    assert last.getpixel((240, 320)) == (0, 0, 200) and m.tick is None and m.quality is None
+    assert asyncio.run(m.frame()) is None
+
+
+def test_a_fade_is_no_longer_for_pictures_the_cooler_was_too_busy_for_and_its_pictures_fit_the_bus(tmp_path, monkeypatch):
+    m, clock = drawing(tmp_path, monkeypatch)
+    asyncio.run(m.frame())
+    m._since = time.time() - 16
+    asyncio.run(m.frame())
+    m.sent_bytes, m.fast, m.turn = 60_000, True, 0.018       # the engine says how large the last one was as a JPEG
+    clock[0] += 0.1
+    asyncio.run(m.frame())
+    assert m.quality < pf.FADE_QUALITY                       # too large to take 27 a second: less sharp, not fewer
+    m.sent_bytes = 12_000
+    clock[0] += 0.1
+    lower = m.quality
+    asyncio.run(m.frame())
+    assert m.quality == lower + 1                            # and sharper again where there is room
+    clock[0] += 5.0                                          # nothing was asked for five seconds:
+    assert asyncio.run(m.frame()).getpixel((240, 320)) == (0, 0, 200) and m.tick is None     # the fade is over
+
+
+def test_a_cooler_that_stores_each_photo_gets_one_every_15_minutes_at_the_soonest_and_no_fade(tmp_path, monkeypatch):
+    m, clock = drawing(tmp_path, monkeypatch)
+    m.direct = False
+    assert asyncio.run(m.frame()).getpixel((240, 320)) == (200, 0, 0)
+    m._since = time.time() - 14 * 60
+    assert asyncio.run(m.frame()) is None                    # the 15 seconds asked for are 15 minutes here
+    m._since = time.time() - 16 * 60
+    assert asyncio.run(m.frame()).getpixel((240, 320)) == (0, 0, 200) and m.tick is None and m._fade is None
+
+
+def test_a_cut_can_be_asked_for_and_a_fade_ends_when_the_cooler_stops_drawing(tmp_path, monkeypatch):
+    m, clock = drawing(tmp_path, monkeypatch, transition="cut")
+    asyncio.run(m.frame())
+    m._since = time.time() - 16
+    assert asyncio.run(m.frame()).getpixel((240, 320)) == (0, 0, 200) and m.tick is None
+
+    (tmp_path / pf.STATE_NAME).unlink()                      # (begin with the first photo again)
+    m, clock = drawing(tmp_path, monkeypatch)
+    asyncio.run(m.frame())
+    m._since = time.time() - 16
+    asyncio.run(m.frame())
+    clock[0] += 0.2
+    m.direct = False                                         # a slide show was switched on, say
+    assert asyncio.run(m.frame()).getpixel((240, 320)) == (0, 0, 200) and m.tick is None and m._fade is None
+
+
+def test_the_folder_is_not_walked_for_every_photo(tmp_path, monkeypatch):
+    m, clock = drawing(tmp_path, monkeypatch, transition="cut")
+    walks, real = [], pf.scan
+    monkeypatch.setattr(pf, "scan", lambda folder: walks.append(folder) or real(folder))
+    for _ in range(4):
+        m._since = 0.0
+        assert asyncio.run(m.frame()) is not None
+    assert len(walks) == 1
+    m._scanned = (m._scanned[0], m._scanned[1] - pf.RESCAN, m._scanned[2])      # a minute later
+    m._since = 0.0
+    asyncio.run(m.frame())
+    assert len(walks) == 2
+
+
 def test_missing_folder(tmp_path, monkeypatch):
     m = mode(tmp_path, monkeypatch)
     assert asyncio.run(m.frame()) is None and m.placeholder[0] == "Folder not found"
