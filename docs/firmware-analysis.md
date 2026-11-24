@@ -231,10 +231,11 @@ operations: confirm SWD access → dump → understand update verification → o
 to `captures/`, which is not in the repository). **It runs in the emulator, and since 19 Nov 2026 on the
 cooler** (see "On the cooler" below).
 
-It appends 1120 bytes of code and a picture of 10 780 after the image and changes twenty bytes of it: five
-4-byte jumps. (This is version 6: see "Version 3" for drawing a part of the picture and "Versions 4 to
-6" for reading memory and the start screen. Versions 3, 4 and 5 were on the cooler one after the
-other on 23 Nov 2026, and version 6 is on it since. Version 2, 504 bytes, was on it from 20 Nov 2026 and is what the rest of this
+It appends 1172 bytes of code and a picture of 10 780 after the image and changes twenty bytes of it: five
+4-byte jumps. (This is version 9: see "Version 3" for drawing a part of the picture, "Versions 4 to
+6" for reading memory and the start screen, and "Version 9" for how fast a frame's bytes arrive.
+Versions 3 to 6 were on the cooler one after the other on 23 Nov 2026, 7 and 8 for minutes on the
+24th, and version 9 is on it since. Version 2, 504 bytes, was on it from 20 Nov 2026 and is what the rest of this
 section describes. Version 1, which the cooler ran from 19 Nov 2026, was 472 bytes and four jumps: it had no
 hook in `lv_task_handler` and reported no version.) The app carries it as a table of those bytes,
 `deephack/firmware_patch.py`, written by `python tools/fw/patch.py --table`; a test compares the two.
@@ -481,6 +482,67 @@ the standard tables need 5.4, which was the least any picture could be), 25 to 4
 areas, 10 to 16 % for the pet and the city, 3 to 5 % for a page full of text or a basketball crowd. The
 app now sends every drawn frame that way (`device.encode_jpeg(..., tuned=True)`); it costs half a
 millisecond a frame to encode. What is stored on the cooler stays as DeepCool's app writes it.
+
+#### Version 9: the gap between two USB packets
+
+*24 Nov 2026. Seven flashes in an afternoon: 2, 3, 7, 8 and 9, each timed with `tools/drawbench.py`.*
+
+**What was wrong.** Frames over 26 KB took far longer than their bytes need. With version 6, a frame of
+40 KB every 100 ms, of 60 KB every 100, of 90 KB every 200; the table of 23 Nov, made with version 2,
+has 62, 105 and 108. Flashing version 2 again gave 62, 103 and 112 on the spot, and version 3 after it
+100, 100 and 200: **the patch had become slower with version 3**, by nothing in its frame path, which is
+the same code in both (compared line by line), and in the emulator the two do the same work for the
+same frames, decode for decode. What differed was only how fast the cooler took the bytes: 823 KB a
+second with version 2 whatever the size; 765 for 26 KB and 540 to 620 for larger frames with 3 to 6.
+
+**Two wrong turns**, both flashed:
+
+- *The flash cache.* The chip runs its code out of the flash through a cache (`FMC.CACHE` reads
+  `0x00010000`: on, without prefetch), and version 3 had moved the USB hook and made the main loop's hook
+  longer. Version 7 put everything that runs all the time into 232 bytes at the patch's start. 760 and
+  595 KB a second: a little better, not the cure.
+- *RAM.* Version 8 ran the loop that copies a packet's 64 bytes from RAM (the chip has no MPU:
+  `MPU_TYPE` reads 0). **390 KB a second**, half of version 2. That was the hint: the copy loop's speed
+  decided everything, and by a factor of two.
+
+**What it was.** The patch made the endpoint ready for the next packet (flush and ready, to `RXCR1`)
+*after* it had copied the packet. The host leaves some 25 microseconds between two packets (version 2:
+12.9 packets a millisecond, 78 microseconds apiece, of which a packet of 64 bytes is 52 on the wire). A
+packet that finds the endpoint not ready is refused and sent again, all of it: one missed gap costs a
+whole packet's time. The stock handler's own work (it clears 64 bytes and reads the packet out of the
+controller before the hook is reached) and the patch's copy together fitted into that gap with version
+2, by luck of where the loop lay in the flash; with 3 to 7 they fitted sometimes, depending on what the
+main loop was doing; with the loop in RAM, never.
+
+**Version 9 makes the endpoint ready first** and copies afterwards. That is safe because the stock
+handler has the packet out of the controller already when the hook runs (`0x34C32`: into the RAM buffer
+at `0x200006F0`), and the next packet's interrupt waits until this one's handler is done. On the cooler:
+
+| frame | version 2 | versions 3 to 6 | version 9 |
+|---|---|---|---|
+| 26 KB | 36 ms, 823 KB/s | 36 ms, 765 | 36.5 ms, **997** |
+| 33 KB | 54 ms | 51 to 55 ms | **36.5 ms** |
+| 40 KB | 62 ms | 100 ms | **54.5 ms** |
+| 47 KB | 62 ms | 100 ms | **55.5 ms** |
+| 60 KB | 103 ms | 100 ms | **64 ms** |
+| 90 KB | 112 ms | 200 ms | **93.5 ms** |
+
+997 KB a second for every size: the bus, now, and nothing of the cooler's in it. Checked: 1060 frames
+from 10 to 120 KB sent as fast as they went, 1060 shown (the patch shows a frame only when its sum is
+right, and counts); parts as before, the page around them untouched to the pixel.
+
+**What limits it now is the panel.** Found on the way, by watching LVGL's buffer swaps from outside
+(`lv_disp_buf_t.buf_act`, read with command `21`) while the image screen's timer was at 33 ms, so that
+it redrew without a pause: **a redraw every 36.1 ms, for a JPEG of 12 KB as for one of 80** (35.6 to
+36.4 over 96 redraws each). That is the panel's own turn, 27.7 a second: a redraw ends by waiting for
+it. So a frame that is all there within one turn is on the glass at the next, which is 33 KB now where
+it was 26; and nothing drawn from USB can be shown more often than 27.7 times a second. Also read off
+the chip: 150 MHz (`SYST_RVR` 149 999 for a millisecond), an Arm China STAR-MC1 (`CPUID` `0x630F1321`).
+
+In the app: a mode is told when the cooler takes bytes that fast (`Mode.fast`, patch 9 and later), and
+Video then lets a frame be 32 KB where it kept it to 22, and goes up to JPEG quality 80 where it
+stopped at 65. The NBA mode's highlights: quality 65 and more at 27.5 a second, where they were at 45
+as a whole page with version 2.
 
 What the emulator run shows for whole pictures (`tests/test_direct_draw.py`): three frames in a row are on the emulated LCD,
 decoded alternately from the two buffers, with still one file on the card; a wrong sum and a stalled

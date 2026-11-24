@@ -326,3 +326,13 @@ def test_drawn_pictures_have_huffman_tables_of_their_own_and_stored_ones_do_not(
     eng = _engine(tmp_path, monkeypatch)
     _show(eng, picture)
     assert cooler.stills[1][1] == device.encode_jpeg(picture) and not cooler.violations
+
+
+def test_a_mode_is_told_when_the_cooler_takes_bytes_at_full_speed(tmp_path, monkeypatch, cooler):
+    """Patch 9 makes the USB endpoint ready before it copies a packet: 997 KB a second where it was 540 to
+    823. A mode that fits its pictures to the cooler (Video) may make them larger then."""
+    for patch, fast in ((2, False), (8, False), (9, True)):
+        cooler.direct = patch
+        eng = _engine(tmp_path, monkeypatch)
+        _show(eng, RED)
+        assert eng._fast is fast and eng._drawing, patch                  # (the main loop hands both to the mode)

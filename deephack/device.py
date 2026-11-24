@@ -54,6 +54,7 @@ CMD_DIRECT = 0x20           # <size:u32> <sum16:u16>: show a JPEG without storin
                             # only one patched with tools/fw/patch.py has it (the stock one answers status 0)
 DIRECT_GO, DIRECT_LATER, DIRECT_REFUSED, DIRECT_NO_PAGE = 0x10, 0x11, 0x12, 0x13
 DIRECT_PARTS = 3            # the version of the patch from which a part of the picture can be drawn by itself
+DIRECT_FAST = 9             # ... and from which the cooler takes a frame's bytes as fast as USB carries them
 CMD_PEEK = 0x21             # <address:u32> <count:u8>: read memory. The patch's, from its version 4
 PEEK_VERSION, PEEK_MOST = 4, 39
 READABLE = ((0x0000_0000, 0x0008_0000), (0x2000_0000, 0x2001_0000), (0x8000_0000, 0x8080_0000))

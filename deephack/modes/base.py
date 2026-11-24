@@ -132,6 +132,8 @@ class Mode:
                                                           # stored, so a new one costs nothing and may come every tick
         self.sent_bytes = 0                               # set by the engine: how large its last drawn picture was as
                                                           # it went to the cooler (a JPEG), for a mode that minds
+        self.fast = False                                 # set by the engine: the cooler's patch takes bytes at the
+                                                          # bus's full speed (version 9), so a picture may be larger
         self.audible = False                              # set by the engine: this is the mode on the cooler, not one
                                                           # that only shows in the window. Only that one may make sound
 

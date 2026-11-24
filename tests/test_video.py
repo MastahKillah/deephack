@@ -309,6 +309,13 @@ def test_the_quality_gives_way_before_the_number_of_pictures_does():
         quality = video.quality_for(quality, room * 3, 30)
     assert quality == video.LEAST_QUALITY                             # ... nor less than the least
     assert video.quality_for(65, room * 1.2, 25) == 65                # a video of 25 a second has more room
+    # the patch from version 9 takes the bytes faster, and then the panel's turn of 36 ms is what counts
+    assert video.room_for(30, fast=True) == video.room_for(25, fast=True) == video.FAST_ROOM > room * 1.4
+    assert video.quality_for(60, room * 1.1, 30, fast=True) == 61 and video.quality_for(60, room * 1.1, 30) == 57
+    assert video.quality_for(60, video.FAST_ROOM * 1.1, 30, fast=True) == 57
+    assert video.quality_for(video.QUALITY, 1000, 30, fast=True) == video.QUALITY + 1            # and sharper than before,
+    assert video.quality_for(video.FAST_QUALITY, 1000, 30, fast=True) == video.FAST_QUALITY      # up to a point
+    assert video.quality_for(video.FAST_QUALITY, 1000, 30) == video.FAST_QUALITY                 # (never pulled down for room)
 
 
 def test_the_engine_tells_a_mode_how_large_its_picture_was(tmp_path, monkeypatch, cooler):

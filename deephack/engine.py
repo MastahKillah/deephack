@@ -156,6 +156,7 @@ class Engine(QThread):
         self._drawing = False                    # ... and that is how pictures get there now (not during a slide show)
         self._still: tuple[int, bytes] = (-1, b"")   # frame seq of the picture last drawn, and its JPEG
         self._parts = False                      # ... and its patch can draw a part of the picture by itself
+        self._fast = False                       # ... and takes a frame's bytes at the bus's full speed (Mode.fast)
         self._part: Part | None = None           # the mode's last picture, when only a part of it changed
         self._page = None                        # what the whole picture drawn last was (see _draw_part)
         self._page_kept: Image.Image | None = None
@@ -277,7 +278,7 @@ class Engine(QThread):
 
     async def _preview_step(self) -> None:
         mode = self._preview
-        mode.direct, mode.audible = self._drawing, False
+        mode.direct, mode.audible, mode.fast = self._drawing, False, self._fast
         try:
             img = await mode.frame()
         except Exception:
@@ -308,7 +309,7 @@ class Engine(QThread):
             enabled = self.config.get("enabled")
             if commanded or started >= modes_due:
                 if enabled:
-                    self._mode.direct, self._mode.audible = self._drawing, True
+                    self._mode.direct, self._mode.audible, self._mode.fast = self._drawing, True, self._fast
                     try:
                         img = await self._mode.frame()
                     except Exception:
@@ -352,6 +353,7 @@ class Engine(QThread):
                 self._firmware = {"bcd": bcd, "version": firmware.version(bcd), "patch": patch}
                 self._can_draw = patch > 0
                 self._parts = patch >= device.DIRECT_PARTS
+                self._fast = patch >= device.DIRECT_FAST
                 self._veiled = self._can_draw     # a deephack that was killed may have left a drawn frame up
             except device.DeviceBusy:
                 self._dev, self._dev_state = None, "busy"

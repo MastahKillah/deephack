@@ -109,7 +109,7 @@ class Auto(Mode):
     async def frame(self):
         now = time.monotonic()
         for mode_id, child in self.children.items():
-            child.direct, child.audible = self.direct, self.audible and mode_id == self.chosen
+            child.direct, child.audible, child.fast = self.direct, self.audible and mode_id == self.chosen, self.fast
             try:
                 img = await child.frame()
             except Exception:

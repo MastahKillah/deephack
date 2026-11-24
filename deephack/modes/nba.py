@@ -585,7 +585,7 @@ class Nba(Mode):
         self.active = self.claiming()
         if await self._highlights():
             self.tick = video.TICK                         # as sharp as the cooler can take in the video's time
-            self.quality = video.quality_for(self.quality or video.QUALITY, self.sent_bytes, self._reel.rate)
+            self.quality = video.quality_for(self.quality or video.QUALITY, self.sent_bytes, self._reel.rate, self.fast)
             return self._reel_frame()
         self.tick, self.quality = None, None
         if self._said:                                     # (the scores are fetched now and then; what is said

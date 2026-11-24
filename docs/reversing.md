@@ -3,7 +3,7 @@
 The MYSTIQUE is a liquid cooler with a 480 x 640 LCD on its pump head. DeepCool's app can show sensor
 readouts on it, or images you upload, and every image is written to the cooler's storage before it can
 be shown. This is how that became a screen a PC can draw on twenty-seven times a second, with its own
-logo when it starts: the USB protocol, the firmware run in an emulator, a patch of 1.1 KB, and the
+logo when it starts: the USB protocol, the firmware run in an emulator, a patch of 1.2 KB, and the
 bootloader read out through that patch.
 
 (When this was first written the patch was 504 bytes and the app drew sixteen frames a second. Steps 5
@@ -86,13 +86,19 @@ from outside that loop. Version 2 is also called from inside it.
 The first numbers, sixteen frames a second, were wrong about the cooler: that was the pace at which the
 host asked for pictures. Timed step by step ([`tools/drawbench.py`](../tools/drawbench.py)):
 
-- The cooler takes bytes at about 800 KB a second, which is USB at full speed.
 - **It shows a picture every 36 ms and no faster, however small the picture is**: about 27 a second.
-  Pictures of 12 to 22 KB all take 36 ms; above that the bytes take longer and the bus is the limit.
+  That is the panel's own turn: a redraw ends by waiting for it, for a JPEG of 12 KB as for one of 80.
+- The bytes were the surprise. The first patch took them at 820 KB a second; the versions with more in
+  them took large frames at 540, with no line of the frame path changed. The cause was 25 microseconds
+  wide: the patch made the USB endpoint ready for the next packet after it had copied the last one, and
+  whether that was done before the host sent again went by how fast 64 bytes were copied where the loop
+  happened to lie in the flash. A packet that comes too soon is sent again whole. Making the endpoint
+  ready first, and copying after, gave **997 KB a second for every size**: a frame of 33 KB in one turn
+  of the panel, where 26 KB had been the most.
 - Other traffic on the same USB slows it. With a webcam sending pictures next to it, the same frames
   went 16 a second.
 
-So a host that wants the full rate keeps its frames under 22 KB, and the app trades JPEG quality for
+So a host that wants the full rate keeps its frames under 32 KB, and the app trades JPEG quality for
 that.
 
 ## 6. A part of the picture

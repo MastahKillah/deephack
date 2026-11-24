@@ -106,7 +106,7 @@ COMMAND = 0x20
 PEEK = 0x21                                 # read memory (version 4)
 PEEK_MOST = 39                              # bytes a reply carries
 GO, LATER, REFUSED, NO_PAGE = 0x10, 0x11, 0x12, 0x13
-VERSION = 6                                 # of this patch, in every reply to the command (see CHANGES)
+VERSION = 9                                 # of this patch, in every reply to the command (see CHANGES)
 CHANGES = {
     1: "the first: draws a JPEG from USB. Answers 0 where the version is now",
     2: "frames are also shown while lv_task_handler does not return (#22); the reply has the version",
@@ -114,6 +114,9 @@ CHANGES = {
     4: "a command that reads the cooler's memory, to look at its bootloader",
     5: "deephack's own picture while the cooler starts, in place of DeepCool's logo",
     6: "and on the screen after it, where the cooler waits for a host",
+    7: "the code that runs all the time lies together (it did not bring back version 2's speed for frames over 26 KB)",
+    8: "a frame's bytes are copied by a loop that runs in RAM (which was slower still: never released)",
+    9: "the USB controller is told to take the next packet before this one is copied, not after",
 }
 STATE_SIZE = 68                             # bytes of the patch's RAM (see the layout above SOURCE)
 TIMEOUT_MS = 2000
@@ -168,116 +171,283 @@ BRANCHES = {"b", "bl", "cbz", "cbnz"} | {"b" + c for c in "eq ne hs lo mi pl vs 
 #        +52, +56 the same two words of the part before it: where the small picture is now
 #        +60 u8 our picture is on the start screen (1) and on the idle screen (2), or was tried
 #        +64 that picture: its lv_img_dsc_t, in RAM
+#
+# How fast a frame's bytes arrive is decided between two USB packets (version 9). The host leaves some 25
+# microseconds after a packet before it sends the next, and a packet that finds the endpoint not ready is
+# refused and sent again whole. Until version 8 the endpoint was made ready after the packet's 64 bytes
+# had been copied, which fitted into that gap or did not, by how fast the copy loop happened to run where
+# it lay: the chip runs its code out of the flash through a small cache (FMC.CACHE). Seen on the cooler,
+# flashing one version after the other (KB a second for frames of 26 and of 40 KB): version 2, 823 and
+# 800; versions 3 to 6, 765 and 540; 7, with the routines put in another order, 760 and 595; 8, with the
+# loop in RAM, 390 and 430. So the endpoint is made ready first now. The order from version 7 stays: what
+# runs all the time first, together and short; then what runs once a frame; then the rest.
 def source(logo_at: int, logo_size: int) -> str:
     """The patch's code, for a logo of `logo_size` bytes at address `logo_at`."""
     return f"""
-init_hook:
-    movs    r1, #1
-    strb    r1, [r0]                    @ what the call replaced
-    movw    r0, #{STATE & 0xFFFF}
-    movt    r0, #{STATE >> 16}
-    movs    r1, #0
-    movs    r2, #{STATE_SIZE}
-init_clear:
-    subs    r2, #4
-    str     r1, [r0, r2]
-    bne     init_clear
-    bx      lr
-
-logo_on:                                @ r0 = a screen (or 0), r5 = our picture: put it on top of that screen
+main_hook:                              @ in main's loop, where it called lv_task_handler
     push    {{r4, lr}}
-    cmp     r0, #0
-    beq     logo_on_out
-    movs    r1, #0
-    bl      lv_img_create               @ a child of the screen, made last: on top of what is there
-    cmp     r0, #0
-    beq     logo_on_out
-    mov     r1, r5
-    bl      lv_img_set_src
-logo_on_out:
-    pop     {{r4, pc}}
+    bl      look
+    pop.w   {{r4, lr}}
+    b.w     lv_task_handler
 
-logo:                                   @ r4 = state. Our picture over the start screen's and the idle screen's, once each
+loop_hook:                              @ r0 = the task list, for the call this one replaced: a task has just run
+    push    {{r4, lr}}
+    mov     r4, r0
+    bl      look_after_task
+    mov     r0, r4
+    pop.w   {{r4, lr}}
+    b.w     lv_ll_get_head
+
+look_after_task:                        @ with a part on show: has the stock firmware changed the page under it?
+    movw    r3, #{STATE & 0xFFFF}       @ (it does that in a task, so this need not be asked on every pass)
+    movt    r3, #{STATE >> 16}
+    ldrb    r0, [r3, #3]
+    cmp     r0, #0
+    beq     look_no_part
+    b.w     show
+look_no_part:
+    b.w     look
+
+look:                                   @ anything for the main loop to do? Hardly ever, and this is passed
+    movw    r3, #{STATE & 0xFFFF}       @ thousands of times a second: so it is short, and lies next to the
+    movt    r3, #{STATE >> 16}          @ other code that runs all the time (see the note above SOURCE)
+    ldrb.w  r1, [r3, #60]
+    ldrh    r0, [r3, #0]                @ the phase, and "buffers wanted" above it
+    cmp     r1, #3
+    bne     look_work                   @ our picture is not on both start screens yet
+    cmp     r0, #2
+    bhs     look_work                   @ a frame is all in (2), or buffers are wanted (0x100 and up)
+    bx      lr
+look_work:
+    b.w     show
+
+usb_hook:                               @ r4 = the packet, r1 = where its length is; r4, r5, r7, lr are saved
+    movw    r2, #{STATE & 0xFFFF}
+    movt    r2, #{STATE >> 16}
+    ldrb    r3, [r2, #0]
+    cmp     r3, #1
+    bne     usb_stock
+    movw    r3, #{TICKS & 0xFFFF}
+    movt    r3, #{TICKS >> 16}
+    ldr     r3, [r3]
+    ldr     r5, [r2, #32]
+    subs    r3, r3, r5
+    cmp.w   r3, #{TIMEOUT_MS}
+    bhi     usb_expired
+    movw    r3, #{RXCR1 & 0xFFFF}       @ The endpoint may take the next packet now, before this one is copied:
+    movt    r3, #{RXCR1 >> 16}          @ the stock handler has it out of the controller already (in RAM, at r4).
+    movs    r5, #4                      @ The host leaves some 25 microseconds between two packets, and a packet
+    str     r5, [r3]                    @ that finds the endpoint shut is sent again, all 64 bytes of it. With the
+    movs    r5, #8                      @ copy first, that window was missed or not by where this code lay (see
+    str     r5, [r3]                    @ the note above SOURCE).
+    ldrb    r0, [r1]                    @ bytes in this packet
+    ldr     r3, [r2, #16]
+    ldr     r5, [r2, #20]
+    subs    r3, r3, r5
+    cmp     r0, r3
+    it      hi
+    movhi   r0, r3                      @ no more than the frame still needs
+    ldrb.w  r3, [r2, #40]
+    ldr.w   r3, [r2, r3, lsl #2]        @ the buffer being filled: one that neither picture shows
+    adds    r3, #16
+    add     r3, r5
+    add     r5, r0
+    str     r5, [r2, #20]
+    ldr     r5, [r2, #24]
+    cmp     r0, #0
+    beq     usb_copied
+usb_copy:
+    ldrb    r7, [r4], #1
+    strb    r7, [r3], #1
+    add     r5, r7
+    subs    r0, #1
+    bne     usb_copy
+usb_copied:
+    str     r5, [r2, #24]
+    ldr     r0, [r2, #20]
+    ldr     r3, [r2, #16]
+    cmp     r0, r3
+    bne     usb_arm
+    ldr     r0, [r2, #28]
+    uxth    r5, r5
+    movs    r3, #2
+    cmp     r0, r5
+    it      ne
+    movne   r3, #0                      @ a frame with the wrong sum is not shown
+    strb    r3, [r2, #0]
+usb_arm:
+    pop     {{r4, r5, r7, pc}}
+usb_expired:
+    movs    r3, #0
+    strb    r3, [r2, #0]
+usb_stock:
+    ldrb    r0, [r4]                    @ what the jump here replaced
+    cmp     r0, #0xaa
+    beq     usb_maybe_command
+    b.w     usb_done
+usb_maybe_command:
+    b.w     usb_command
+
+command_hook:                           @ r0 = command, r1 = 0, r2 = 0; runs in the USB interrupt
+    cmp     r0, #{COMMAND}
+    beq     command_ours
+    cmp     r0, #{PEEK}
+    beq     command_peek
+    b.w     reply
+command_peek:
+    b.w     peek
+command_ours:
     push    {{r4, r5, r6, lr}}
-    ldr     r5, [r4, #64]
-    cmp     r5, #0
-    bne     logo_start
-    movw    r0, #{(logo_size + 16) & 0xFFFF}
-    movt    r0, #{(logo_size + 16) >> 16}
-    bl      lv_mem_alloc
-    cmp     r0, #0
-    bne     logo_made
-    movs    r0, #3
-    strb.w  r0, [r4, #60]               @ no memory: DeepCool's pictures stay
-    b       logo_out
-logo_made:
-    mov     r5, r0
-    str     r5, [r4, #64]
-    movw    r0, #{HEADER & 0xFFFF}
-    movt    r0, #{HEADER >> 16}
-    str     r0, [r5, #0]                @ an lv_img_dsc_t as the stock loader makes it: raw, 480 x 640
-    movw    r3, #{logo_size & 0xFFFF}
-    movt    r3, #{logo_size >> 16}
-    str     r3, [r5, #4]
-    add.w   r1, r5, #16
-    str     r1, [r5, #8]
-    movs    r0, #0
-    str     r0, [r5, #12]
-    movw    r2, #{logo_at & 0xFFFF}
-    movt    r2, #{logo_at >> 16}
-logo_copy:                              @ the JPEG, from the flash into RAM: where the decoder is known to read
-    ldrb    r0, [r2], #1
-    strb    r0, [r1], #1
-    subs    r3, #1
-    bne     logo_copy
-logo_start:
-    ldrb.w  r6, [r4, #60]
-    tst     r6, #1
-    bne     logo_idle
-    orr     r6, r6, #1
-    strb.w  r6, [r4, #60]               @ the start screen: when this is first called, and never again
-    movw    r0, #{READY & 0xFFFF}
-    movt    r0, #{READY >> 16}
-    ldrb    r0, [r0]
-    cmp     r0, #0
-    bne     logo_idle                   @ its four seconds are over already (not when this is first called)
-    movw    r0, #{START_SCREEN & 0xFFFF}
-    movt    r0, #{START_SCREEN >> 16}
-    ldr     r0, [r0]
-    bl      logo_on
-logo_idle:
-    ldrb.w  r6, [r4, #60]
-    tst     r6, #2
-    bne     logo_out
-    movw    r0, #{IDLE_SCREEN & 0xFFFF}
-    movt    r0, #{IDLE_SCREEN >> 16}
-    ldr     r0, [r0]
-    cmp     r0, #0
-    beq     logo_out                    @ the idle screen has not been made yet: look again next time
-    ldr     r1, [r0, #8]
+    movw    r4, #{STATE & 0xFFFF}
+    movt    r4, #{STATE >> 16}
+    movw    r3, #{COMMAND_COPY & 0xFFFF}
+    movt    r3, #{COMMAND_COPY >> 16}
+    ldr.w   r1, [r3, #3]                @ size
+    movs    r2, #{REFUSED}
     cmp     r1, #0
-    beq     logo_out                    @ ... or has no pictures yet
-    orr     r6, r6, #2
-    strb.w  r6, [r4, #60]
-    bl      logo_on
-logo_out:
-    pop     {{r4, r5, r6, pc}}
-
-hide_part:                              @ r4 = state, r6 = the picture widget: the part goes, the page is whole
-    push    {{r5, lr}}
-    ldrb    r0, [r4, #3]
+    beq     command_out
+    cmp.w   r1, #{MAX_FRAME}
+    bhi     command_out
+    movs    r2, #{LATER}
+    ldr     r0, [r4, #4]
     cmp     r0, #0
-    beq     hide_done
+    beq     command_want
+    ldr     r0, [r4, #8]
+    cmp     r0, #0
+    beq     command_want
+    ldr     r0, [r4, #12]
+    cmp     r0, #0
+    beq     command_want
+    ldrb    r0, [r4, #0]
+    cmp     r0, #2
+    beq     command_out
+    ldrh.w  r5, [r3, #13]               @ width of a part; 0: the whole page
+    movs    r6, #0
+    cmp     r5, #0
+    beq     command_take
+    movs    r2, #{NO_PAGE}              @ a part goes on a page of ours, and only while that is on show
+    ldrb    r0, [r4, #2]
+    cmp     r0, #0
+    beq     command_out
+    ldr.w   r0, [r4, r0, lsl #2]
+    movw    r6, #{WIDGET & 0xFFFF}
+    movt    r6, #{WIDGET >> 16}
+    ldr     r6, [r6]
+    ldr     r6, [r6, #{EXT}]
+    ldr     r6, [r6, #0]
+    cmp     r0, r6
+    bne     command_out
+    ldrh.w  r0, [r3, #15]               @ height
+    lsls    r6, r0, #21
+    orr.w   r6, r6, r5, lsl #10
+    adds    r6, #1                      @ lv_img_header_t: raw, width, height
+    str     r6, [r4, #48]
+    ldrh.w  r0, [r3, #9]
+    strh    r0, [r4, #44]               @ x
+    ldrh.w  r0, [r3, #11]
+    strh    r0, [r4, #46]               @ y
+    movs    r6, #1
+command_take:
+    strb.w  r6, [r4, #41]
+    str     r1, [r4, #16]
+    ldrh.w  r0, [r3, #7]                @ sum16
+    str     r0, [r4, #28]
     movs    r0, #0
-    strb    r0, [r4, #3]
-    adds    r0, r6, #4
-    bl      lv_ll_get_head              @ the widget's child, if it has one
-    cmp     r0, #0
-    beq     hide_done
-    movs    r1, #1
-    bl      lv_obj_set_hidden
-hide_done:
-    pop     {{r5, pc}}
+    str     r0, [r4, #20]
+    str     r0, [r4, #24]
+    ldrb    r1, [r4, #2]
+    ldrb    r2, [r4, #3]
+    movs    r0, #1                      @ into the first buffer that neither picture shows
+command_pick:
+    cmp     r0, r1
+    beq     command_skip
+    cmp     r0, r2
+    bne     command_picked
+command_skip:
+    adds    r0, #1
+    b       command_pick
+command_picked:
+    strb.w  r0, [r4, #40]
+    movw    r0, #{TICKS & 0xFFFF}
+    movt    r0, #{TICKS >> 16}
+    ldr     r0, [r0]
+    str     r0, [r4, #32]
+    movs    r0, #1
+    strb    r0, [r4, #0]
+    movs    r2, #{GO}
+    b       command_out
+command_want:
+    movs    r0, #1
+    strb    r0, [r4, #1]                @ the main loop makes the buffers
+command_out:                            @ the reply, made here: the stock routine sends zeros for a command it does not know
+    mov     r5, r2
+    movw    r4, #{REPLY & 0xFFFF}
+    movt    r4, #{REPLY >> 16}
+    mov     r0, r4
+    movs    r1, #48
+    bl      memclr
+    movw    r0, #0x2e55
+    strh    r0, [r4, #0]
+    movs    r0, #{COMMAND}
+    strb    r0, [r4, #2]
+    strb    r5, [r4, #3]                @ status
+    movs    r0, #{VERSION}
+    strb    r0, [r4, #4]
+    movw    r0, #0x4948
+    movt    r0, #0x4344
+    str.w   r0, [r4, #42]               @ "HIDC"
+    addw    r0, r5, #{0x55 + 0x2E + COMMAND + VERSION + sum(b"HIDC")}
+    strh    r0, [r4, #46]               @ sum16
+    movs    r0, #1                      @ endpoint 1 IN
+    mov     r1, r4
+    movs    r2, #48
+    pop.w   {{r4, r5, r6, lr}}
+    b.w     usb_send
+
+peek:                                   @ command 21: up to 39 bytes of memory, in a reply of the usual form
+    push    {{r4, r5, r6, lr}}
+    movw    r4, #{REPLY & 0xFFFF}
+    movt    r4, #{REPLY >> 16}
+    mov     r0, r4
+    movs    r1, #48
+    bl      memclr
+    movw    r0, #0x2e55
+    strh    r0, [r4, #0]
+    movs    r0, #{PEEK}
+    strb    r0, [r4, #2]
+    movw    r3, #{COMMAND_COPY & 0xFFFF}
+    movt    r3, #{COMMAND_COPY >> 16}
+    ldr.w   r1, [r3, #3]                @ address
+    ldrb    r2, [r3, #7]                @ count
+    cmp     r2, #{PEEK_MOST}
+    it      hi
+    movhi   r2, #{PEEK_MOST}
+    adds    r3, r4, #3
+    cmp     r2, #0
+    beq     peek_tail
+peek_copy:
+    ldrb    r0, [r1], #1
+    strb    r0, [r3], #1
+    subs    r2, #1
+    bne     peek_copy
+peek_tail:
+    movw    r0, #0x4948
+    movt    r0, #0x4344
+    str.w   r0, [r4, #42]               @ "HIDC"
+    movs    r0, #0
+    movs    r1, #0
+peek_sum:
+    ldrb    r2, [r4, r1]
+    add     r0, r2
+    adds    r1, #1
+    cmp     r1, #46
+    bne     peek_sum
+    strh    r0, [r4, #46]               @ sum16
+    movs    r0, #1                      @ endpoint 1 IN
+    mov     r1, r4
+    movs    r2, #48
+    pop.w   {{r4, r5, r6, lr}}
+    b.w     usb_send
 
 show:                                   @ make the buffers when asked to, and show a frame that is all in
     push    {{r3, r4, r5, r6, r7, lr}}
@@ -412,247 +582,113 @@ show_elsewhere:                         @ another screen: a frame that came for 
     beq     show_drop
     pop     {{r3, r4, r5, r6, r7, pc}}
 
-main_hook:
-    push    {{r4, lr}}
-    bl      show
-    pop.w   {{r4, lr}}
-    b.w     lv_task_handler
-
-loop_hook:                              @ r0 = the task list, for the call this one replaced
-    push    {{r4, lr}}
-    mov     r4, r0
-    bl      show
-    mov     r0, r4
-    pop.w   {{r4, lr}}
-    b.w     lv_ll_get_head
-
-peek:                                   @ command 21: up to 39 bytes of memory, in a reply of the usual form
-    push    {{r4, r5, r6, lr}}
-    movw    r4, #{REPLY & 0xFFFF}
-    movt    r4, #{REPLY >> 16}
-    mov     r0, r4
-    movs    r1, #48
-    bl      memclr
-    movw    r0, #0x2e55
-    strh    r0, [r4, #0]
-    movs    r0, #{PEEK}
-    strb    r0, [r4, #2]
-    movw    r3, #{COMMAND_COPY & 0xFFFF}
-    movt    r3, #{COMMAND_COPY >> 16}
-    ldr.w   r1, [r3, #3]                @ address
-    ldrb    r2, [r3, #7]                @ count
-    cmp     r2, #{PEEK_MOST}
-    it      hi
-    movhi   r2, #{PEEK_MOST}
-    adds    r3, r4, #3
-    cmp     r2, #0
-    beq     peek_tail
-peek_copy:
-    ldrb    r0, [r1], #1
-    strb    r0, [r3], #1
-    subs    r2, #1
-    bne     peek_copy
-peek_tail:
-    movw    r0, #0x4948
-    movt    r0, #0x4344
-    str.w   r0, [r4, #42]               @ "HIDC"
+hide_part:                              @ r4 = state, r6 = the picture widget: the part goes, the page is whole
+    push    {{r5, lr}}
+    ldrb    r0, [r4, #3]
+    cmp     r0, #0
+    beq     hide_done
     movs    r0, #0
-    movs    r1, #0
-peek_sum:
-    ldrb    r2, [r4, r1]
-    add     r0, r2
-    adds    r1, #1
-    cmp     r1, #46
-    bne     peek_sum
-    strh    r0, [r4, #46]               @ sum16
-    movs    r0, #1                      @ endpoint 1 IN
-    mov     r1, r4
-    movs    r2, #48
-    pop.w   {{r4, r5, r6, lr}}
-    b.w     usb_send
+    strb    r0, [r4, #3]
+    adds    r0, r6, #4
+    bl      lv_ll_get_head              @ the widget's child, if it has one
+    cmp     r0, #0
+    beq     hide_done
+    movs    r1, #1
+    bl      lv_obj_set_hidden
+hide_done:
+    pop     {{r5, pc}}
 
-command_hook:                           @ r0 = command, r1 = 0, r2 = 0; runs in the USB interrupt
-    cmp     r0, #{COMMAND}
-    beq     command_ours
-    cmp     r0, #{PEEK}
-    beq     command_peek
-    b.w     reply
-command_peek:
-    b.w     peek
-command_ours:
+logo:                                   @ r4 = state. Our picture over the start screen's and the idle screen's, once each
     push    {{r4, r5, r6, lr}}
-    movw    r4, #{STATE & 0xFFFF}
-    movt    r4, #{STATE >> 16}
-    movw    r3, #{COMMAND_COPY & 0xFFFF}
-    movt    r3, #{COMMAND_COPY >> 16}
-    ldr.w   r1, [r3, #3]                @ size
-    movs    r2, #{REFUSED}
-    cmp     r1, #0
-    beq     command_out
-    cmp.w   r1, #{MAX_FRAME}
-    bhi     command_out
-    movs    r2, #{LATER}
-    ldr     r0, [r4, #4]
-    cmp     r0, #0
-    beq     command_want
-    ldr     r0, [r4, #8]
-    cmp     r0, #0
-    beq     command_want
-    ldr     r0, [r4, #12]
-    cmp     r0, #0
-    beq     command_want
-    ldrb    r0, [r4, #0]
-    cmp     r0, #2
-    beq     command_out
-    ldrh.w  r5, [r3, #13]               @ width of a part; 0: the whole page
-    movs    r6, #0
+    ldr     r5, [r4, #64]
     cmp     r5, #0
-    beq     command_take
-    movs    r2, #{NO_PAGE}              @ a part goes on a page of ours, and only while that is on show
-    ldrb    r0, [r4, #2]
+    bne     logo_start
+    movw    r0, #{(logo_size + 16) & 0xFFFF}
+    movt    r0, #{(logo_size + 16) >> 16}
+    bl      lv_mem_alloc
     cmp     r0, #0
-    beq     command_out
-    ldr.w   r0, [r4, r0, lsl #2]
-    movw    r6, #{WIDGET & 0xFFFF}
-    movt    r6, #{WIDGET >> 16}
-    ldr     r6, [r6]
-    ldr     r6, [r6, #{EXT}]
-    ldr     r6, [r6, #0]
-    cmp     r0, r6
-    bne     command_out
-    ldrh.w  r0, [r3, #15]               @ height
-    lsls    r6, r0, #21
-    orr.w   r6, r6, r5, lsl #10
-    adds    r6, #1                      @ lv_img_header_t: raw, width, height
-    str     r6, [r4, #48]
-    ldrh.w  r0, [r3, #9]
-    strh    r0, [r4, #44]               @ x
-    ldrh.w  r0, [r3, #11]
-    strh    r0, [r4, #46]               @ y
-    movs    r6, #1
-command_take:
-    strb.w  r6, [r4, #41]
-    str     r1, [r4, #16]
-    ldrh.w  r0, [r3, #7]                @ sum16
-    str     r0, [r4, #28]
+    bne     logo_made
+    movs    r0, #3
+    strb.w  r0, [r4, #60]               @ no memory: DeepCool's pictures stay
+    b       logo_out
+logo_made:
+    mov     r5, r0
+    str     r5, [r4, #64]
+    movw    r0, #{HEADER & 0xFFFF}
+    movt    r0, #{HEADER >> 16}
+    str     r0, [r5, #0]                @ an lv_img_dsc_t as the stock loader makes it: raw, 480 x 640
+    movw    r3, #{logo_size & 0xFFFF}
+    movt    r3, #{logo_size >> 16}
+    str     r3, [r5, #4]
+    add.w   r1, r5, #16
+    str     r1, [r5, #8]
     movs    r0, #0
-    str     r0, [r4, #20]
-    str     r0, [r4, #24]
-    ldrb    r1, [r4, #2]
-    ldrb    r2, [r4, #3]
-    movs    r0, #1                      @ into the first buffer that neither picture shows
-command_pick:
-    cmp     r0, r1
-    beq     command_skip
-    cmp     r0, r2
-    bne     command_picked
-command_skip:
-    adds    r0, #1
-    b       command_pick
-command_picked:
-    strb.w  r0, [r4, #40]
-    movw    r0, #{TICKS & 0xFFFF}
-    movt    r0, #{TICKS >> 16}
-    ldr     r0, [r0]
-    str     r0, [r4, #32]
-    movs    r0, #1
-    strb    r0, [r4, #0]
-    movs    r2, #{GO}
-    b       command_out
-command_want:
-    movs    r0, #1
-    strb    r0, [r4, #1]                @ the main loop makes the buffers
-command_out:                            @ the reply, made here: the stock routine sends zeros for a command it does not know
-    mov     r5, r2
-    movw    r4, #{REPLY & 0xFFFF}
-    movt    r4, #{REPLY >> 16}
-    mov     r0, r4
-    movs    r1, #48
-    bl      memclr
-    movw    r0, #0x2e55
-    strh    r0, [r4, #0]
-    movs    r0, #{COMMAND}
-    strb    r0, [r4, #2]
-    strb    r5, [r4, #3]                @ status
-    movs    r0, #{VERSION}
-    strb    r0, [r4, #4]
-    movw    r0, #0x4948
-    movt    r0, #0x4344
-    str.w   r0, [r4, #42]               @ "HIDC"
-    addw    r0, r5, #{0x55 + 0x2E + COMMAND + VERSION + sum(b"HIDC")}
-    strh    r0, [r4, #46]               @ sum16
-    movs    r0, #1                      @ endpoint 1 IN
-    mov     r1, r4
-    movs    r2, #48
-    pop.w   {{r4, r5, r6, lr}}
-    b.w     usb_send
-
-usb_hook:                               @ r4 = the packet, r1 = where its length is; r4, r5, r7, lr are saved
-    movw    r2, #{STATE & 0xFFFF}
-    movt    r2, #{STATE >> 16}
-    ldrb    r3, [r2, #0]
-    cmp     r3, #1
-    bne     usb_stock
-    movw    r3, #{TICKS & 0xFFFF}
-    movt    r3, #{TICKS >> 16}
-    ldr     r3, [r3]
-    ldr     r5, [r2, #32]
-    subs    r3, r3, r5
-    cmp.w   r3, #{TIMEOUT_MS}
-    bhi     usb_expired
-    ldrb    r0, [r1]                    @ bytes in this packet
-    ldr     r3, [r2, #16]
-    ldr     r5, [r2, #20]
-    subs    r3, r3, r5
-    cmp     r0, r3
-    it      hi
-    movhi   r0, r3                      @ no more than the frame still needs
-    ldrb.w  r3, [r2, #40]
-    ldr.w   r3, [r2, r3, lsl #2]        @ the buffer being filled: one that neither picture shows
-    adds    r3, #16
-    add     r3, r5
-    add     r5, r0
-    str     r5, [r2, #20]
-    ldr     r5, [r2, #24]
+    str     r0, [r5, #12]
+    movw    r2, #{logo_at & 0xFFFF}
+    movt    r2, #{logo_at >> 16}
+logo_copy:                              @ the JPEG, from the flash into RAM: where the decoder is known to read
+    ldrb    r0, [r2], #1
+    strb    r0, [r1], #1
+    subs    r3, #1
+    bne     logo_copy
+logo_start:
+    ldrb.w  r6, [r4, #60]
+    tst     r6, #1
+    bne     logo_idle
+    orr     r6, r6, #1
+    strb.w  r6, [r4, #60]               @ the start screen: when this is first called, and never again
+    movw    r0, #{READY & 0xFFFF}
+    movt    r0, #{READY >> 16}
+    ldrb    r0, [r0]
     cmp     r0, #0
-    beq     usb_copied
-usb_copy:
-    ldrb    r7, [r4], #1
-    strb    r7, [r3], #1
-    add     r5, r7
-    subs    r0, #1
-    bne     usb_copy
-usb_copied:
-    str     r5, [r2, #24]
-    ldr     r0, [r2, #20]
-    ldr     r3, [r2, #16]
-    cmp     r0, r3
-    bne     usb_arm
-    ldr     r0, [r2, #28]
-    uxth    r5, r5
-    movs    r3, #2
-    cmp     r0, r5
-    it      ne
-    movne   r3, #0                      @ a frame with the wrong sum is not shown
-    strb    r3, [r2, #0]
-usb_arm:
-    movw    r0, #{RXCR1 & 0xFFFF}
-    movt    r0, #{RXCR1 >> 16}
-    movs    r1, #4
-    str     r1, [r0]
-    movs    r1, #8
-    str     r1, [r0]
-    pop     {{r4, r5, r7, pc}}
-usb_expired:
-    movs    r3, #0
-    strb    r3, [r2, #0]
-usb_stock:
-    ldrb    r0, [r4]                    @ what the jump here replaced
-    cmp     r0, #0xaa
-    beq     usb_maybe_command
-    b.w     usb_done
-usb_maybe_command:
-    b.w     usb_command
+    bne     logo_idle                   @ its four seconds are over already (not when this is first called)
+    movw    r0, #{START_SCREEN & 0xFFFF}
+    movt    r0, #{START_SCREEN >> 16}
+    ldr     r0, [r0]
+    bl      logo_on
+logo_idle:
+    ldrb.w  r6, [r4, #60]
+    tst     r6, #2
+    bne     logo_out
+    movw    r0, #{IDLE_SCREEN & 0xFFFF}
+    movt    r0, #{IDLE_SCREEN >> 16}
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     logo_out                    @ the idle screen has not been made yet: look again next time
+    ldr     r1, [r0, #8]
+    cmp     r1, #0
+    beq     logo_out                    @ ... or has no pictures yet
+    orr     r6, r6, #2
+    strb.w  r6, [r4, #60]
+    bl      logo_on
+logo_out:
+    pop     {{r4, r5, r6, pc}}
+
+logo_on:                                @ r0 = a screen (or 0), r5 = our picture: put it on top of that screen
+    push    {{r4, lr}}
+    cmp     r0, #0
+    beq     logo_on_out
+    movs    r1, #0
+    bl      lv_img_create               @ a child of the screen, made last: on top of what is there
+    cmp     r0, #0
+    beq     logo_on_out
+    mov     r1, r5
+    bl      lv_img_set_src
+logo_on_out:
+    pop     {{r4, pc}}
+
+init_hook:
+    movs    r1, #1
+    strb    r1, [r0]                    @ what the call replaced
+    movw    r0, #{STATE & 0xFFFF}
+    movt    r0, #{STATE >> 16}
+    movs    r1, #0
+    movs    r2, #{STATE_SIZE}
+init_clear:
+    subs    r2, #4
+    str     r1, [r0, r2]
+    bne     init_clear
+    bx      lr
 """
 
 
@@ -695,20 +731,30 @@ def logo() -> bytes:
 
 
 def assemble(base: int) -> tuple[bytes, dict[str, int]]:
-    """The patch's code for address `base`, and where its labels are. (The logo lies after it: its address
-    depends on how long the code is, and the code has that address in it. Wherever it is, the code is as
-    long: so it is assembled for a made-up address first.)"""
+    """The patch's code for address `base`, and where its labels are.
+
+    Twice: a routine may call one that comes after it, and the logo lies after all of them, so the code
+    has addresses in it that depend on how long the code is. Its length does not depend on them (calls
+    and jumps between routines are written in their long forms, `bl` and `b.w`): so it is assembled for
+    made-up addresses first, and again for the ones that gave."""
     size = len(logo())
-    length = len(_assemble(base, source(base, size))[0])
-    return _assemble(base, source(base + length, size))
+    names = [routine.split(":")[0] for routine in source(base, size).strip().split("\n\n")]
+    first, where = _assemble(base, source(base, size), dict.fromkeys(names, base))
+    code, labels = _assemble(base, source(base + len(first), size), where)
+    if labels != where or len(code) != len(first):
+        raise ValueError("the patch's code changed its length with its addresses: a short jump between routines?")
+    return code, labels
 
 
-def _assemble(base: int, text: str) -> tuple[bytes, dict[str, int]]:
+def _assemble(base: int, text: str, elsewhere: dict[str, int]) -> tuple[bytes, dict[str, int]]:
+    """`elsewhere`: where the routines are taken to be, for the calls from one to another."""
     ks = _assembler()
     code, labels = b"", {}
     for routine in text.strip().split("\n\n"):          # one at a time: each starts with the label it is entered at
-        prologue = "".join(f".equ {name}, {address:#x}\n" for name, address in {**SYMBOLS, **labels}.items())
-        labels[routine.split(":")[0]] = base + len(code)   # (a routine can call the ones before it)
+        name = routine.split(":")[0]
+        known = {**SYMBOLS, **{n: at for n, at in elsewhere.items() if n != name}}
+        prologue = "".join(f".equ {n}, {address:#x}\n" for n, address in known.items())
+        labels[name] = base + len(code)
         part, _ = ks.asm(prologue + routine, base + len(code))
         code += bytes(part) + b"\x00" * (-len(part) % 4)
     _check_branches(code, base)

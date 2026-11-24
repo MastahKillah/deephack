@@ -313,6 +313,11 @@ whole page was 29, and sharper for it. The cooler shows a picture every 36 ms an
 small it is: about 27 a second is its ceiling, and what a part buys is reaching that. A cooler with an
 older version of the patch gets whole pictures; Settings says when a newer one can be put on.
 
+**How fast** (version 9 of the patch): a frame's bytes arrive at 997 KB a second, which is all USB at
+full speed carries; earlier versions took 540 to 820. A frame of up to 33 KB is on the glass at the
+panel's next turn, so a video keeps its 27 pictures a second at a higher JPEG quality than before (up
+to 80, where it stopped at 65 and fell to 45 for a busy picture).
+
 **Its own start screen** (version 6 of the patch): while the PC starts, the cooler shows deephack's logo
 where DeepCool's was, from the first moment until deephack takes the screen over. DeepCool's logo is a
 picture in a file on the cooler that nothing reaches over USB; the patch carries its own (11 KB, in the
