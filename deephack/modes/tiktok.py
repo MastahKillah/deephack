@@ -30,7 +30,7 @@ import urllib.request
 from dataclasses import dataclass
 
 from .base import Setting
-from .video import MUTE_KEY, NETWORK, SOUND, Player, Video, clock_text
+from .video import MUTE_KEY, NETWORK, PAUSE_KEY, SOUND, Player, Video, clock_text
 
 PAGE = "https://www.tiktok.com/explore"
 LIST = "https://www.tiktok.com/api/explore/item_list/"
@@ -150,7 +150,7 @@ class TikTok(Video):
     title = "TikTok"
     description = "Random videos, no account"
     glyph = ""
-    actions = (("previous", "Previous"), ("next", "Next"), ("mute", "Mute"))
+    actions = (("previous", "Previous"), ("next", "Next"), ("pause", "Pause"), ("mute", "Mute"))
     settings = (
         Setting("topic", "Videos about", "choice", "120", TOPICS,
                 hint="Popular videos from TikTok's Explore page, as somebody who is not logged in sees it. Which ones "
@@ -162,7 +162,7 @@ class TikTok(Video):
         Setting("next_key", "Key for the next video", "shortcut", "Ctrl+Alt+PgDown", action="next",
                 hint="Works whatever window is in front, while TikTok is on the cooler. Empty: no key."),
         Setting("previous_key", "Key for the one before", "shortcut", "Ctrl+Alt+PgUp", action="previous"),
-        MUTE_KEY,
+        PAUSE_KEY, MUTE_KEY,
     )
 
     def __init__(self, values: dict | None = None, player=Player, feed=None):
@@ -188,9 +188,11 @@ class TikTok(Video):
         return self._player.title or "TikTok"
 
     def act(self, action: str) -> None:
-        """Next or Previous (and Mute, which is the Video mode's), from the app's buttons or a key."""
+        """Next or Previous (and Pause and Mute, which are the Video mode's), from the app's buttons or a key.
+        Another video plays, also when the last one was paused."""
         if action not in ("next", "previous"):
             return super().act(action)
+        self._pause(False)
         self._feed.step(+1 if action == "next" else -1)
         if self._player is not None:
             self._player.skip()

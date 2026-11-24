@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QF
 from .. import __version__, autostart, firmware, ytdlp
 from ..config import Config
 from ..engine import Engine, quit_deepcool
-from ..hotkeys import Hotkeys
+from ..hotkeys import Hotkeys, same
 from ..modes import BY_ID, MODES
 from . import style
 from .firmware_dialog import FlashDialog
@@ -42,6 +42,13 @@ REPO = "https://github.com/a7ex-turcan/deephack"
 LINKS = (("Source and releases", REPO), ("Licence", REPO + "/blob/main/LICENSE"),
          ("What the app carries", REPO + "/blob/main/THIRD-PARTY.md"))
 SETTINGS_GLYPH = "\ue713"                        # the cog of "Segoe Fluent Icons"
+# the app's own keys: (where the config keeps it, what it is called, what the page says about it)
+APP_KEYS = (("key_next_mode", "Next mode", "Puts the mode after the one on the cooler there, in the order of the list."),
+            ("key_previous_mode", "Previous mode", "The one before it."),
+            ("key_draw", "Draw on the cooler, off and on", "The switch in the sidebar."))
+
+
+REFUSED = "Windows will not give deephack this key: another program has it, or it is no single key."
 
 
 def _card() -> tuple[QFrame, QVBoxLayout]:
@@ -64,8 +71,12 @@ class MainWindow(QMainWindow):
         self._viewing = ""                       # the mode whose page is open; config "mode" is the one on the cooler.
                                                  # Empty while the Settings page is
         self._live_frames: tuple | None = None   # last frames of the mode on the cooler, to show again
-        self.hotkeys = Hotkeys()                 # the keys of the mode on the cooler (app.py lets it hear them)
+        self.hotkeys = Hotkeys()                 # the app's keys and those of the mode on the cooler (app.py lets it
+                                                 # hear them)
         self._keys_refused: set[str] = set()     # ... and the ones Windows would not give us
+        self._app_key_calls = {"key_next_mode": lambda: self.step_mode(+1), "key_previous_mode": lambda: self.step_mode(-1),
+                               "key_draw": lambda: self.set_enabled(not self.config.get("enabled"))}
+        self._app_key_notes: dict[str, QLabel] = {}
         self.setWindowTitle("deephack")
         self.setFixedSize(960, 620)
 
@@ -87,15 +98,65 @@ class MainWindow(QMainWindow):
         self.view_mode(config.get("mode"))
 
     # ------------------------------------------------------------ keys
+    def _claims(self, mode_id: str) -> tuple[dict, dict]:
+        """Who gets which key with this mode on the cooler: the app's own keys first (Settings), then the
+        mode's (its settings of kind "shortcut") in the order of its page. A key asked for twice goes to
+        the first. ({the key: what it calls}, {(mode id or "" for the app, setting): what has its key})."""
+        values = self.config.mode_settings(mode_id)
+        asking = [("", key, self.config.get(key) or "", f"“{label}” in Settings", self._app_key_calls[key])
+                  for key, label, _hint in APP_KEYS]
+        asking += [(mode_id, s.key, values.get(s.key, s.default), f"“{s.label}”",
+                    lambda action=s.action: self.engine.mode_action(mode_id, action))
+                   for s in BY_ID[mode_id].settings if s.kind == "shortcut"]
+        keys, taken, holders = {}, {}, {}
+        for owner, key, text, name, call in asking:
+            if not text:
+                continue
+            if same(text) in holders:
+                taken[(owner, key)] = holders[same(text)]
+            else:
+                holders[same(text)], keys[text] = name, call
+        return keys, taken
+
     def sync_hotkeys(self) -> None:
-        """Register the keys of the mode that is on the cooler (its settings of kind "shortcut"), and no others."""
-        cls = BY_ID[self._live]
-        values, keys = self.config.mode_settings(cls.id), {}
-        for s in cls.settings:
-            text = values.get(s.key, s.default) if s.kind == "shortcut" else ""
-            if text and text not in keys:
-                keys[text] = lambda mode_id=cls.id, action=s.action: self.engine.mode_action(mode_id, action)
+        """Register the app's own keys and the keys of the mode that is on the cooler, and no others."""
+        keys, taken = self._claims(self._live)
         self._keys_refused = self.hotkeys.set(keys)
+        for key, note in self._app_key_notes.items():
+            text = self.config.get(key) or ""
+            said = (f"This is the key for {taken[('', key)]} already: it does that." if ("", key) in taken else
+                    REFUSED if text in self._keys_refused else "")
+            note.setText(said)
+            note.setVisible(bool(said))
+
+    def step_mode(self, by: int) -> None:
+        """The next or the previous mode goes on the cooler (a key: the window may be hidden, or open on
+        something else, and that stays open; a page that shows what is on the cooler follows)."""
+        ids = [cls.id for cls in MODES]
+        target = ids[(ids.index(self._live) + by) % len(ids)]
+        if self._viewing in (self._live, target):
+            self.activate_mode(target)
+        else:
+            self._put_on_cooler(target)
+            self._refresh_caption()
+
+    def _key_row(self, current: str, on_set) -> QHBoxLayout:
+        """A field that takes a key as it is pressed, and a button for no key."""
+        line = QHBoxLayout()
+        line.setSpacing(8)
+        keys = QKeySequenceEdit(QKeySequence(current))
+        keys.setMaximumSequenceLength(1)
+        keys.editingFinished.connect(lambda: on_set(keys.keySequence().toString(QKeySequence.SequenceFormat.PortableText)))
+        none = QPushButton("None")
+        none.clicked.connect(lambda _=False: (keys.clear(), on_set("")))
+        line.addWidget(keys, 1)
+        line.addWidget(none)
+        return line
+
+    def _set_app_key(self, key: str, text: str) -> None:
+        if (self.config.get(key) or "") != text:
+            self.config.set(key, text)
+            self.sync_hotkeys()
 
     # ------------------------------------------------------------ layout
     def _build_sidebar(self) -> QWidget:
@@ -282,6 +343,21 @@ class MainWindow(QMainWindow):
         self._brightness = self._choice_row(cl, "Screen brightness", "Of the cooler's screen.", "brightness",
                                             tuple((p, f"{p} %") for p in (100, 85, 70, 50, 30)))
         cards.addWidget(cooler)
+
+        # keys that work in any window and belong to no mode
+        keys, kl = _card()
+        kl.addWidget(_label("KEYS", "section"))
+        kl.addWidget(_label("They work whatever window is in front. A mode's own keys (the next photo, pause) are on its "
+                            "page, and work while that mode is on the cooler.", "hint", wrap=True))
+        for key, label, hint in APP_KEYS:
+            kl.addWidget(_label(label))
+            kl.addLayout(self._key_row(self.config.get(key) or "", lambda text, key=key: self._set_app_key(key, text)))
+            kl.addWidget(_label(hint, "hint", wrap=True))
+            note = self._app_key_notes[key] = _label("", "hint", wrap=True)
+            note.setStyleSheet(f"color: {style.WARN};")
+            note.hide()
+            kl.addWidget(note)
+        cards.addWidget(keys)
 
         # the program that finds the stream behind a YouTube link, and a newer one when YouTube has changed
         links, ll = _card()
@@ -518,14 +594,17 @@ class MainWindow(QMainWindow):
 
     def activate_mode(self, mode_id: str) -> None:
         """Put a mode on the cooler (and open its page)."""
+        self._put_on_cooler(mode_id)
+        self._viewing = ""                       # rebuild the page as the live one
+        self.view_mode(mode_id)
+
+    def _put_on_cooler(self, mode_id: str) -> None:
         if self._live != mode_id:
             self.config.set("mode", mode_id)
             self._live_frames = None
             self.engine.reload_mode()
             self._mark_live()
             self.sync_hotkeys()
-        self._viewing = ""                       # rebuild the page as the live one
-        self.view_mode(mode_id)
 
     def _mark_live(self) -> None:
         for btn in self._mode_buttons.buttons():
@@ -543,34 +622,28 @@ class MainWindow(QMainWindow):
                     clear(item.layout())
         clear(lay)
         values = self.config.mode_settings(cls.id)
+        taken = self._claims(cls.id)[1]
         if cls.actions:                          # what the mode can be told to do: a button each
-            row = QHBoxLayout()
-            row.setSpacing(8)
-            for action, label in cls.actions:
-                button = QPushButton(label)
-                button.setCursor(Qt.CursorShape.PointingHandCursor)
-                button.clicked.connect(lambda _=False, a=action: self.engine.mode_action(cls.id, a))
-                row.addWidget(button, 1)
-            lay.addLayout(row)
+            across = len(cls.actions) if len(cls.actions) <= 3 else 2        # (four in a row are wider than the column)
+            for start in range(0, len(cls.actions), across):
+                row = QHBoxLayout()
+                row.setSpacing(8)
+                for action, label in cls.actions[start:start + across]:
+                    button = QPushButton(label)
+                    button.setCursor(Qt.CursorShape.PointingHandCursor)
+                    button.clicked.connect(lambda _=False, a=action: self.engine.mode_action(cls.id, a))
+                    row.addWidget(button, 1)
+                lay.addLayout(row)
         lay.addWidget(_label("SETTINGS", "section"))
         for s in cls.settings:
             lay.addWidget(_label(s.label))
             current = values.get(s.key, s.default)
             if s.kind == "shortcut":
-                line = QHBoxLayout()
-                line.setSpacing(8)
-                keys = QKeySequenceEdit(QKeySequence(current))
-                keys.setMaximumSequenceLength(1)
-                keys.editingFinished.connect(lambda k=keys, key=s.key: self._set_setting(
-                    cls.id, key, k.keySequence().toString(QKeySequence.SequenceFormat.PortableText)))
-                none = QPushButton("None")
-                none.clicked.connect(lambda _=False, k=keys, key=s.key: (k.clear(), self._set_setting(cls.id, key, "")))
-                line.addWidget(keys, 1)
-                line.addWidget(none)
-                lay.addLayout(line)
-                if cls.id == self._live and current in self._keys_refused:
-                    note = _label("Windows will not give deephack this key: another program has it, or it is no single key.",
-                                  "hint", wrap=True)
+                lay.addLayout(self._key_row(current, lambda text, key=s.key: self._set_setting(cls.id, key, text)))
+                said = (f"This is the key for {taken[(cls.id, s.key)]} already: it does that." if (cls.id, s.key) in taken else
+                        REFUSED if cls.id == self._live and current in self._keys_refused else "")
+                if said:
+                    note = _label(said, "hint", wrap=True)
                     note.setStyleSheet(f"color: {style.WARN};")
                     lay.addWidget(note)
             elif s.kind == "capture":
@@ -639,8 +712,9 @@ class MainWindow(QMainWindow):
                 self.engine.reload_mode()
             if self._viewing != self._live and uses(self._viewing):
                 self.engine.reload_preview()
-        if mode_id == self._live and key_setting:
-            self.sync_hotkeys()
+        if key_setting:                          # (the page anew: what it says about the keys may have changed)
+            if mode_id == self._live:
+                self.sync_hotkeys()
             QTimer.singleShot(0, lambda: self._viewing == mode_id and self._build_settings(BY_ID[mode_id]))
 
     def _set_enabled(self, on: bool) -> None:

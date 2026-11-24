@@ -371,7 +371,7 @@ def test_the_mode_plays_sound_as_loud_as_it_is_set_and_mute_silences_it(films):
     assert device.volumes[-1] == 0.8 and mode._player.opened == 1 and "muted" not in mode.status
     asyncio.run(mode.close())
     assert device.written == 0
-    assert Video.actions == (("mute", "Mute"),) and {s.key: s.live for s in Video.settings}["sound"]
+    assert ("mute", "Mute") in Video.actions and {s.key: s.live for s in Video.settings}["sound"]
 
 
 def test_sound_is_off_unless_switched_on_and_only_on_the_cooler(films):

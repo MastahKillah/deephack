@@ -25,6 +25,11 @@ How it works:
   on the net holds both (TikTok), both are read from it at once, the sound a little ahead. Only the
   mode on the cooler sounds, not one that is merely looked at in the window.
 
+- **Pause, and ten seconds back or forward** (`act`), from the app's buttons or from keys that work in
+  any window. A paused video holds its picture and its sound at once; the mode then stops asking for
+  frames, so after three seconds the stream is closed like any that nobody looks at, and going on opens
+  it again where it was. A jump opens the video anew at the other place: a second or two for a link.
+
 Not done: the turn that phone videos ask for (one filmed upright plays on its side).
 """
 from __future__ import annotations
@@ -90,6 +95,8 @@ LEAD = 0.10                 # seconds the picture is chosen ahead of what is hea
                             # and is taken as 35 ms
 SOUND_AHEAD = 0.4           # seconds of sound kept ready in the speaker
 SOUND_WAIT = 3.0            # the picture waits this long at most for the sound to begin
+JUMP = 10.0                 # seconds Back and Forward go
+PEEK = 15.0                 # seconds a paused video is given to show the place it was sent to
 HUSH = 0.5                  # seconds without anybody asking for a frame: the sound pauses (after IDLE it all closes)
 PENDING, PENDING_BYTES = 45, 64 << 20        # frames that may wait while the reading runs ahead for the sound
 SOUND_LEVELS = (("0", "Off"), ("20", "20 %"), ("40", "40 %"), ("60", "60 %"), ("80", "80 %"), ("100", "100 %"))
@@ -250,7 +257,10 @@ class Player:
     `follow`: something outside that says which moment of the video belongs on screen now (music that
     plays elsewhere, and the video is its picture). The picture goes by it as it goes by its own sound:
     frames that are behind are left out, frames that are ahead wait. `seek()` for a jump too large for
-    that."""
+    that.
+
+    `pause(True)`: picture and sound stand where they are, until `pause(False)`. A video opened while
+    paused (after a `seek`) shows the frame it starts with and stands there."""
 
     def __init__(self, source: str, resolve=resolve, clock=time.monotonic, on_end=None, on_error=None, speaker=Speaker,
                  follow=None):
@@ -270,11 +280,12 @@ class Player:
         self.sound, self.silent = False, ""
         self._make_speaker, self._speaker, self._volume = speaker, None, 1.0
         self._again = False                      # open the video anew where it is (its sound was switched on or off)
+        self.paused = False
 
     def ask(self) -> None:
         with self._lock:
             self._asked = self._clock()
-            if self._speaker is not None and self._speaker.paused:
+            if self._speaker is not None and self._speaker.paused and not self.paused:
                 self._speaker.resume()
             if self._thread is None or not self._thread.is_alive():
                 self._thread = threading.Thread(target=self._run, name="video", daemon=True)
@@ -292,6 +303,13 @@ class Player:
     def seek(self, at: float) -> None:
         """Go on from another place in the video. It is opened anew there: a second or two."""
         self._seek, self._again = max(0.0, at), True
+
+    def pause(self, on: bool) -> None:
+        """Hold the video where it is, picture and sound, or let it go on."""
+        self.paused = on
+        speaker = self._speaker
+        if on and speaker is not None:
+            speaker.pause()
 
     def set_sound(self, on: bool) -> None:
         """With sound or without. A video that is playing is opened anew for it, where it is."""
@@ -449,6 +467,14 @@ class Player:
             while pending:
                 if self._over():
                     return False
+                if self.paused:
+                    if speaker is not None and not speaker.paused:
+                        speaker.pause()
+                    if not shown:                            # opened while paused: the place it is at, and no further
+                        show(pending[0])
+                    base = None                              # (the picture's clock is set anew when it goes on)
+                    time.sleep(0.02)
+                    continue
                 now, at = self._clock(), pending[0].time
                 if speaker is not None and now - self._asked > HUSH:
                     speaker.pause()                          # nobody is looking: the sound waits, and with it the picture
@@ -540,6 +566,10 @@ SOUND = Setting("sound", "Sound", "choice", "0", SOUND_LEVELS, live=True,
                      "deephack's own volume in Windows: the rest of the PC stays as loud as it is.")
 MUTE_KEY = Setting("mute_key", "Key to mute", "shortcut", "", action="mute",
                    hint="Sound off and on again, whatever window is in front. The Mute button does the same.")
+PAUSE_KEY = Setting("pause_key", "Key to pause", "shortcut", "", action="pause",
+                    hint="Holds the video and lets it go on, whatever window is in front. Empty: no key.")
+BACK_KEY = Setting("back_key", "Key for ten seconds back", "shortcut", "", action="back")
+FORWARD_KEY = Setting("forward_key", "Key for ten seconds forward", "shortcut", "", action="forward")
 
 
 class Video(Mode):
@@ -549,14 +579,14 @@ class Video(Mode):
     glyph = ""
     quality = QUALITY
     needs_direct = True
-    actions = (("mute", "Mute"),)
+    actions = (("back", "−10 s"), ("forward", "+10 s"), ("pause", "Pause"), ("mute", "Mute"))
     settings = (
         Setting("source", "Video", "file", "", placeholder="https://www.youtube.com/watch?v=…",
                 hint="A YouTube link (most other video sites work too), or a video file on this PC. It is read as it "
                      "plays, not downloaded, and starts again at its end."),
         Setting("fit", "Picture", "choice", "fill", (("fill", "Fill the screen"), ("fit", "The whole picture, with bars")),
                 hint="A wide picture fills the screen with its middle."),
-        SOUND, MUTE_KEY,
+        SOUND, PAUSE_KEY, BACK_KEY, FORWARD_KEY, MUTE_KEY,
     )
 
     def __init__(self, values: dict | None = None, player=Player):
@@ -566,6 +596,9 @@ class Video(Mode):
         self._shown = 0                          # number of the frame handed over last
         self._still = False                      # the one picture for a cooler that cannot be drawn on has been made
         self._muted = False                      # by the Mute button or key: until it is pressed again
+        self._paused = False                     # by the Pause button or key: until it is pressed again
+        self._peek: tuple[int, float] | None = None      # sent to another place while paused: the frame that was up
+                                                         # then, and until when the player is asked for the new one
 
     def _source(self) -> str:
         """What to play; nothing: the mode says what it wants instead."""
@@ -594,11 +627,26 @@ class Video(Mode):
             return f" · no sound ({player.silent})"
         return " · muted" if self._muted else ""
 
+    def _pause(self, on: bool) -> None:
+        self._paused, self._peek = on, None
+        if self._player is not None:
+            self._player.pause(on)
+
     def act(self, action: str) -> None:
+        player = self._player
         if action == "mute":
             self._muted = not self._muted
-            if self._player is not None:
-                self._player.volume = 0.0 if self._muted else self._level()
+            if player is not None:
+                player.volume = 0.0 if self._muted else self._level()
+        elif action == "pause":
+            self._pause(not self._paused)
+        elif action in ("back", "forward") and player is not None and player.latest()[1] is not None:
+            at = player.position + (JUMP if action == "forward" else -JUMP)
+            if player.duration:
+                at = min(at, max(0.0, player.duration - 1.0))
+            player.seek(at)
+            if self._paused:                     # it stays paused, at the other place: the player is asked for that
+                self._peek = (player.latest()[0], time.monotonic() + PEEK)       # one frame, and then left alone again
 
     def _name(self, source: str) -> str:
         return self._player.title or ("Video" if "://" in source else Path(source).stem)
@@ -616,8 +664,12 @@ class Video(Mode):
         level = self._level()
         player.set_sound(bool(level) and self.direct and self.audible)
         player.volume = 0.0 if self._muted else level
-        player.ask()
+        player.pause(self._paused)
         seq, frame = player.latest()
+        if self._peek is not None and (seq != self._peek[0] or time.monotonic() > self._peek[1]):
+            self._peek = None
+        if not self._paused or self._peek is not None or frame is None or not self.direct:
+            player.ask()                         # (paused: it is not asked, and closes its stream after a while)
         name = self._name(source)
         if player.state == "failed" and (frame is None or seq == self._shown):
             hint = ". If links have stopped working: Settings, YouTube links, Update now" if player.link_failed else ""
@@ -633,7 +685,7 @@ class Video(Mode):
             return await asyncio.to_thread(picture, frame, self.values["fit"])
         self._still = False
         length = f" of {clock_text(player.duration)}" if player.duration else ""
-        self.status = f"{name} · {clock_text(player.position)}{length}{self._sound_note()}"
+        self.status = f"{name} · {clock_text(player.position)}{length}{' · paused' if self._paused else ''}{self._sound_note()}"
         if seq == self._shown:
             return None
         self._shown = seq

@@ -312,3 +312,101 @@ def test_a_restart_goes_on_where_the_photo_would_be_and_a_fade_starts_from_where
 def test_missing_folder(tmp_path, monkeypatch):
     m = mode(tmp_path, monkeypatch)
     assert asyncio.run(m.frame()) is None and m.placeholder[0] == "Folder not found"
+
+
+# ---- Next and Previous, and the next photo made ready before its time
+def stepped(m, action=None) -> str:
+    if action:
+        m.act(action)
+    asyncio.run(m.frame())
+    return m.status
+
+
+def test_next_and_previous_step_through_the_photos_by_name(tmp_path, monkeypatch):
+    make(tmp_path / "pics", ["1.jpg", "2.jpg", "3.jpg"])
+    m = mode(tmp_path, monkeypatch, order="name", interval="60")
+    assert dict(m.actions) == {"previous": "Previous", "next": "Next"}
+    assert {s.action for s in m.settings if s.kind == "shortcut"} == {"next", "previous"}
+    assert stepped(m) == "1.jpg"
+    m._since -= 600
+    assert stepped(m, "next") == "2.jpg" and time.time() - m._since < 5      # its hour begins now
+    assert asyncio.run(m.frame()) is None
+    assert stepped(m, "next") == "3.jpg"
+    assert [stepped(m, "previous") for _ in range(2)] == ["2.jpg", "1.jpg"]
+    assert stepped(m, "previous") == "3.jpg"                 # nothing remembered before the first: the one before it by name
+    assert [stepped(m, "next") for _ in range(3)] == ["1.jpg", "2.jpg", "3.jpg"]     # and forward again the way it came
+    m.act("something else")
+    assert asyncio.run(m.frame()) is None
+
+
+def test_previous_goes_back_through_what_was_shown_also_after_a_restart(tmp_path, monkeypatch):
+    make(tmp_path / "pics", [f"{i}.jpg" for i in range(8)])
+    m = mode(tmp_path, monkeypatch, interval="60")           # in random order
+    first = stepped(m)
+    assert stepped(m, "previous") == first and asyncio.run(m.frame()) is None        # nothing was up before it: it stays
+    shown = [first] + [stepped(m, "next") for _ in range(4)]
+    assert len(set(shown)) == 5
+    assert [stepped(m, "previous") for _ in range(2)] == shown[3:1:-1]
+    assert [stepped(m, "next") for _ in range(2)] == shown[3:]                       # the same ones on the way forward
+    again = mode(tmp_path, monkeypatch, interval="60")       # deephack starts again: what was up is in the state file
+    assert stepped(again) == shown[4]
+    assert [stepped(again, "previous") for _ in range(4)] == shown[3::-1]
+    (tmp_path / "pics" / shown[2]).unlink()                  # one of them is deleted meanwhile: it is left out
+    again._scanned = None
+    assert [stepped(again, "next") for _ in range(2)] == [shown[1], shown[3]]
+
+
+def test_a_step_in_the_middle_of_a_fade_fades_on_from_the_photo_it_led_to(tmp_path, monkeypatch):
+    m, clock = drawing(tmp_path, monkeypatch)
+    asyncio.run(m.frame())
+    m.act("next")
+    begun = asyncio.run(m.frame())
+    assert m.status == "2.png" and m._fade is not None and begun.getpixel((240, 320)) == (200, 0, 0)
+    clock[0] += 0.3
+    m.act("next")
+    onward = asyncio.run(m.frame())
+    assert m.status == "1.png" and onward.getpixel((240, 320)) == (0, 0, 200)        # from the blue one, whole
+    clock[0] += pf.FADE
+    assert asyncio.run(m.frame()).getpixel((240, 320)) == (200, 0, 0) and m.tick is None
+
+
+def test_the_next_photo_is_made_ready_before_its_time_and_shown_on_time(tmp_path, monkeypatch):
+    m, clock = drawing(tmp_path, monkeypatch)                # a photo every 15 seconds
+    asyncio.run(m.frame())
+    m._since = time.time() - 10
+    assert asyncio.run(m.frame()) is None and m._coming is None and m.tick is None
+    m._since = time.time() - 13
+    assert asyncio.run(m.frame()) is None and m._coming is not None and m.tick is None   # two seconds to go: it is loaded
+    coming = m._coming
+    assert coming.wait()[0].name == "2.png"
+    m._since = time.time() - 14.8
+    assert asyncio.run(m.frame()) is None and m._coming is coming
+    assert 0.005 <= m.tick <= 0.21                           # and the mode asks to be called when the time is up
+    monkeypatch.setattr(m, "_prepare", None)                 # nothing is loaded at that time: it is there
+    m._since = time.time() - 15.01
+    begun = asyncio.run(m.frame())
+    assert m.status == "2.png" and m._fade is not None and m._coming is None and m.tick == pf.FADE_TICK
+    clock[0] += pf.FADE
+    assert asyncio.run(m.frame()).getpixel((240, 320)) == (0, 0, 200) and m.tick is None
+    assert begun.getpixel((240, 320)) == (200, 0, 0)
+
+
+def test_a_photo_that_stands_does_not_keep_the_short_tick_of_its_last_moment(tmp_path, monkeypatch):
+    make(tmp_path / "pics", ["only.png"], size=(480, 640))
+    m = mode(tmp_path, monkeypatch, interval="0.25")
+    m.direct = True
+    assert asyncio.run(m.frame()) is not None
+    m._since = time.time() - 14.9
+    assert asyncio.run(m.frame()) is None and m.tick < 0.2
+    m._since = time.time() - 15.5                            # its time is up, and it is the only one: it stays
+    assert asyncio.run(m.frame()) is None and m.tick is None and time.time() - m._since < 5
+
+
+def test_previous_while_the_next_photo_is_being_made_ready_keeps_that_one_for_later(tmp_path, monkeypatch):
+    make(tmp_path / "pics", ["1.jpg", "2.jpg", "3.jpg"])
+    m = mode(tmp_path, monkeypatch, order="name", interval="15")
+    assert [stepped(m), stepped(m, "next")] == ["1.jpg", "2.jpg"]
+    m._since = time.time() - 15 * 60 + 2
+    assert asyncio.run(m.frame()) is None and m._coming is not None                  # 3.jpg is on its way
+    assert stepped(m, "previous") == "1.jpg" and m._coming is None
+    assert [stepped(m, "next") for _ in range(3)] == ["2.jpg", "3.jpg", "1.jpg"]

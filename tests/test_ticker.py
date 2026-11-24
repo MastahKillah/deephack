@@ -63,3 +63,25 @@ def test_network_trouble_retries(monkeypatch):
     monkeypatch.setattr(tk, "fetch", down)
     m = tk.Ticker()
     assert asyncio.run(m.frame()) is None and "unreachable" in m.status
+
+
+def test_next_shows_one_symbol_at_a_time_and_then_the_list_again(monkeypatch):
+    feed = {"AAPL": tk.parse_chart("AAPL", chart()), "MSFT": tk.parse_chart("MSFT", chart(price=410.0, start=400.0)), "NOPE": None}
+    asked = []
+    monkeypatch.setattr(tk, "fetch", lambda symbol, rng: asked.append(symbol) or feed[symbol])
+    m = tk.Ticker({"symbols": "AAPL, NOPE, MSFT"})
+    assert m.actions == (("next", "Next"),) and [s.action for s in m.settings if s.kind == "shortcut"] == ["next"]
+    listed = asyncio.run(m.frame())
+    assert listed is not None and m.status == "AAPL +0.15% · MSFT +2.50%" and len(asked) == 3
+    statuses = []
+    for _ in range(3):
+        m.act("next")
+        assert asyncio.run(m.frame()) is not None and asyncio.run(m.frame()) is None
+        statuses.append(m.status)
+    assert statuses == ["AAPL +0.15% · 1 of 2", "MSFT +2.50% · 2 of 2", "AAPL +0.15% · MSFT +2.50%"]
+    assert len(asked) == 3                                   # drawn from what was known: the feed was not asked again
+
+    one = tk.Ticker({"symbols": "AAPL"})                     # a single symbol is large already
+    assert asyncio.run(one.frame()) is not None
+    one.act("next")
+    assert asyncio.run(one.frame()) is None and one.status == "AAPL +0.15%"

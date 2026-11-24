@@ -1,10 +1,14 @@
 """Keys that work whatever window is in front: Windows' RegisterHotKey, heard through Qt's event loop.
 
 A mode's settings of kind "shortcut" name such keys ("Ctrl+Alt+PgDown", as Qt writes a key sequence),
-each for one of the mode's actions. Only the keys of the mode that is on the cooler are registered.
+each for one of the mode's actions. Of the modes' keys only those of the mode that is on the cooler are
+registered, so the same key can be Next in every mode. The app has keys of its own, set on the Settings
+page, that are registered whatever mode is on the cooler: the next and the previous mode, and drawing
+off and on.
 
 A key that another program has registered cannot be had: `Hotkeys.set` returns those, and the window
-says so next to the setting.
+says so next to the setting. A key that two settings ask for goes to the first of them, the app's own
+before the mode's, and the window says so next to the other (`same`, `MainWindow._claims`).
 """
 from __future__ import annotations
 
@@ -47,6 +51,11 @@ def parse(text: str) -> tuple[int, int] | None:
     if key in KEYS:
         return modifiers, KEYS[key]
     return None
+
+
+def same(text: str):
+    """What two settings have in common when they name the same key, however it is written."""
+    return parse(text) or (text or "").strip().lower()
 
 
 def _register(number: int, modifiers: int, key: int) -> bool:

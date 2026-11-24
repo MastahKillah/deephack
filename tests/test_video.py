@@ -358,3 +358,54 @@ def test_the_mode_makes_its_pictures_smaller_when_they_are_too_large(clip):
     assert len(seen) > 5 and seen[-1] < seen[0] <= video.QUALITY and seen[-1] >= video.LEAST_QUALITY
     assert Video.quality == video.QUALITY                             # the next video starts at its best again
     assert mode._player.rate == pytest.approx(FPS)
+
+
+# ---- Pause, and ten seconds back or forward
+def test_a_paused_player_holds_its_picture_and_goes_on_from_there(clip):
+    player = Player(str(clip))
+    play(player, 0.5)
+    player.pause(True)
+    time.sleep(0.1)
+    held = player.position
+    assert 0.2 < held < 0.9
+    assert play(player, 0.4)[-1][1] == held                  # asked for all the while: it stands
+    player.pause(False)
+    after = play(player, 0.4)
+    assert held + 0.2 < after[-1][1] < held + 0.7            # on from where it stood, not from where it would be
+    player.stop()
+
+
+def test_the_mode_pauses_and_jumps(clip):
+    async def frames(mode, seconds):
+        pictures, until = [], time.monotonic() + seconds
+        while time.monotonic() < until:
+            img = await mode.frame()
+            if img is not None:
+                pictures.append(img)
+            await asyncio.sleep(mode.tick)
+        return pictures
+
+    async def watch():
+        mode = Video({"source": str(clip)})
+        mode.direct = True
+        assert dict(Video.actions)["pause"] == "Pause" and {"back", "forward"} <= set(dict(Video.actions))
+        assert {s.action: s.default for s in Video.settings if s.kind == "shortcut"} == {
+            "pause": "", "back": "", "forward": "", "mute": ""}           # keys for them where they are set
+        mode.act("forward")                                  # nothing plays yet: nothing to jump in
+        assert len(await frames(mode, 0.5)) >= 5
+        mode.act("pause")
+        await frames(mode, 0.15)
+        held = mode._player.position
+        assert await frames(mode, 0.4) == [] and mode._player.position == held and mode.status.endswith(" · paused")
+        mode.act("forward")                                  # a clip of two seconds: to a second before its end
+        there = await frames(mode, 1.0)
+        assert len(there) == 1 and 0.95 <= mode._player.position <= 1.1 and "paused" in mode.status      # and it stays paused
+        assert there[0].getpixel((20, 320))[0] > 130         # (the clip is brighter as it goes on: 60 at first, 140 there)
+        mode.act("pause")
+        assert len(await frames(mode, 0.4)) >= 4 and mode._player.position > 1.2 and "paused" not in mode.status
+        mode.act("back")
+        await frames(mode, 0.4)
+        assert mode._player.position < 0.6                   # ten seconds back from there: its beginning
+        await mode.close()
+
+    run(watch())

@@ -15,6 +15,23 @@ Settings; a newer one is offered there when the cooler has an older one.
   other way. It needs the direct drawing firmware; without it the photo fills the screen and stands.
 - How often the cooler gets a picture goes by how fast the photo moves: 27 a second for a photo that is
   up 15 seconds, 5 a second for one that is up 5 minutes, one every two or three seconds for an hour.
+- **Photo Frame: Next and Previous.** Two buttons on the mode's page, and two keys that work whatever
+  window is in front (Ctrl+Alt+PgDown and Ctrl+Alt+PgUp unless you set others). Previous goes back
+  through the photos that were up, also after deephack was started again, and Next comes forward the
+  same way before it picks new ones.
+- **Photo Frame: a photo changes when its time is up.** The next photo is loaded a few seconds ahead.
+  On the cooler the change began 350 to 480 ms after its time before, and begins within 6 ms of it now:
+  a photo that moves across no longer stands at the end of its way.
+- **Video: Pause, and ten seconds back or forward.** Buttons on the mode's page, and keys for them if
+  you set some there. Pause holds picture and sound; a jump takes a second or two for a link, as the
+  video is opened anew at the other place. TikTok gets Pause as well.
+- **Ticker: Next.** A button, and a key (Ctrl+Alt+PgDown unless you set another): one symbol at a time,
+  large and with its chart, and after the last one the list again.
+- **Keys that belong to no mode.** Settings has a new section, Keys: one for the next mode, one for the
+  previous mode, and one that switches drawing on the cooler off and on. None is set until you set it.
+  They work whatever window is in front and whatever mode is on the cooler.
+- When two settings ask for the same key, the page says which of them has it. The keys in Settings come
+  before a mode's own.
 
 ## 0.14.0 (2026-11-24)
 

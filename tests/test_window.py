@@ -8,12 +8,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
-from PySide6.QtCore import QPoint, QRect  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect  # noqa: E402
 
-from deephack import autostart, capture, firmware  # noqa: E402
+from deephack import autostart, capture, firmware, hotkeys  # noqa: E402
 from deephack.config import Config  # noqa: E402
 from deephack.engine import Engine  # noqa: E402
-from deephack.modes import BY_ID  # noqa: E402
+from deephack.modes import BY_ID, MODES  # noqa: E402
 from deephack.modes import mirror  # noqa: E402
 from deephack.ui import main_window, pick  # noqa: E402
 
@@ -34,10 +34,14 @@ def window(tmp_path, monkeypatch):
     config = Config(tmp_path / "config.json")
     config.set("mode", "weather")
     engine = Engine(config, use_device=False)
+    registered = {}                                          # Windows is not asked for any key: F9 is "taken"
+    monkeypatch.setattr(main_window, "Hotkeys", lambda: hotkeys.Hotkeys(
+        lambda number, modifiers, key: key != 0x78 and registered.setdefault(number, (modifiers, key)) is not None,
+        lambda number: registered.pop(number, None)))
     for name in ("set_preview", "reload_mode", "reload_preview", "mode_value", "mode_action", "flash_firmware", "forget_firmware"):
         monkeypatch.setattr(engine, name, lambda *a, name=name: asked.append((name, *a)))
     win = main_window.MainWindow(config, engine)
-    win.asked = asked
+    win.asked, win.registered = asked, registered
     win.show()
     app.processEvents()
     yield win
@@ -69,7 +73,7 @@ def test_settings_holds_what_belongs_to_no_mode(window):
     assert not any(b.isChecked() for b in window._mode_buttons.buttons() if b is not window._settings_button)
     shown = texts(window._pages.currentWidget())
     for row in ("APP", "Start with Windows", "Keep running when closed", "COOLER", "Keep on screen", "Cooler light",
-                "Screen brightness", "FIRMWARE", "ABOUT"):
+                "Screen brightness", "KEYS", "Next mode", "Previous mode", "Draw on the cooler, off and on", "FIRMWARE", "ABOUT"):
         assert row in shown
     assert any(firmware_text.startswith("deephack ") for firmware_text in shown)
 
@@ -279,3 +283,101 @@ def test_youtube_links_can_be_kept_current_from_settings(window, monkeypatch):
     assert window._reader_result.text() == "yt-dlp 2027.1.15 is the newest."
     window._on_reader("failed", "no net")
     assert window._reader_result.text() == "Could not: no net" and window._reader_button.isEnabled()
+
+
+# ---------------------------------------------------------------- keys that work in any window
+def press(window, text) -> None:
+    assert window.hotkeys.pressed(window.hotkeys._texts[text])
+
+
+def settled(window) -> list[str]:
+    """What a mode's page says once it has been built anew: the old rows are gone, the new ones laid out."""
+    QApplication.processEvents()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    QApplication.processEvents()
+    return texts(window._settings_card)
+
+
+def test_only_the_keys_of_the_mode_on_the_cooler_are_registered_and_they_reach_it(window):
+    assert window.registered == {}                           # Weather has none, and the app's own are not set
+    window.activate_mode("photo_frame")
+    ctrl_alt = hotkeys.MOD_CONTROL | hotkeys.MOD_ALT
+    assert sorted(window.registered.values()) == [(ctrl_alt, 0x21), (ctrl_alt, 0x22)]
+    window.asked.clear()
+    press(window, "Ctrl+Alt+PgDown")
+    press(window, "Ctrl+Alt+PgUp")
+    assert window.asked == [("mode_action", "photo_frame", "next"), ("mode_action", "photo_frame", "previous")]
+    buttons = [b.text() for b in window._settings_card.findChildren(QPushButton)]
+    assert buttons[:2] == ["Previous", "Next"]               # and the same two as buttons on its page
+    window.activate_mode("video")                            # its keys are for the one who sets them
+    assert window.registered == {}
+    window._set_setting("video", "pause_key", "Ctrl+Alt+Space")
+    press(window, "Ctrl+Alt+Space")
+    assert window.asked[-1] == ("mode_action", "video", "pause")
+
+
+def test_the_apps_own_keys_change_the_mode_and_switch_drawing(window):
+    ids = [cls.id for cls in MODES]
+    at = ids.index("weather")
+    window._set_app_key("key_next_mode", "Ctrl+Alt+Right")
+    window._set_app_key("key_previous_mode", "Ctrl+Alt+Left")
+    window._set_app_key("key_draw", "Ctrl+Alt+D")
+    assert len(window.registered) == 3 and window.config.get("key_next_mode") == "Ctrl+Alt+Right"
+    window.asked.clear()
+    press(window, "Ctrl+Alt+Right")
+    assert window.config.get("mode") == ids[at + 1] and ("reload_mode",) in window.asked
+    assert window._viewing == ids[at + 1]                    # the page showed what is on the cooler: it follows
+    assert "Ctrl+Alt+Right" in window.hotkeys._texts         # the app's keys stay, whatever mode it is
+    press(window, "Ctrl+Alt+Left")
+    press(window, "Ctrl+Alt+Left")
+    assert window.config.get("mode") == ids[at - 1] == window._viewing
+
+    window._settings_button.click()                          # with Settings open the page stays, the cooler changes
+    press(window, "Ctrl+Alt+Right")
+    assert window.config.get("mode") == "weather" and window._pages.currentIndex() == 1 and window._viewing == ""
+    window.view_mode("scene")                                # ... and so does a page that previews another mode
+    window.asked.clear()
+    press(window, "Ctrl+Alt+Left")
+    assert window.config.get("mode") == ids[at - 1] and window._viewing == "scene"
+    assert ("set_preview", None) not in window.asked and BY_ID[ids[at - 1]].title in window._caption.text()
+
+    assert window.config.get("enabled") is True
+    press(window, "Ctrl+Alt+D")
+    assert window.config.get("enabled") is False and not window._enabled.isChecked()
+    press(window, "Ctrl+Alt+D")
+    assert window.config.get("enabled") is True and window._enabled.isChecked()
+    window._set_app_key("key_draw", "")
+    assert len(window.registered) == 2 and "Ctrl+Alt+D" not in window.hotkeys._texts
+
+
+def test_a_key_that_two_settings_ask_for_goes_to_the_first_and_the_other_says_so(window):
+    window._settings_button.click()
+    window._set_app_key("key_next_mode", "Ctrl+Alt+PgDown")
+    window._set_app_key("key_previous_mode", "Ctrl+Alt+PgDown")
+    window._set_app_key("key_draw", "F9")
+    notes = window._app_key_notes
+    assert not notes["key_next_mode"].isVisible()
+    assert notes["key_previous_mode"].text() == "This is the key for “Next mode” in Settings already: it does that."
+    assert notes["key_draw"].text().startswith("Windows will not give deephack this key")
+    window._set_app_key("key_previous_mode", "")
+    window._set_app_key("key_draw", "")
+    assert not notes["key_previous_mode"].isVisible() and not notes["key_draw"].isVisible()
+
+    window.view_mode("photo_frame")                          # not on the cooler, and its page says it all the same
+    assert "This is the key for “Next mode” in Settings already: it does that." in settled(window)
+    window.activate_mode("photo_frame")
+    window.asked.clear()
+    press(window, "Ctrl+Alt+PgDown")
+    assert window.config.get("mode") != "photo_frame" and ("mode_action", "photo_frame", "next") not in window.asked
+
+    window._set_app_key("key_next_mode", "")
+    window.activate_mode("tiktok")                           # two of a mode's own keys
+    assert not any(t.startswith("This is the key for") for t in settled(window))
+    window._set_setting("tiktok", "previous_key", "Ctrl+Alt+PgDown")
+    assert [t for t in settled(window) if t.startswith("This is the key for")] == [
+        "This is the key for “Key for the next video” already: it does that."]
+    window._set_setting("tiktok", "previous_key", "F9")
+    said = settled(window)
+    assert any(t.startswith("Windows will not give deephack this key") for t in said)
+    assert not any(t.startswith("This is the key for") for t in said)
+    assert hotkeys.same("Media Play") == hotkeys.same("Toggle Media Play/Pause") != hotkeys.same("Media Next")

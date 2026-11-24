@@ -34,6 +34,9 @@ DEFAULTS = {
     "book": None,              # the flipbook stored on the device: {"key", "first" (index of frame 0), "count"}
     "firmware_wanted": None,   # "direct" | "stock": a firmware update the cooler had no room for, to be sent when it
                                # is found freshly started (engine.py, _send_wanted)
+    "key_next_mode": "",       # keys that work in any window, whatever mode is on the cooler (hotkeys.py; as Qt
+    "key_previous_mode": "",   # writes a key, "Ctrl+Alt+Right"; empty: none): the next and the previous mode ...
+    "key_draw": "",            # ... and "enabled" off and on
     "modes": {},               # per-mode settings, keyed by mode id
 }
 

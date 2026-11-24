@@ -202,6 +202,7 @@ class Ticker(Mode):
     title = "Ticker"
     description = "Stocks and crypto prices"
     glyph = ""
+    actions = (("next", "Next"),)             # from the list to each symbol by itself, large, and back to the list
     settings = (
         Setting("symbols", "Symbols", "text", "AAPL, MSFT, ^GSPC, BTC-USD", placeholder="AAPL, SAP.DE, BTC-USD",
                 hint="Up to five Yahoo Finance symbols: shares (SAP.DE for other exchanges), indices (^GSPC), "
@@ -209,13 +210,23 @@ class Ticker(Mode):
         Setting("range", "Chart", "choice", "1d", RANGES),
         Setting("refresh", "Refresh every", "choice", "30", (("15", "15 minutes"), ("30", "30 minutes"), ("60", "1 hour")),
                 hint="Prices come from Yahoo Finance and can be delayed. A closed market causes no new writes."),
+        Setting("next_key", "Key for the next symbol", "shortcut", "Ctrl+Alt+PgDown", action="next",
+                hint="Next shows one symbol at a time, large and with its chart, and after the last one the list "
+                     "again. The key works whatever window is in front, while the Ticker is on the cooler. Empty: no key."),
     )
 
     def __init__(self, values=None):
         super().__init__(values)
         self._next = 0.0
         self._shown = None
+        self._quotes: list[Quote | str] = []      # the last answer, to draw again when another symbol is asked for
+        self._view = 0                            # 0: all of them in a list; n: the nth one found, by itself
+        self._stepped = False                     # Next was asked for: draw now, from what is known
         self.placeholder = ("Ticker", "Add symbols in the settings on the right.")
+
+    def act(self, action: str) -> None:
+        if action == "next":
+            self._view, self._stepped = self._view + 1, True
 
     def _load(self, symbols: list[str]) -> list[Quote | str]:
         return [fetch(s, self.values["range"]) or s for s in symbols]
@@ -225,15 +236,18 @@ class Ticker(Mode):
         if not symbols:
             self.status = "No symbols set"
             return None
-        if time.monotonic() < self._next:
+        stepped, self._stepped = self._stepped, False
+        if time.monotonic() >= self._next:
+            try:
+                self._quotes = await asyncio.to_thread(self._load, symbols)
+            except OSError as e:
+                self.status = f"Price feed unreachable ({type(e).__name__})"
+                self._next = time.monotonic() + RETRY_SECONDS
+                return None
+            self._next = time.monotonic() + int(self.values["refresh"]) * 60
+        elif not stepped:
             return None
-        try:
-            quotes = await asyncio.to_thread(self._load, symbols)
-        except OSError as e:
-            self.status = f"Price feed unreachable ({type(e).__name__})"
-            self._next = time.monotonic() + RETRY_SECONDS
-            return None
-        self._next = time.monotonic() + int(self.values["refresh"]) * 60
+        quotes = self._quotes
         found = [q for q in quotes if isinstance(q, Quote)]
         if not found:
             self.status = "None of the symbols were found"
@@ -241,6 +255,10 @@ class Ticker(Mode):
             return None
         self.status = " · ".join(f"{q.symbol} {q.change_text}" for q in found)
         label = dict(RANGES)[self.values["range"]]
+        self._view %= len(found) + 1 if len(quotes) > 1 else 1      # (one symbol is shown by itself as it is)
+        if self._view:
+            quotes = [found[self._view - 1]]
+            self.status = f"{quotes[0].symbol} {quotes[0].change_text} · {self._view} of {len(found)}"
         # only what is visible: the printed numbers and the chart's points at display precision
         key = (label, tuple(q if isinstance(q, str) else (q.symbol, q.name, q.price_text, q.change_text,
                                                            tuple(round(c, q.decimals) for c in q.closes)) for q in quotes))

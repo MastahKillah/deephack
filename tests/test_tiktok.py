@@ -208,9 +208,9 @@ def test_keys_are_read_the_way_qt_writes_them():
     for nothing in ("", "  ", "Ctrl+K, Ctrl+N", "Ctrl+Alt+Banana", "Hyper+N"):
         assert hotkeys.parse(nothing) is None
     defaults = {s.key: s.default for s in TikTok.settings if s.kind == "shortcut"}
-    assert defaults.pop("mute_key") == "" and len(defaults) == 2             # no key for Mute unless one is set
-    assert all(hotkeys.parse(key) for key in defaults.values())
-    assert {s.action for s in TikTok.settings if s.kind == "shortcut"} == {"next", "previous", "mute"}
+    assert defaults.pop("mute_key") == "" and defaults.pop("pause_key") == "" and len(defaults) == 2     # no key for
+    assert all(hotkeys.parse(key) for key in defaults.values())                 # Mute or Pause unless one is set
+    assert {s.action for s in TikTok.settings if s.kind == "shortcut"} == {"next", "previous", "pause", "mute"}
 
 
 def test_only_the_keys_asked_for_are_registered_and_a_taken_one_is_reported():
