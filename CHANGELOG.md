@@ -8,7 +8,7 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
-## Unreleased
+## 0.14.0 (2026-11-24)
 
 - **Photo Frame: one photo fades into the next.** With the direct drawing firmware a change is a
   crossfade of one second, 27 pictures a second on the cooler. "A cut" in the mode's settings switches
