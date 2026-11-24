@@ -86,8 +86,11 @@ from outside that loop. Version 2 is also called from inside it.
 The first numbers, sixteen frames a second, were wrong about the cooler: that was the pace at which the
 host asked for pictures. Timed step by step ([`tools/drawbench.py`](../tools/drawbench.py)):
 
-- **It shows a picture every 36 ms and no faster, however small the picture is**: about 27 a second.
-  That is the panel's own turn: a redraw ends by waiting for it, for a JPEG of 12 KB as for one of 80.
+- **It showed a picture every 36 ms and no faster, however small the picture was**: about 27 a second.
+  That looked like the panel's own turn, and was two of them. The panel turns every 18 ms. After each
+  frame LVGL copied it from one of its two screen buffers into the other, 614 KB, which took 20 ms, and
+  its redraw task came round every 33. The vendor's own video widget skips that copy, through a routine
+  the patch can call too; with the redraw task set to 5 ms, **55 pictures a second reach the glass**.
 - The bytes were the surprise. The first patch took them at 820 KB a second; the versions with more in
   them took large frames at 540, with no line of the frame path changed. The cause was 25 microseconds
   wide: the patch made the USB endpoint ready for the next packet after it had copied the last one, and
@@ -98,8 +101,16 @@ host asked for pictures. Timed step by step ([`tools/drawbench.py`](../tools/dra
 - Other traffic on the same USB slows it. With a webcam sending pictures next to it, the same frames
   went 16 a second.
 
-So a host that wants the full rate keeps its frames under 32 KB, and the app trades JPEG quality for
-that.
+So what a frame may weigh is what the bus carries in the time the frame is to be shown: 28 KB for a
+video of 30 a second, and the app trades JPEG quality for that. (The later patches take 874 KB a second,
+not 997. Seven packets where eight would go, and it is not known why.)
+
+One fault hid in this for a week: **an update that was sent whole and never happened.** The firmware
+puts an upload into 2 MiB of its heap in one piece, asked for after its "Loading" screen has taken
+nearly 3 MB, and when there is no such piece it drops the upload without a word to the host. The
+patch's three frame buffers were what was missing, by 36 KB, and only with a large stored picture on
+show. Found by walking the cooler's heap over USB, block by block, at the moment an upload was
+announced. The patch gives its buffers back before an upload now.
 
 ## 6. A part of the picture
 

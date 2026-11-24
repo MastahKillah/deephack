@@ -316,6 +316,12 @@ def test_the_quality_gives_way_before_the_number_of_pictures_does():
     assert video.quality_for(video.QUALITY, 1000, 30, fast=True) == video.QUALITY + 1            # and sharper than before,
     assert video.quality_for(video.FAST_QUALITY, 1000, 30, fast=True) == video.FAST_QUALITY      # up to a point
     assert video.quality_for(video.FAST_QUALITY, 1000, 30) == video.FAST_QUALITY                 # (never pulled down for room)
+    # from version 12 a picture is on the glass every turn of the panel: a frame has all the time its video gives it
+    every = device.TURN
+    assert 27_000 < video.room_for(30, True, every) < 29_000 and 33_000 < video.room_for(25, True, every) < 35_000
+    assert video.room_for(60, True, every) == video.room_for(30, True, every)                    # 60 a second is still not tried
+    assert 14_000 < video.room_for(55.4, True, every, most=55.4) < 16_000                         # ... unless it is asked for
+    assert video.room_for(25, True, device.SLOW_TURN) == video.FAST_ROOM and video.room_for(25, False, every) == video.room_for(25)
 
 
 def test_the_engine_tells_a_mode_how_large_its_picture_was(tmp_path, monkeypatch, cooler):

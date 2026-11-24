@@ -214,6 +214,7 @@ def send_update(driver, image: bytes, progress=None) -> None:
     # The firmware takes an upload while it changes from the upload screen to its mode's screen: with no
     # mode set (a fresh emulated cooler) it never does. Image mode is what every upload here ran under.
     driver.set_mode(device.MODE_MOTION)
+    driver.make_room()                       # (a firmware without that command says no, and the update goes on)
     driver.command(device.CMD_START_DOWNLOAD)
     sent = 0
     try:

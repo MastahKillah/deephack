@@ -134,6 +134,8 @@ class Mode:
                                                           # it went to the cooler (a JPEG), for a mode that minds
         self.fast = False                                 # set by the engine: the cooler's patch takes bytes at the
                                                           # bus's full speed (version 9), so a picture may be larger
+        self.turn = 0.0361                                # set by the engine: seconds between two pictures the cooler
+                                                          # can put on its glass. 0.018 from patch 12: 55 a second
         self.audible = False                              # set by the engine: this is the mode on the cooler, not one
                                                           # that only shows in the window. Only that one may make sound
 

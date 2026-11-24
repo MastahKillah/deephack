@@ -278,7 +278,7 @@ def test_feed_keeps_the_newest_readings_and_stops_when_unused(monkeypatch):
     feed = system.Feed(None, read=lambda: (next(count),), keep=2)
     nap = time.sleep
     monkeypatch.setattr(system.time, "sleep", lambda seconds: nap(0.01))   # a reading every moment, not every second
-    assert feed.latest() is None and feed.recent() == []
+    assert feed.recent() == [] and feed.latest() is None       # (in this order: asking for the latest starts the readings)
     deadline = time.monotonic() + 10
     while len(feed.recent()) < 2 and time.monotonic() < deadline:
         feed.latest()

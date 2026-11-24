@@ -233,14 +233,15 @@ def test_frames_are_shown_while_the_task_handler_never_returns(cooler, stock_ima
     With a fast animation that timer is always due, lv_task_handler does not return, and the hook in the
     main loop is not reached: the first patch took one frame then and answered "later" for good."""
     driver, blocks = cooler.driver(), cooler.machine.blocks
-    main_hook = patch.assemble(patch.APP + len(stock_image))[1]["main_hook"]
+    labels = patch.assemble(patch.APP + len(stock_image))[1]
+    main_hook, loop_hook = labels["main_hook"], labels["loop_hook"]
     loop = [card(colour, (100, 100 + 60 * i, 380, 160 + 60 * i), quality=60)
             for i, colour in enumerate(("#600000", "#006000", "#000060", "#606000"))]
     driver.upload_gif(LOOP_ID, loop, 80)                      # 20 ms a frame
     cooler.run_for(1.0)
     driver.show_slot(0, device.TYPE_GIF)
     cooler.run_for(1.5)
-    shown, passes = state(cooler)["shown"], blocks[main_hook]
+    shown, passes, inside = state(cooler)["shown"], blocks[main_hook], blocks[loop_hook]
     over = card("#804000", (60, 60, 200, 200))
     driver.draw_jpeg(over)                                    # over the animation: taken, and replaced by its next frame
     cooler.run_for(0.3)
@@ -254,7 +255,10 @@ def test_frames_are_shown_while_the_task_handler_never_returns(cooler, stock_ima
         cooler.run_for(0.3)
         assert on_screen(cooler, jpeg, tmp_path)
     assert state(cooler)["shown"] == shown + 3
-    assert blocks[main_hook] == passes                        # all of it without the main loop coming round once
+    # Until version 10 all of this went without the main loop coming round once: a redraw with LVGL's copy
+    # of the frame after it took longer than the timer's 20 ms. Without the copy (version 11) there is time
+    # to spare and it does come round; the hook inside the handler is passed either way.
+    assert blocks[loop_hook] > inside and blocks[main_hook] >= passes
 
 
 def test_a_part_is_decoded_into_its_place_on_the_page(cooler, tmp_path):
@@ -316,9 +320,10 @@ def test_a_part_needs_a_page_of_ours_under_it(cooler, tmp_path):
     sent = cooler.machine.usb.delivered
     with pytest.raises(device.NoPage):
         driver.draw_jpeg(part, at=(0, 176))
-    assert cooler.machine.usb.delivered == sent + 1                       # the question, and no picture data after it
-    driver.draw_jpeg(page)                                                # the page again, and the part is taken
-    cooler.run_for(0.3)
+    asked = cooler.machine.usb.delivered - sent                           # questions ("later" while the buffers are
+    assert 1 <= asked <= 5 and state(cooler)["phase"] == 0                # made again: the upload had them given back),
+    driver.draw_jpeg(page)                                                # and no picture data. The page again, and
+    cooler.run_for(0.3)                                                   # the part is taken
     driver.draw_jpeg(part, at=(0, 176))
     cooler.run_for(0.3)
     assert on_screen(cooler, with_part(page, part, (0, 176)), tmp_path)
@@ -377,13 +382,16 @@ def test_our_picture_is_on_the_start_screen(stock_image, tmp_path):
     assert differs() <= 7                                                 # and it is our picture, all of it
     assert [(width, height) for _, width, height in machine.jpeg.decoded] == [(480, 640)] and not machine.jpeg.errors
     assert machine.jpeg.decoded[0][0] in FRAME_BUFFERS                    # decoded straight into the frame buffer
-    assert bytes(machine.uc.mem_read(patch.STATE + 60, 1)) == b"\x01"     # so far the start screen only
+    assert bytes(machine.uc.mem_read(patch.STATE + 60, 1)) == b"\x05"     # so far the start screen, and the redraw period
     while not machine.uc.mem_read(bench.READY, 1)[0]:
         machine.run(blocks=250_000)
         assert sum(machine.blocks.values()) < bench.BOOT_LIMIT and machine.stuck is None
     machine.run(blocks=400_000)                                           # four seconds later the firmware goes on,
     assert machine.stuck is None and differs() <= 7                       # to its idle screen: our picture again
-    assert bytes(machine.uc.mem_read(patch.STATE + 60, 1)) == b"\x03"
+    assert bytes(machine.uc.mem_read(patch.STATE + 60, 1)) == b"\x07"     # both pictures, and the redraw task's period:
+    display = struct.unpack("<I", bytes(machine.uc.mem_read(patch.DISPLAY, 4)))[0]
+    task = struct.unpack("<I", bytes(machine.uc.mem_read(display + patch.REDRAW_TASK, 4)))[0]
+    assert struct.unpack("<3I", bytes(machine.uc.mem_read(task, 12)))[0] == patch.REDRAW_MS < 18      # under a turn of the panel
     assert {(width, height) for _, width, height in machine.jpeg.decoded} == {(480, 640)} and not machine.jpeg.errors
     assert all(address in FRAME_BUFFERS for address, _, _ in machine.jpeg.decoded)       # the pictures under it: never
     idle = struct.unpack("<I", bytes(machine.uc.mem_read(patch.IDLE_SCREEN, 4)))[0]
@@ -423,3 +431,83 @@ def test_the_screen_can_be_read_back_from_the_cooler(cooler, tmp_path):
         cooler.run_for(0.3)
         seen.append(screen.read(driver, lines))
     assert seen[0] == seen[1] and len(tuned) < len(plain)                 # the same picture from fewer bytes
+
+
+def test_the_buffers_go_back_to_the_heap_before_an_upload(cooler, stock_image, tmp_path):
+    """Version 15. An upload is put into 2 MiB of the heap in one piece, and on a real cooler the patch's
+    three buffers were what was missing: firmware updates and pictures were dropped without a word. The
+    buffers are given back when asked, and when an upload is announced."""
+    driver, uc = cooler.driver(), cooler.machine.uc
+    logo = struct.unpack("<I", bytes(uc.mem_read(patch.STATE + 64, 4)))[0]
+
+    def shown() -> int:
+        widget = struct.unpack("<I", bytes(uc.mem_read(patch.WIDGET, 4)))[0]
+        ext = struct.unpack("<I", bytes(uc.mem_read(widget + patch.EXT, 4)))[0]
+        return struct.unpack("<I", bytes(uc.mem_read(ext, 4)))[0]
+
+    def held() -> tuple:
+        now = state(cooler)
+        return now["first"], now["second"], now["third"]
+
+    page = card("#405060", (60, 60, 300, 200))
+    driver.draw_jpeg(page)
+    cooler.run_for(0.3)
+    part = part_of("#c02020")
+    driver.draw_jpeg(part, at=(0, 176))
+    cooler.run_for(0.3)
+    before = held()
+    assert all(before) and shown() in before and state(cooler)["part"] and logo
+    assert driver.make_room() and held() == (0, 0, 0)         # asked: they are gone, and the picture that was
+    now = state(cooler)                                       # in one of them is not shown any more
+    assert shown() == logo and (now["phase"], now["page"], now["part"]) == (0, 0, 0)
+    assert driver.make_room()                                 # nothing held: yes at once
+    cooler.run_for(0.5)
+    assert on_screen(cooler, patch.logo(), tmp_path)          # deephack's own picture in its place
+    with pytest.raises(device.NoPage):
+        driver.draw_jpeg(part, at=(0, 176))                   # no page of ours is under a part now
+    driver.draw_jpeg(page)                                    # the next frame makes the buffers again
+    cooler.run_for(0.3)
+    assert on_screen(cooler, page, tmp_path) and all(held())
+
+    driver.dev.write(1, device.frame(device.CMD_START_DOWNLOAD))          # announced by a program that does not ask:
+    driver.dev.read(0x81, 64)
+    cooler.run_for(0.05)
+    assert held() == (0, 0, 0)                                # ... given back all the same
+    driver.dev.write(1, b"dcldfinish".ljust(55, b"\0"))
+    cooler.run_for(1.0)
+
+    replacement = card("#306010", (100, 300, 380, 500))
+    driver.draw_jpeg(page)
+    cooler.run_for(0.3)
+    driver.upload_jpeg(STORED_ID, replacement)                # and deephack's own uploads ask first
+    assert held() == (0, 0, 0)
+    cooler.run_for(1.0)
+    driver.show_slot(0)
+    cooler.run_for(0.5)
+    assert on_card(cooler)[f"img/000_{STORED_ID}/angle_0.jpg"] == replacement and on_screen(cooler, replacement, tmp_path)
+    driver.draw_jpeg(page)
+    cooler.run_for(0.3)
+    assert on_screen(cooler, page, tmp_path)
+
+
+def test_stock_firmware_has_no_buffers_to_give_back():
+    stock = bench.EmulatedCooler()
+    driver = stock.driver()
+    driver.set_mode(device.MODE_MOTION)
+    assert driver.make_room() is False and driver.uuid() == ""
+
+
+def test_a_word_of_memory_can_be_written(cooler):
+    """Version 10: command 22 writes a word and answers with what is there after. For trying a setting on
+    the running firmware; the driver keeps it to the RAM."""
+    driver = cooler.driver()
+    assert driver.draw_version() >= device.POKE_VERSION
+    spare = patch.STATE + 0x100                                           # RAM nothing uses
+    assert driver.peek(spare, 8) == bytes(8)
+    assert driver.poke(spare, 0x12345678) == 0x12345678
+    assert driver.peek(spare, 8) == bytes.fromhex("78563412") + bytes(4)  # the word, and nothing beside it
+    assert driver.poke(spare, 0) == 0
+    for address in (0x0000_E000, 0x4000_2014, 0x2000_FFFE, 0x7000_0000):  # the flash, a register, past the RAM's end
+        with pytest.raises(ValueError):
+            driver.poke(address, 1)
+    assert driver.peek(patch.APP, 4) == boot.DEFAULT_IMAGE.read_bytes()[:4] and driver.uuid() == ""      # 21 as before

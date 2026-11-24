@@ -531,7 +531,8 @@ at `0x200006F0`), and the next packet's interrupt waits until this one's handler
 from 10 to 120 KB sent as fast as they went, 1060 shown (the patch shows a frame only when its sum is
 right, and counts); parts as before, the page around them untouched to the pixel.
 
-**What limits it now is the panel.** Found on the way, by watching LVGL's buffer swaps from outside
+**What limits it now is the panel** (half right: it is two turns of the panel, of which one could be
+saved. See "Versions 10 to 15" below). Found on the way, by watching LVGL's buffer swaps from outside
 (`lv_disp_buf_t.buf_act`, read with command `21`) while the image screen's timer was at 33 ms, so that
 it redrew without a pause: **a redraw every 36.1 ms, for a JPEG of 12 KB as for one of 80** (35.6 to
 36.4 over 96 redraws each). That is the panel's own turn, 27.7 a second: a redraw ends by waiting for
@@ -543,6 +544,86 @@ In the app: a mode is told when the cooler takes bytes that fast (`Mode.fast`, p
 Video then lets a frame be 32 KB where it kept it to 22, and goes up to JPEG quality 80 where it
 stopped at 65. The NBA mode's highlights: quality 65 and more at 27.5 a second, where they were at 45
 as a whole page with version 2.
+
+#### Versions 10 to 15: every turn of the panel, and room for an upload
+
+*24 Nov 2026. Six more flashes, and one that did not take.*
+
+**The panel turns every 18 ms, not every 36.** Version 10 added command `22`, which writes a word of
+memory, to try settings on the running firmware. With it and `21`: the LCD controller's frame flag
+(`LCD.IF`, `0x40002000`) comes every **18.04 ms: 55.4 turns a second**. A redraw took two of them. What
+was in the 36 ms:
+
+| | |
+|---|---|
+| the JPEG is decoded into the frame buffer that is not on the glass | 6 ms |
+| the flush routine (`0x3F6F0`) gives the panel that buffer and waits for the turn (`LCD.CR` bit 15) | 10 ms on average |
+| LVGL copies what it drew into the other buffer, so that both hold the same picture: 614 KB | 20 ms |
+
+The copy is what LVGL does with two full-screen buffers ("true double buffering"), and it is longer than
+a turn. Then LVGL's redraw task, which ran every 33 ms, had to come round.
+
+- **Version 11 leaves the copy out.** The vendor's own video widget does: there is a routine at
+  `0x282F0` that marks an area that waits to be redrawn as "no copy after the flush" (a flag per area in
+  `lv_disp_t`, at `+0x17E`). The patch calls it for the picture's place after it has set a new frame. Two
+  buffers with different frames in them are no fault as long as every redraw draws the whole picture,
+  which a frame does. A part does not: so the first part after whole frames has the page drawn once
+  more *with* the copy, and stored pictures are the stock firmware's business as before.
+- **Version 12 has LVGL redraw at once**: the redraw task's period is 5 ms where it was 33
+  (`lv_disp_t` `+0x30`, the task's first word). **55.0 changes a second on the glass at 55.4 sent**
+  (`lv_disp_buf_t.buf_act` watched from outside), 1060 of 1060 frames shown.
+- **Version 13 skips the firmware's own redraws.** The image screen's timer asks for a redraw of the
+  picture ten times a second, changed or not. With a part on show each of those was a whole page with
+  the copy, in which no new part could be drawn: the highlights reel went 21.6 a second with version
+  12, slower than with 9. After each LVGL task the patch looks at the areas that wait: one area that is
+  exactly the picture's, with nothing of ours waiting, is struck off the list.
+- **Version 14** has the USB handler copy a packet with the firmware's memcpy and takes the frame's
+  sum in the main loop. It was meant to bring back the 997 KB a second, which had become 873 with
+  version 13, and did not: **874 KB a second with 14 and 15**, for 26 KB as for 90, to the kilobyte.
+  Seven packets where eight would go. Not understood.
+
+Checked on the cooler with version 15, reading the glass back pixel for pixel
+(`tools/screen.py`): frames then a part, a part then frames then a part, a part that moves, forty
+parts in a row, frames then a stored picture. Every reading the picture that was meant.
+
+| | version 9 | version 15 |
+|---|---|---|
+| pictures a second on the glass, small frames | 27.7 | **55.5** |
+| a frame of 26 KB | every 36.5 ms | every **33.8 ms** |
+| the NBA highlights (a part of 480 x 288) | 27 a second, quality 65 | **29.7 a second**, quality 68, 25 KB |
+| the Visualizer | 27.7 at the most | **41** a second, 17.7 KB |
+| bytes a second | 997 KB | 874 KB |
+
+In the app: `Mode.turn` is the time from one picture to the next (`device.TURN` from patch 12,
+`SLOW_TURN` before), and Video gives a frame what the bus carries in the time its video shows it:
+28 KB for a video of 30 a second, which is then shown 30 times a second where 32 KB were shown 27 times.
+
+**The update that did not take.** Twice a firmware update was sent whole, every packet taken, and the
+cooler did not restart: it ran what it had run, unharmed. The emulator did the right thing with the
+same bytes. What it was, found with the cooler's heap walked from outside (`21`; LVGL's heap is the
+first 8 MiB of the SDRAM, each block a word in front of it: size, and bit 0 for "in use"):
+
+- An upload is announced with `0F`. The firmware makes its "Loading" screen, which takes **2.9 MB** of
+  the heap, and only then reads the upload's header and asks for the upload's own buffer:
+  **`malloc(0x200000)`, 2 MiB in one piece** (`0x2E232`), for a firmware as for a picture.
+- When that fails it prints a line to its serial port and marks the upload as over (`0x2E424`). The
+  packets that follow are thrown away. Nothing is said to the host.
+- Before `0F` the heap had two free pieces, 1276 KB and 3650 KB, with our start screen's picture
+  between them. After it: **2012 KB** was the largest, with the patch's three buffers (128 KB each) and
+  a stored picture of 60 KB on show. 36 KB too little. With deephack's own small still on show instead:
+  2067 KB, enough by 19. Which picture was on show had decided every update of that day.
+
+A stock firmware has the buffers' 384 KB more, so it never came near. Patches 3 to 14 could all hit it
+(two buffers before 3).
+
+**Version 15 gives the buffers back.** Command `23` asks for that: the main loop frees them (if the
+picture widget shows one of them, it is given our start screen's picture first, which is not in these
+buffers) and the command answers "go" once none is held; the driver asks before every upload
+(`make_room()`), 5 ms on the cooler. And an `0F` from a program that does not ask has the same effect,
+at the main loop's next pass, which on the cooler was before the "Loading" screen was made. The next
+frame makes the buffers again. With them gone: **2396 KB** in one piece at the moment the firmware asks.
+Then the same state that had failed twice (frames and parts drawn, the 60 KB picture on show): the
+update was taken and the cooler restarted, and again with a drawn page on show.
 
 What the emulator run shows for whole pictures (`tests/test_direct_draw.py`): three frames in a row are on the emulated LCD,
 decoded alternately from the two buffers, with still one file on the card; a wrong sum and a stalled

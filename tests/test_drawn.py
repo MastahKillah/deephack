@@ -331,8 +331,11 @@ def test_drawn_pictures_have_huffman_tables_of_their_own_and_stored_ones_do_not(
 def test_a_mode_is_told_when_the_cooler_takes_bytes_at_full_speed(tmp_path, monkeypatch, cooler):
     """Patch 9 makes the USB endpoint ready before it copies a packet: 997 KB a second where it was 540 to
     823. A mode that fits its pictures to the cooler (Video) may make them larger then."""
-    for patch, fast in ((2, False), (8, False), (9, True)):
+    for patch, fast, turn in ((2, False, device.SLOW_TURN), (8, False, device.SLOW_TURN), (9, True, device.SLOW_TURN),
+                              (11, True, device.SLOW_TURN), (12, True, device.TURN)):
         cooler.direct = patch
         eng = _engine(tmp_path, monkeypatch)
         _show(eng, RED)
-        assert eng._fast is fast and eng._drawing, patch                  # (the main loop hands both to the mode)
+        assert eng._fast is fast and eng._drawing, patch                  # (the main loop hands these to the mode)
+        assert eng._turn == turn, patch                                   # from patch 12: a picture every turn of the panel
+    assert 54 < 1 / device.TURN < 56 and device.SLOW_TURN == 2 * device.TURN

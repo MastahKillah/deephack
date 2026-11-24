@@ -55,8 +55,16 @@ CMD_DIRECT = 0x20           # <size:u32> <sum16:u16>: show a JPEG without storin
 DIRECT_GO, DIRECT_LATER, DIRECT_REFUSED, DIRECT_NO_PAGE = 0x10, 0x11, 0x12, 0x13
 DIRECT_PARTS = 3            # the version of the patch from which a part of the picture can be drawn by itself
 DIRECT_FAST = 9             # ... and from which the cooler takes a frame's bytes as fast as USB carries them
+DIRECT_EVERY_TURN = 12      # ... and from which a frame is on the glass at the panel's next turn (see TURN)
+TURN = 0.01805              # seconds from one picture on the cooler's panel to the next: 55.4 a second. Until
+SLOW_TURN = 2 * TURN        # patch 12 a redraw took two of them: 27.7 pictures a second at the most
 CMD_PEEK = 0x21             # <address:u32> <count:u8>: read memory. The patch's, from its version 4
 PEEK_VERSION, PEEK_MOST = 4, 39
+CMD_POKE = 0x22             # <address:u32> <count:u8> <value:u32>: write a word, read back. From its version 10
+POKE_VERSION = 10
+CMD_RELEASE = 0x23          # give the frame buffers back to the heap: an upload needs the room. From its version 15,
+RELEASE_VERSION = 15        # answered as CMD_DIRECT is: DIRECT_GO when none is held, DIRECT_LATER when it is being done
+WRITABLE = ((0x2000_0000, 0x2001_0000), (0x8000_0000, 0x8080_0000))      # what poke may be asked for: RAM
 READABLE = ((0x0000_0000, 0x0008_0000), (0x2000_0000, 0x2001_0000), (0x8000_0000, 0x8080_0000))
                             # what peek may be asked for: the chip's flash, its RAM, the SDRAM. An address
                             # that is not memory stops the cooler until it is switched off and on
@@ -236,6 +244,7 @@ class Mystique:
         """Store a 480x640 baseline JPEG under file_id (overwrites if the id already exists)."""
         if jpeg[:2] != b"\xff\xd8" or jpeg[-2:] != b"\xff\xd9":
             raise ValueError("not a JPEG")
+        self.make_room()
         self.command(CMD_START_DOWNLOAD)
         self.dev.write(1, upload_header(file_id, jpeg), self.timeout)
         for off in range(0, len(jpeg), 64):
@@ -247,6 +256,7 @@ class Mystique:
         """Store an animation: a list of 480x640 JPEG frames that loops over duration_ms in total."""
         if not frames or not 0 < duration_ms <= MAX_GIF_DURATION_MS:
             raise ValueError("need at least one frame and a duration of 1..65535 ms")
+        self.make_room()
         self.command(CMD_START_DOWNLOAD)
         for i, jpeg in enumerate(frames):
             if jpeg[:2] != b"\xff\xd8" or jpeg[-2:] != b"\xff\xd9":
@@ -279,6 +289,27 @@ class Mystique:
         status, version = self._ask_direct(0, 0)
         return max(1, version) if status == DIRECT_REFUSED else 0
 
+    def make_room(self, patience: float = 1.0) -> bool:
+        """Have a patched firmware give its three frame buffers back to the heap, before an upload. The
+        stock firmware puts an upload (a picture, or a firmware) into 2 MiB of its heap in one piece, after
+        its "Loading" screen has taken nearly 3 MB of it, and gives the upload up without a word when no
+        such piece is left: with the patch's buffers and a stored picture of 60 KB there was none.
+
+        True when no buffer is held any more (the next frame makes them again; if a drawn picture was on
+        show, the cooler shows deephack's own in its place). False from a firmware without the command:
+        the stock one, or one patched before RELEASE_VERSION. Patch 15 and later also do this by
+        themselves when an upload is announced, for other programs; asking first leaves nothing to the
+        order in which the firmware does things."""
+        for _ in range(max(1, round(patience / DIRECT_ASK))):
+            self.dev.write(1, frame(CMD_RELEASE), self.timeout)
+            r = bytes(self.dev.read(0x81, 64, self.timeout))
+            if len(r) != 48 or r[0] != 0x55 or sum16(r[:46]) != struct.unpack_from("<H", r, 46)[0]:
+                raise RuntimeError(f"unexpected reply to cmd {CMD_RELEASE:#04x}: {r.hex()}")
+            if r[3] != DIRECT_LATER:
+                return r[3] == DIRECT_GO
+            time.sleep(DIRECT_ASK)
+        return False
+
     def peek(self, address: int, count: int) -> bytes:
         """`count` bytes of the cooler's memory from `address` (patch version 4). Only its flash and RAM:
         READABLE. Raises ValueError for anything else, RuntimeError on a firmware without the command."""
@@ -294,6 +325,19 @@ class Mystique:
                                    else f"unexpected reply to cmd {CMD_PEEK:#04x}: {r.hex()}")
             out += r[3:3 + n]
         return out
+
+    def poke(self, address: int, value: int) -> int:
+        """Write a 32-bit word into the cooler's RAM (patch version 10) and return what is there after.
+        For trying a setting on the running firmware; it lasts until the cooler starts again. Raises
+        ValueError for an address that is not RAM: a wrong word in the wrong place stops the cooler."""
+        if not any(low <= address and address + 4 <= high for low, high in WRITABLE):
+            raise ValueError(f"{address:#x} is not RAM the cooler can be told to write")
+        self.dev.write(1, frame(CMD_POKE, struct.pack("<IBI", address, 4, value & 0xFFFFFFFF)), self.timeout)
+        r = bytes(self.dev.read(0x81, 64, self.timeout))
+        if len(r) != 48 or r[0] != 0x55 or r[2] != CMD_POKE or sum16(r[:46]) != struct.unpack_from("<H", r, 46)[0]:
+            raise RuntimeError("this firmware cannot be told to write its memory" if len(r) == 48 and r[2] == 0
+                               else f"unexpected reply to cmd {CMD_POKE:#04x}: {r.hex()}")
+        return struct.unpack_from("<I", r, 3)[0]
 
     def can_draw(self) -> bool:
         """True when the cooler runs a firmware that draws without storing."""

@@ -69,6 +69,11 @@ parts of the cooler that no file holds can be looked at: the bootloader below th
 lies after it. An address that is not memory stops the cooler until it is switched off and on:
 deephack.device.Mystique.peek keeps to the flash and the RAM.
 
+A third, 22, writes (version 10): AA 2E 22 <address:u32> <count:u8> <value:u32> puts the value at the
+address and answers as 21 does, with `count` bytes read back from there. It is for trying a setting on
+the running firmware (how often LVGL redraws, say) before a patch is made of it: what it changes is gone
+with the next start. deephack.device.Mystique.poke keeps to the RAM.
+
 The start screen (version 5). While it starts the cooler shows DeepCool's logo for four seconds: a
 picture from a file on its serial flash, which nothing reaches over USB. The patch puts deephack's own
 over it: logo.jpg (made by logo.py), which lies after the patch's code in the image. The first time the
@@ -104,9 +109,12 @@ STATE = 0x2000F000                          # the patch's own RAM
 MAX_FRAME = 0x20000                         # bytes of JPEG a buffer holds
 COMMAND = 0x20
 PEEK = 0x21                                 # read memory (version 4)
+POKE = 0x22                                 # write a word of memory, and read it back (version 10)
+RELEASE = 0x23                              # give the buffers back to the heap (version 15)
+UPLOAD = 0x0F                               # the stock firmware's "an upload is coming"
 PEEK_MOST = 39                              # bytes a reply carries
 GO, LATER, REFUSED, NO_PAGE = 0x10, 0x11, 0x12, 0x13
-VERSION = 9                                 # of this patch, in every reply to the command (see CHANGES)
+VERSION = 15                                # of this patch, in every reply to the command (see CHANGES)
 CHANGES = {
     1: "the first: draws a JPEG from USB. Answers 0 where the version is now",
     2: "frames are also shown while lv_task_handler does not return (#22); the reply has the version",
@@ -117,6 +125,12 @@ CHANGES = {
     7: "the code that runs all the time lies together (it did not bring back version 2's speed for frames over 26 KB)",
     8: "a frame's bytes are copied by a loop that runs in RAM (which was slower still: never released)",
     9: "the USB controller is told to take the next packet before this one is copied, not after",
+    10: "a command that writes a word of the cooler's memory, for trying a setting on the running firmware",
+    11: "LVGL's copy of each frame is left out: a redraw takes one turn of the panel, not two",
+    12: "and LVGL redraws as soon as there is something to draw: a frame is on the glass at the panel's next turn, 55 a second",
+    13: "the firmware's own redraws of a picture that has not changed (ten a second) are left out while ours is on show",
+    14: "a packet is copied by the firmware's own memcpy and the frame's sum is checked in the main loop, not byte by byte in the USB interrupt",
+    15: "the three buffers go back to the heap when an upload is announced, or when asked: an upload needs 2 MiB of it in one piece",
 }
 STATE_SIZE = 68                             # bytes of the patch's RAM (see the layout above SOURCE)
 TIMEOUT_MS = 2000
@@ -126,10 +140,15 @@ SYMBOLS = {
     "lv_task_handler": 0x63E90,
     "lv_ll_get_head": 0x38E5C,              # lv_ll_get_head(list): its first entry
     "lv_mem_alloc": 0x5C3C8,
+    "lv_mem_free": 0x5C600,
     "lv_img_set_src": 0x58D34,
+    "lv_memcpy": 0x396E4,                   # _lv_memcpy(to, from, length)
     "lv_img_create": 0x158D0,               # lv_img_create(parent, copy)
     "lv_obj_set_pos": 0x5F100,              # lv_obj_set_pos(object, x, y), relative to its parent
     "lv_obj_set_hidden": 0x5EF64,           # lv_obj_set_hidden(object, hidden)
+    "memcmp": 0x29A60,                      # memcmp(a, b, length): 0 when they are the same
+    "area_no_copy": 0x282F0,                # the vendor's: the area that is to be redrawn (an lv_area_t, as an
+                                            # object's coords are) is not copied to the other buffer after
     "reply": 0x34D84,                       # reply(command, 0, status): builds and sends the answer
     "usb_send": 0x3488C,                    # usb_send(IN endpoint, data, length)
     "memclr": 0x29D50,                      # memclr(address, length)
@@ -143,6 +162,10 @@ SCREEN = 0x20000732                         # u16: the screen on show
 READY = 0x200051A8                          # u8: set when the start screen's four seconds are over
 START_SCREEN = 0x20000994                   # the start screen (an lv_obj), while it is on
 IDLE_SCREEN = 0x20000F18                    # screen 2D, once it has been made: where the firmware waits for a host
+DISPLAY = 0x20000418                        # LVGL's display (an lv_disp_t), once it has redrawn for the first time
+REDRAW_TASK = 0x30                          # ... in which its redraw task is; a task begins with its period in ms
+REDRAW_MS = 5                               # how long LVGL waits now before it redraws what has changed (it was 33)
+INVALID_AREAS, INVALID_COUNT = 0x5E, 0x19E  # ... and the areas that wait to be redrawn (lv_area_t each), and how many
 LOGO = Path(__file__).with_name("logo.jpg")  # what is shown on it: see logo.py
 MOST = 0x72000                              # bytes of image the bootloader writes: from 0xE000 to the flash's end
 WIDGET = 0x20001074                         # the image screen's picture (an lv_img)
@@ -165,12 +188,38 @@ BRANCHES = {"b", "bl", "cbz", "cbnz"} | {"b" + c for c in "eq ne hs lo mi pl vs 
 # state: +0 u8 phase (0 idle, 1 receiving, 2 ready to show)   +1 u8 buffers wanted
 #        +2 u8 page: which buffer the picture widget shows (1 to 3; 0: none of ours yet)
 #        +3 u8 part: which buffer the small picture on top of it shows (0: none, it is hidden)
-#        +4, +8, +12 the three buffers   +16 size   +20 received   +24 running sum   +28 expected sum
+#        +4, +8, +12 the three buffers   +16 size   +20 received   +24 (not used since 14)   +28 expected sum
 #        +32 tick at start   +36 frames shown   +40 u8 the buffer being filled   +41 u8 1: it is a part
 #        +44 u16 x, +46 u16 y of the part   +48 its lv_img_header_t (which has its size)
 #        +52, +56 the same two words of the part before it: where the small picture is now
-#        +60 u8 our picture is on the start screen (1) and on the idle screen (2), or was tried
+#        +60 u8 our picture is on the start screen (1) and on the idle screen (2), or was tried; the
+#            redraw task has its new period (4)
+#        +61 u8 whole frames are flowing: what is on the glass was drawn without LVGL's copy after it
+#        +62 u8 a picture of ours waits to be redrawn   +63 u8 ... and it is a new page under a part, which
+#            is to be copied into the other buffer this once
 #        +64 that picture: its lv_img_dsc_t, in RAM
+#
+# The copy (version 11). LVGL draws into the frame buffer that is not on the glass, has the panel take
+# it at its next turn, and then copies what it drew into the other buffer, so that both hold the same
+# picture: 614 KB, which takes this chip 20 ms. The panel turns every 18: so a redraw cost two turns,
+# 36.1 ms, and that was the 27.7 pictures a second nothing got past. A picture that is drawn anew from
+# end to end every time needs no such copy, and the vendor's firmware has a routine that says so for an
+# area (its own video player calls it after every frame; nothing on this cooler uses that player). The
+# patch calls it after it has given a frame to the picture, and after the firmware's own redraws of that
+# frame (its screen timer asks for one ten times a second). The two buffers then hold different frames,
+# which shows nowhere as long as every redraw is the whole picture. Where it would show, the copy is
+# made again: a part of the picture is put on a page only after the page has been drawn whole once
+# more, with its copy; and a picture the stock firmware shows is none of ours.
+#
+# That alone did not show more pictures: LVGL's redraw task ran every 33 ms at the most, which is every
+# second turn of the panel again. Its period is 5 ms now (version 12). It only runs when something is to
+# be redrawn, so nothing is drawn more often for it, only sooner.
+#
+# And the redraws nobody needs (version 13). The image screen's timer asks for its picture to be redrawn
+# every 100 ms, changed or not. Each of those is a turn of the panel, or two with the copy, in which the
+# main loop is not there to show a new frame: with a page and a part on show a video got 21 pictures a
+# second for it where the cooler could show 30. While the picture on show is ours and nothing of ours
+# waits to be drawn, such a request is taken back (after_task).
 #
 # How fast a frame's bytes arrive is decided between two USB packets (version 9). The host leaves some 25
 # microseconds after a packet before it sends the next, and a packet that finds the endpoint not ready is
@@ -181,6 +230,24 @@ BRANCHES = {"b", "bl", "cbz", "cbnz"} | {"b" + c for c in "eq ne hs lo mi pl vs 
 # 800; versions 3 to 6, 765 and 540; 7, with the routines put in another order, 760 and 595; 8, with the
 # loop in RAM, 390 and 430. So the endpoint is made ready first now. The order from version 7 stays: what
 # runs all the time first, together and short; then what runs once a frame; then the rest.
+#
+# That was not all of it. With the endpoint ready first the handler still has to be done before the next
+# packet is, 64 microseconds later, and with a loop that copied and summed a byte at a time it was or was
+# not, again by where the loop lay: 997 KB a second with versions 9 to 12, 873 with 13, in which not one
+# line of the handler had changed. Since version 14 the handler copies with the firmware's own memcpy and
+# does nothing else, and the frame's sum is taken by the main loop before it shows the frame. That did
+# not bring the 997 back: 874 with 14 and with 15, for every size from 26 to 90 KB, to the kilobyte. Seven
+# packets where eight would go: what takes the eighth is not known.
+#
+# Room for an upload (version 15). The stock firmware puts an upload, a picture or a firmware, into
+# 2 MiB of LVGL's heap in one piece (malloc(0x200000) at 0x2E232), which it asks for after its "Loading"
+# screen has taken some 2.9 MB of the 8. When there is no such piece it prints a line to its serial port
+# and drops the upload: every packet of the file is thrown away, and nothing says so to the host. On the
+# cooler, with the three buffers below held and a stored picture of 60 KB on show, the largest piece
+# left was 2012 KB: a firmware update was sent whole and the cooler went on as before. With our own small
+# still on show it was 2067 KB, which is why most updates did go through. So the buffers are given back:
+# when the host asks (command 23, before it announces an upload) and when an upload is announced
+# (command 0F, for programs that do not ask). The next frame makes them again. 2396 KB then.
 def source(logo_at: int, logo_size: int) -> str:
     """The patch's code, for a logo of `logo_size` bytes at address `logo_at`."""
     return f"""
@@ -198,14 +265,15 @@ loop_hook:                              @ r0 = the task list, for the call this 
     pop.w   {{r4, lr}}
     b.w     lv_ll_get_head
 
-look_after_task:                        @ with a part on show: has the stock firmware changed the page under it?
-    movw    r3, #{STATE & 0xFFFF}       @ (it does that in a task, so this need not be asked on every pass)
+look_after_task:                        @ a task has run: the stock firmware may have changed the picture, or asked
+    movw    r3, #{STATE & 0xFFFF}       @ for a redraw (it does both in tasks, so this is not asked on every pass)
     movt    r3, #{STATE >> 16}
     ldrb    r0, [r3, #3]
-    cmp     r0, #0
-    beq     look_no_part
-    b.w     show
-look_no_part:
+    ldrb.w  r1, [r3, #61]
+    orrs    r0, r1
+    beq     look_plain                  @ no part on show and no frames flowing: nothing of ours to look after
+    b.w     after_task
+look_plain:
     b.w     look
 
 look:                                   @ anything for the main loop to do? Hardly ever, and this is passed
@@ -213,8 +281,8 @@ look:                                   @ anything for the main loop to do? Hard
     movt    r3, #{STATE >> 16}          @ other code that runs all the time (see the note above SOURCE)
     ldrb.w  r1, [r3, #60]
     ldrh    r0, [r3, #0]                @ the phase, and "buffers wanted" above it
-    cmp     r1, #3
-    bne     look_work                   @ our picture is not on both start screens yet
+    cmp     r1, #7
+    bne     look_work                   @ what is done once after the start is not all done yet
     cmp     r0, #2
     bhs     look_work                   @ a frame is all in (2), or buffers are wanted (0x100 and up)
     bx      lr
@@ -237,45 +305,35 @@ usb_hook:                               @ r4 = the packet, r1 = where its length
     movw    r3, #{RXCR1 & 0xFFFF}       @ The endpoint may take the next packet now, before this one is copied:
     movt    r3, #{RXCR1 >> 16}          @ the stock handler has it out of the controller already (in RAM, at r4).
     movs    r5, #4                      @ The host leaves some 25 microseconds between two packets, and a packet
-    str     r5, [r3]                    @ that finds the endpoint shut is sent again, all 64 bytes of it. With the
-    movs    r5, #8                      @ copy first, that window was missed or not by where this code lay (see
-    str     r5, [r3]                    @ the note above SOURCE).
-    ldrb    r0, [r1]                    @ bytes in this packet
-    ldr     r3, [r2, #16]
-    ldr     r5, [r2, #20]
+    str     r5, [r3]                    @ that finds the endpoint shut is sent again, all 64 bytes of it (see the
+    movs    r5, #8                      @ note above SOURCE).
+    str     r5, [r3]
+    mov     r7, r2                      @ the state, in a register the copy leaves alone
+    ldrb    r2, [r1]                    @ bytes in this packet
+    ldr     r3, [r7, #16]
+    ldr     r5, [r7, #20]
     subs    r3, r3, r5
-    cmp     r0, r3
+    cmp     r2, r3
     it      hi
-    movhi   r0, r3                      @ no more than the frame still needs
-    ldrb.w  r3, [r2, #40]
-    ldr.w   r3, [r2, r3, lsl #2]        @ the buffer being filled: one that neither picture shows
-    adds    r3, #16
-    add     r3, r5
-    add     r5, r0
-    str     r5, [r2, #20]
-    ldr     r5, [r2, #24]
-    cmp     r0, #0
+    movhi   r2, r3                      @ no more than the frame still needs
+    ldrb.w  r0, [r7, #40]
+    ldr.w   r0, [r7, r0, lsl #2]        @ the buffer being filled: one that neither picture shows
+    adds    r0, #16
+    add     r0, r5
+    add     r5, r2
+    str     r5, [r7, #20]
+    mov     r1, r4
+    cmp     r2, #0
     beq     usb_copied
-usb_copy:
-    ldrb    r7, [r4], #1
-    strb    r7, [r3], #1
-    add     r5, r7
-    subs    r0, #1
-    bne     usb_copy
+    bl      lv_memcpy                   @ the firmware's own, a word at a time. (The sum is the main loop's work.)
 usb_copied:
-    str     r5, [r2, #24]
-    ldr     r0, [r2, #20]
-    ldr     r3, [r2, #16]
+    ldr     r0, [r7, #20]
+    ldr     r3, [r7, #16]
     cmp     r0, r3
-    bne     usb_arm
-    ldr     r0, [r2, #28]
-    uxth    r5, r5
-    movs    r3, #2
-    cmp     r0, r5
-    it      ne
-    movne   r3, #0                      @ a frame with the wrong sum is not shown
-    strb    r3, [r2, #0]
-usb_arm:
+    bne     usb_more
+    movs    r3, #2                      @ all of it is in
+    strb    r3, [r7, #0]
+usb_more:
     pop     {{r4, r5, r7, pc}}
 usb_expired:
     movs    r3, #0
@@ -293,9 +351,25 @@ command_hook:                           @ r0 = command, r1 = 0, r2 = 0; runs in 
     beq     command_ours
     cmp     r0, #{PEEK}
     beq     command_peek
+    cmp     r0, #{POKE}
+    beq     command_poke
+    cmp     r0, #{RELEASE}
+    beq     command_release
+    cmp     r0, #{UPLOAD}
+    bne     command_stock
+    movw    r3, #{STATE & 0xFFFF}       @ An upload is coming, a picture or a firmware: the stock firmware puts
+    movt    r3, #{STATE >> 16}          @ it into 2 MiB of the heap, in one piece, and gives up without a word
+    movs    r2, #2                      @ when there is no such piece (see the note above SOURCE). The main loop
+    strb    r2, [r3, #1]                @ gives our buffers back, at its next pass.
+    movs    r2, #0
+command_stock:
     b.w     reply
 command_peek:
     b.w     peek
+command_poke:
+    b.w     poke
+command_release:
+    b.w     release_asked
 command_ours:
     push    {{r4, r5, r6, lr}}
     movw    r4, #{STATE & 0xFFFF}
@@ -376,6 +450,21 @@ command_picked:
     strb    r0, [r4, #0]
     movs    r2, #{GO}
     b       command_out
+release_asked:                          @ command 23: GO when no buffer is held, LATER when the main loop is to
+    push    {{r4, r5, r6, lr}}            @ give them back (ask again). Answered as command 20 is.
+    movw    r4, #{STATE & 0xFFFF}
+    movt    r4, #{STATE >> 16}
+    movs    r2, #{GO}
+    ldr     r0, [r4, #4]
+    ldr     r1, [r4, #8]
+    orrs    r0, r1
+    ldr     r1, [r4, #12]
+    orrs    r0, r1
+    beq     command_out
+    movs    r0, #2
+    strb    r0, [r4, #1]
+    movs    r2, #{LATER}
+    b       command_out
 command_want:
     movs    r0, #1
     strb    r0, [r4, #1]                @ the main loop makes the buffers
@@ -413,10 +502,10 @@ peek:                                   @ command 21: up to 39 bytes of memory, 
     bl      memclr
     movw    r0, #0x2e55
     strh    r0, [r4, #0]
-    movs    r0, #{PEEK}
-    strb    r0, [r4, #2]
     movw    r3, #{COMMAND_COPY & 0xFFFF}
     movt    r3, #{COMMAND_COPY >> 16}
+    ldrb    r0, [r3, #2]
+    strb    r0, [r4, #2]                @ the command that was asked: 21, or 22 after its write
     ldr.w   r1, [r3, #3]                @ address
     ldrb    r2, [r3, #7]                @ count
     cmp     r2, #{PEEK_MOST}
@@ -449,18 +538,31 @@ peek_sum:
     pop.w   {{r4, r5, r6, lr}}
     b.w     usb_send
 
+poke:                                   @ command 22: a word written, then answered as 21 is
+    movw    r3, #{COMMAND_COPY & 0xFFFF}
+    movt    r3, #{COMMAND_COPY >> 16}
+    ldr.w   r1, [r3, #3]                @ address
+    ldr.w   r2, [r3, #8]                @ value
+    str     r2, [r1]
+    b.w     peek
+
 show:                                   @ make the buffers when asked to, and show a frame that is all in
     push    {{r3, r4, r5, r6, r7, lr}}
     movw    r4, #{STATE & 0xFFFF}
     movt    r4, #{STATE >> 16}
     ldrb.w  r0, [r4, #60]
-    cmp     r0, #3
+    cmp     r0, #7
     beq     show_started
     bl      logo
 show_started:
     ldrb    r0, [r4, #1]
     cmp     r0, #0
     beq     show_frame
+    cmp     r0, #1
+    beq     show_make
+    bl      release
+    pop     {{r3, r4, r5, r6, r7, pc}}
+show_make:
     movs    r5, #4
 show_alloc:
     ldr     r0, [r4, r5]
@@ -490,7 +592,15 @@ show_frame:
     ldrh    r0, [r0]
     movw    r1, #{IMAGE_SCREEN}
     cmp     r0, r1
-    bne     show_elsewhere
+    beq     show_here
+    ldrb    r0, [r4, #0]                @ another screen: a frame that came for this one is dropped
+    cmp     r0, #2
+    bne     show_away
+    movs    r0, #0
+    strb    r0, [r4, #0]
+show_away:
+    pop     {{r3, r4, r5, r6, r7, pc}}
+show_here:
     movw    r6, #{WIDGET & 0xFFFF}
     movt    r6, #{WIDGET >> 16}
     ldr     r6, [r6]                    @ the picture widget
@@ -499,6 +609,22 @@ show_frame:
     bne     show_guard
     ldrb.w  r5, [r4, #40]
     ldr.w   r5, [r4, r5, lsl #2]        @ the buffer that was filled
+    add.w   r0, r5, #16                 @ Is it what was sent? Its bytes are summed here, where there is time: in
+    ldr     r1, [r4, #16]               @ the USB interrupt that cost as much as the copy, sixty-four times a
+    movs    r2, #0                      @ packet, with the next packet on its way.
+show_sum:
+    ldrb    r3, [r0], #1
+    add     r2, r3
+    subs    r1, #1
+    bne     show_sum
+    uxth    r2, r2
+    ldr     r0, [r4, #28]
+    cmp     r0, r2
+    beq     show_whole
+    movs    r0, #0                      @ a frame with the wrong sum is not shown
+    strb    r0, [r4, #0]
+    pop     {{r3, r4, r5, r6, r7, pc}}
+show_whole:
     ldr     r0, [r4, #16]
     str     r0, [r5, #4]                @ data_size
     ldrb.w  r0, [r4, #41]
@@ -513,8 +639,20 @@ show_frame:
     mov     r0, r6
     mov     r1, r5
     bl      lv_img_set_src
+    add.w   r0, r6, #16                 @ its place on the screen: all of that is drawn anew, no copy after
+    bl      area_no_copy
+    movs    r0, #1
+    strb.w  r0, [r4, #61]
+    strh.w  r0, [r4, #62]               @ ours waits to be drawn (and it is no page for a part)
     b       show_count
 show_part:
+    ldrb.w  r0, [r4, #61]
+    cmp     r0, #0
+    beq     show_part_page
+    movs    r0, #0                      @ The page under it was drawn without the copy: the other buffer has
+    strb.w  r0, [r4, #61]               @ an older picture. So the page is drawn whole once more with this part
+    str     r0, [r4, #56]               @ (as if the part had moved: see show_moved), and copied.
+show_part_page:
     ldr     r0, [r4, #48]
     str     r0, [r5, #0]                @ raw, as wide and high as the command said
     adds    r0, r6, #4
@@ -538,6 +676,10 @@ show_have:
     mov     r0, r7
     movs    r1, #0
     bl      lv_obj_set_hidden
+    add.w   r0, r7, #16                 @ the part's place is drawn anew whole every time too
+    bl      area_no_copy
+    movs    r0, #1
+    strb.w  r0, [r4, #62]               @ ours waits to be drawn
     ldrb.w  r0, [r4, #40]
     strb    r0, [r4, #3]
     ldr     r0, [r4, #44]
@@ -555,6 +697,8 @@ show_moved:                             @ the small picture is new, or was somew
     ldr.w   r1, [r4, r1, lsl #2]        @ stock firmware takes for its slides, and this patch never.)
     mov     r0, r6
     bl      lv_img_set_src
+    movs    r0, #1
+    strb.w  r0, [r4, #63]               @ ... and copied, this once: the page into both buffers
 show_count:
     ldr     r0, [r4, #36]
     adds    r0, #1
@@ -576,11 +720,132 @@ show_guard:                             @ nothing to show. Is the page still our
     bl      hide_part
 show_done:
     pop     {{r3, r4, r5, r6, r7, pc}}
-show_elsewhere:                         @ another screen: a frame that came for this one is dropped
-    ldrb    r0, [r4, #0]
-    cmp     r0, #2
-    beq     show_drop
-    pop     {{r3, r4, r5, r6, r7, pc}}
+
+after_task:                             @ a task has run while a picture of ours may be on show (entered with a jump
+    push    {{r4, r5, r6, lr}}            @ from look_after_task: its return is the hook's)
+    movw    r4, #{STATE & 0xFFFF}
+    movt    r4, #{STATE >> 16}
+    movw    r0, #{SCREEN & 0xFFFF}
+    movt    r0, #{SCREEN >> 16}
+    ldrh    r0, [r0]
+    movw    r1, #{IMAGE_SCREEN}
+    cmp     r0, r1
+    bne     after_not_ours
+    movw    r6, #{WIDGET & 0xFFFF}
+    movt    r6, #{WIDGET >> 16}
+    ldr     r6, [r6]
+    ldrb    r0, [r4, #2]
+    ldr.w   r0, [r4, r0, lsl #2]
+    ldr     r1, [r6, #{EXT}]
+    ldr     r1, [r1, #0]
+    cmp     r0, r1
+    beq     after_ours
+    bl      hide_part                   @ the picture shows something else now: a part must not stay on top of it
+after_not_ours:                         @ ... and what is redrawn and copied is the stock firmware's business again
+    movs    r0, #0
+    strb.w  r0, [r4, #61]
+    b       after_out
+after_ours:
+    movw    r5, #{DISPLAY & 0xFFFF}
+    movt    r5, #{DISPLAY >> 16}
+    ldr     r5, [r5]
+    cmp     r5, #0
+    beq     after_out
+    ldrh.w  r0, [r5, #{INVALID_COUNT}]
+    lsls    r0, r0, #22                 @ its low ten bits: how many areas wait to be redrawn
+    bne     after_waiting
+    strh.w  r0, [r4, #62]               @ none: what we asked for has been drawn (and a page is in both buffers)
+    b       after_out
+after_waiting:
+    ldrb.w  r1, [r4, #62]
+    cmp     r1, #0
+    bne     after_ours_too
+    cmp.w   r0, #{1 << 22}              @ Nothing of ours is waiting, so the firmware asked by itself: its screen
+    bne     after_out                   @ timer does, ten times a second, for the picture that is on show already.
+    add.w   r0, r5, #{INVALID_AREAS}    @ If that is all there is, it is not drawn again: a redraw is a turn of the
+    add.w   r1, r6, #16                 @ panel in which no new frame can be shown.
+    movs    r2, #8
+    bl      memcmp
+    cmp     r0, #0
+    bne     after_out
+    ldrh.w  r0, [r5, #{INVALID_COUNT}]
+    bic     r0, r0, #0xff
+    bic     r0, r0, #0x300
+    strh.w  r0, [r5, #{INVALID_COUNT}]
+    b       after_out
+after_ours_too:                         @ Ours is waiting, and the firmware's request may have been joined with it
+    ldrb.w  r0, [r4, #63]               @ into the whole picture: that needs no copy either, unless this is the
+    cmp     r0, #0                      @ redraw that brings a new page into both buffers.
+    bne     after_out
+    add.w   r0, r6, #16
+    bl      area_no_copy
+after_out:
+    pop.w   {{r4, r5, r6, lr}}
+    b.w     look
+
+release:                                @ r4 = state: the three buffers go back to the heap
+    push    {{r3, r5, r6, r7, lr}}
+    sub     sp, #12
+    cpsid   i                           @ (no frame may start between "none is coming in" and "there are none")
+    movs    r0, #0
+    strh    r0, [r4, #0]                @ no frame is coming in, and what was asked is done
+    ldr     r5, [r4, #4]
+    ldr     r7, [r4, #8]
+    ldr     r1, [r4, #12]
+    str     r1, [sp, #0]
+    str     r0, [r4, #4]
+    str     r0, [r4, #8]
+    str     r0, [r4, #12]
+    cpsie   i
+    movw    r0, #{SCREEN & 0xFFFF}
+    movt    r0, #{SCREEN >> 16}
+    ldrh    r0, [r0]
+    movw    r1, #{IMAGE_SCREEN}
+    cmp     r0, r1
+    bne     release_free                @ another screen: no picture of ours is on show
+    movw    r6, #{WIDGET & 0xFFFF}
+    movt    r6, #{WIDGET >> 16}
+    ldr     r6, [r6]
+    bl      hide_part
+    ldr     r0, [r6, #{EXT}]
+    ldr     r0, [r0, #0]                @ what the picture widget shows
+    cmp     r0, #0
+    beq     release_free
+    cmp     r0, r5
+    beq     release_shown
+    cmp     r0, r7
+    beq     release_shown
+    ldr     r1, [sp, #0]
+    cmp     r0, r1
+    bne     release_free
+release_shown:                          @ It shows one of them: our own picture takes its place, the one from the
+    ldr     r1, [r4, #64]               @ start screen, which is not in these buffers.
+    cmp     r1, #0
+    bne     release_logo
+    str     r5, [r4, #4]                @ (there is none: then the buffers stay, they cannot be taken from under
+    str     r7, [r4, #8]                @ the picture)
+    ldr     r0, [sp, #0]
+    str     r0, [r4, #12]
+    b       release_out
+release_logo:
+    mov     r0, r6
+    bl      lv_img_set_src
+release_free:
+    movs    r0, #0
+    strh    r0, [r4, #2]                @ no page of ours, no part
+    str     r0, [r4, #52]
+    str     r0, [r4, #56]
+    strb.w  r0, [r4, #61]
+    strh.w  r0, [r4, #62]
+    mov     r0, r5
+    bl      lv_mem_free                 @ (which takes a null as well)
+    mov     r0, r7
+    bl      lv_mem_free
+    ldr     r0, [sp, #0]
+    bl      lv_mem_free
+release_out:
+    add     sp, #12
+    pop     {{r3, r5, r6, r7, pc}}
 
 hide_part:                              @ r4 = state, r6 = the picture widget: the part goes, the page is whole
     push    {{r5, lr}}
@@ -598,8 +863,27 @@ hide_part:                              @ r4 = state, r6 = the picture widget: t
 hide_done:
     pop     {{r5, pc}}
 
-logo:                                   @ r4 = state. Our picture over the start screen's and the idle screen's, once each
-    push    {{r4, r5, r6, lr}}
+logo:                                   @ r4 = state. What is done once after the start: the redraw task's period,
+    push    {{r4, r5, r6, lr}}            @ and our picture over the start screen's and the idle screen's
+    ldrb.w  r6, [r4, #60]
+    tst     r6, #4
+    bne     logo_pictures
+    movw    r0, #{DISPLAY & 0xFFFF}
+    movt    r0, #{DISPLAY >> 16}
+    ldr     r0, [r0]
+    cmp     r0, #0
+    beq     logo_pictures               @ LVGL has not redrawn yet: next time
+    ldr     r0, [r0, #{REDRAW_TASK}]
+    cmp     r0, #0
+    beq     logo_pictures
+    movs    r1, #{REDRAW_MS}
+    str     r1, [r0, #0]
+    orr     r6, r6, #4
+    strb.w  r6, [r4, #60]
+logo_pictures:
+    and     r0, r6, #3
+    cmp     r0, #3
+    beq     logo_out
     ldr     r5, [r4, #64]
     cmp     r5, #0
     bne     logo_start
@@ -608,7 +892,8 @@ logo:                                   @ r4 = state. Our picture over the start
     bl      lv_mem_alloc
     cmp     r0, #0
     bne     logo_made
-    movs    r0, #3
+    ldrb.w  r0, [r4, #60]
+    orr     r0, r0, #3
     strb.w  r0, [r4, #60]               @ no memory: DeepCool's pictures stay
     b       logo_out
 logo_made:

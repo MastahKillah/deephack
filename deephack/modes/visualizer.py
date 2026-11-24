@@ -33,10 +33,13 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from ..audio import BANDS, LISTENER
 from ..render import H, W
+from . import video
 from .base import Flipbook, Mode, Setting
 
 LEVELS = 24
 TICK = 0.033                                   # seconds between two pictures: thirty a second, if the cooler takes them
+QUICK_TICK = 0.018                             # ... and fifty-five, for a cooler that shows one every turn of its panel
+QUICK_QUALITY = 80                             # (patch 12). A spectrum is 17 KB or less then, by its JPEG quality
 VERSION = 3                                    # bump when the frames change, so they are stored again
 PALETTES = {   # hue (degrees) at the quietest and at the loudest bass level
     "aurora": (205, 320), "fire": (350, 48), "ocean": (150, 215), "mono": None,
@@ -201,6 +204,13 @@ class Visualizer(Mode):
         return render_bars(grounds[glow], self.palette, heights, marks)
 
     async def frame(self):
+        quick = self.direct and self.turn < video.QUICK
+        self.tick = QUICK_TICK if quick else TICK
+        if quick:                                      # as sharp as fits into one turn of the panel
+            self.quality = video.quality_for(self.quality or QUICK_QUALITY, self.sent_bytes, 1 / QUICK_TICK, self.fast,
+                                             self.turn, most=1 / QUICK_TICK)
+        else:
+            self.quality = None
         if self.direct and self.values["style"] != "orb":
             return await self._bars()
         self._look = None

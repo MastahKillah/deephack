@@ -447,3 +447,38 @@ def test_every_palette_draws_bars():
         assert len(grounds) == visualizer.GLOWS
         img = visualizer.render_bars(grounds[3], palette, [100] * audio.BANDS, [150] * audio.BANDS)
         assert img.size == (device.WIDTH, device.HEIGHT) and _lit(img, 0, 50) and _lit(img, audio.BANDS - 1, 50)
+
+
+def test_a_cooler_that_shows_a_picture_every_turn_gets_fifty_five_a_second(monkeypatch):
+    """Patch 12: the panel's every turn, 18 ms. The spectrum is asked for that often then, at a JPEG quality
+    that keeps a frame inside one turn."""
+    import asyncio
+
+    from deephack import device
+    from deephack.modes import video
+
+    class Sound:
+        available = True
+
+        def spectrum(self):
+            return (0.5,) * visualizer.BANDS, (0.6,) * visualizer.BANDS
+
+        def levels(self):
+            return 0.5, 0.5
+
+    m = visualizer.Visualizer(listener=Sound())
+    m.direct, m.fast = True, True
+    asyncio.run(m.frame())
+    assert m.tick == visualizer.TICK and m.quality is None                # as before, on an older patch
+    m.turn = device.TURN
+    asyncio.run(m.frame())
+    assert m.tick == visualizer.QUICK_TICK < 0.02 and m.quality == visualizer.QUICK_QUALITY
+    m.sent_bytes = 30_000                                                 # too much for one turn: a little less sharp
+    asyncio.run(m.frame())
+    assert m.quality == visualizer.QUICK_QUALITY - 3
+    m.sent_bytes = 9_000
+    asyncio.run(m.frame())
+    assert m.quality == visualizer.QUICK_QUALITY - 2
+    m.direct = False                                                      # DeepCool's firmware: the flipbook, as ever
+    asyncio.run(m.frame())
+    assert m.tick == visualizer.TICK and m.quality is None

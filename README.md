@@ -155,7 +155,8 @@ Releases are built by GitHub (`.github/workflows/release.yml`): the tests run, t
 built with PyInstaller (`packaging/deephack.spec`), started once to see that it comes up, and published
 with the wheel, the source archive and their checksums. To make one, set `__version__` in
 `deephack/__init__.py` (the only place the version is written), write what changed under a heading for
-that version in [`CHANGELOG.md`](CHANGELOG.md), commit, and push a tag of that version:
+that version in [`CHANGELOG.md`](CHANGELOG.md) (what has gathered under "Unreleased" there gets that
+heading), commit, and push a tag of that version:
 
 ```powershell
 git tag v0.2.0
@@ -340,7 +341,13 @@ Two things the engine works around, both seen on the cooler:
   that every time before it starts to draw.
 
 The patch has a version, which the cooler reports in its answer to `20` (`draw_version()`; the first
-patch reports none and counts as 1). The app offers an update when it carries a newer one.
+patch reports none and counts as 1). The app offers an update when it carries a newer one. Later versions
+added: a part of the picture drawn by itself (3), `21` to read the cooler's memory (4), deephack's own
+start screen (5 and 6), bytes at USB's full speed (9), `22` to write a word of memory (10), a new picture
+at every refresh of the panel, 55 a second (11 to 13), and `23`, with which the patch gives its frame
+buffers back to the firmware's heap before an upload (15: without that an upload, a firmware update
+among them, could be dropped by the cooler without a word. `make_room()`, which the driver calls by
+itself).
 
 **A flash that goes wrong cannot be undone from USB.** That it worked on one cooler (four times: both
 images twice, the last two from the app, 19 seconds each) says nothing certain about another unit: read "Which firmware" and "Direct drawing" in

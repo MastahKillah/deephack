@@ -28,7 +28,9 @@ def test_every_version_has_notes_and_a_date_newest_first():
     dates = [date for date, _ in found.values()]
     assert all(re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) for date in dates) and dates == sorted(dates, reverse=True)
     assert all(body for _, body in found.values())
-    assert len(found) == len(re.findall(r"^## ", TEXT, re.MULTILINE))     # no heading the workflow could not read
+    headings = re.findall(r"^## .*$", TEXT, re.MULTILINE)                 # no heading the workflow could not read,
+    waiting = headings[:1] == ["## Unreleased"]                           # but for what is in no release yet, on top
+    assert len(found) == len(headings) - waiting and "## Unreleased" not in headings[1:]
 
 
 def test_a_section_is_its_text_and_nothing_of_its_neighbours():

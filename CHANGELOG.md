@@ -2,9 +2,30 @@
 
 What changed in each release of deephack, newest first. The notes of a GitHub release are its section
 here: the release workflow takes them from this file, and does not build a version that has no section.
+What is on `main` and in no release yet is under "Unreleased", which gets the version's heading when
+the release is cut.
 
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
+
+## Unreleased
+
+- **Firmware patch 15: a new picture at every refresh of the panel.** The cooler's panel refreshes 55
+  times a second, and a drawn frame took two refreshes: 27 pictures a second at the most. LVGL copied
+  every frame from one of its two buffers into the other, 614 KB, which took longer than a refresh. The
+  patch leaves that copy out for what it draws, has LVGL redraw at once, and skips the firmware's own
+  redraws of a picture that has not changed. 55 pictures a second reach the glass.
+- **Smooth video.** A video of 30 pictures a second is shown 30 times a second (it was 27), and the NBA
+  highlights play at 30. The Visualizer runs at 41 to 45 pictures a second.
+- **Updates and uploads that were dropped without a word.** The cooler needs 2 MiB of its memory in one
+  piece for an upload, and with patches 3 to 14 holding their frame buffers there could be 36 KB too
+  little: a firmware update was sent whole and the cooler went on as before, unchanged and unharmed.
+  Patch 15 gives its buffers back before an upload. Updating *to* it from an older patch can still hit
+  this, and the app says so when it does. The cooler has the most room right after the PC was switched
+  on, before anything was drawn.
+- The patch can be told to write a word of the cooler's memory (patch 10), for trying a setting on the
+  running firmware.
+- Patches 10 to 14 were steps on the way and are in no release.
 
 ## 0.12.0 (2026-11-24)
 

@@ -157,6 +157,7 @@ class Engine(QThread):
         self._still: tuple[int, bytes] = (-1, b"")   # frame seq of the picture last drawn, and its JPEG
         self._parts = False                      # ... and its patch can draw a part of the picture by itself
         self._fast = False                       # ... and takes a frame's bytes at the bus's full speed (Mode.fast)
+        self._turn = device.SLOW_TURN            # ... and shows a new picture this often at the most (Mode.turn)
         self._part: Part | None = None           # the mode's last picture, when only a part of it changed
         self._page = None                        # what the whole picture drawn last was (see _draw_part)
         self._page_kept: Image.Image | None = None
@@ -278,7 +279,7 @@ class Engine(QThread):
 
     async def _preview_step(self) -> None:
         mode = self._preview
-        mode.direct, mode.audible, mode.fast = self._drawing, False, self._fast
+        mode.direct, mode.audible, mode.fast, mode.turn = self._drawing, False, self._fast, self._turn
         try:
             img = await mode.frame()
         except Exception:
@@ -310,6 +311,7 @@ class Engine(QThread):
             if commanded or started >= modes_due:
                 if enabled:
                     self._mode.direct, self._mode.audible, self._mode.fast = self._drawing, True, self._fast
+                    self._mode.turn = self._turn
                     try:
                         img = await self._mode.frame()
                     except Exception:
@@ -354,6 +356,7 @@ class Engine(QThread):
                 self._can_draw = patch > 0
                 self._parts = patch >= device.DIRECT_PARTS
                 self._fast = patch >= device.DIRECT_FAST
+                self._turn = device.TURN if patch >= device.DIRECT_EVERY_TURN else device.SLOW_TURN
                 self._veiled = self._can_draw     # a deephack that was killed may have left a drawn frame up
             except device.DeviceBusy:
                 self._dev, self._dev_state = None, "busy"
@@ -745,9 +748,12 @@ class Engine(QThread):
             self._flash = {"which": which, "stage": "done", "message": "The cooler draws pictures straight from USB now."
                            if which == "direct" else "The cooler runs DeepCool's own firmware again."}
         else:
+            tight = not restarted and device.DIRECT_PARTS <= patch < device.RELEASE_VERSION
             self._flash = {"which": which, "stage": "failed", "sent": True, "message":
                            ("The cooler restarted, but it runs the firmware it had before." if restarted else
-                            "The cooler did not restart: it has not taken the file.") + " Nothing was changed."}
+                            "The cooler did not restart: it has not taken the file.") + " Nothing was changed."
+                           + (" The patch it runs can leave the cooler too little memory to take an update. It has the "
+                              "most right after the PC was switched on, before deephack has drawn anything." if tight else "")}
 
     def _emit_state(self, enabled: bool) -> None:
         state = {

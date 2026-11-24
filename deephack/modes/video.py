@@ -59,6 +59,13 @@ BUS, TAKING = 820_000, 0.006
 # times a second on the cooler and 39.8 KB 18.3: so this much, whatever the video's rate.
 FAST_ROOM = 32_000
 FAST_QUALITY = 80           # ... and with that much room a calm video may be sharper than QUALITY
+# From version 12 a picture is on the glass at the panel's next turn, every 18 ms, and not every second
+# one: so a frame has the whole time the video gives it, and what counts is how fast its bytes go. That
+# is 874,000 a second on the cooler with versions 13 to 15 (26 to 90 KB, to the kilobyte; why not 997,000
+# as with 9 is not known). A video of 30 a second has 28 KB a picture then and is shown 30 times a second,
+# where 32 KB were shown 27 times; one of 24 has 35.
+FAST_BUS = 870_000
+QUICK = 0.03                # a Mode.turn under this is the panel's every turn
 MOST_A_SECOND = 30.0        # pictures a second that are tried for (a video of 60 is shown as one of 30)
 DECODERS = 4                # threads that decode a video: enough for any that plays here, and not one for every core,
                             # each with pictures of its own in memory
@@ -88,21 +95,24 @@ PENDING, PENDING_BYTES = 45, 64 << 20        # frames that may wait while the re
 SOUND_LEVELS = (("0", "Off"), ("20", "20 %"), ("40", "40 %"), ("60", "60 %"), ("80", "80 %"), ("100", "100 %"))
 
 
-def room_for(rate: float, fast: bool = False) -> int:
+def room_for(rate: float, fast: bool = False, turn: float = 0.0361, most: float = MOST_A_SECOND) -> int:
     """The bytes a picture may have for the cooler to take one in the time a video of `rate` pictures a
-    second shows one. `fast`: the cooler's patch is version 9 or later (Mode.fast)."""
+    second shows one. `fast`: the cooler's patch is version 9 or later (Mode.fast); `turn`: how often it
+    shows a new picture (Mode.turn). `most`: the pictures a second that are tried for."""
+    rate = min(most, rate if rate > 0 else most)
+    if fast and turn < QUICK:
+        return int(FAST_BUS / rate) - 1000
     if fast:
         return FAST_ROOM
-    rate = min(MOST_A_SECOND, rate if rate > 0 else MOST_A_SECOND)
     return int((1 / rate - TAKING) * BUS)
 
 
-def quality_for(quality: int, sent: int, rate: float, fast: bool = False) -> int:
+def quality_for(quality: int, sent: int, rate: float, fast: bool = False, turn: float = 0.0361, most: float = MOST_A_SECOND) -> int:
     """The JPEG quality for the next picture, given the last one's and how large that came out: a little
     less when it was too large for the cooler to keep up with the video, a little more again when there
     is room. A video that is all movement is shown less sharp and not in fewer pictures; one that is
     calm is as sharp as it gets."""
-    room = room_for(rate, fast)
+    room = room_for(rate, fast, turn, most)
     if sent > room * 1.06:
         return max(LEAST_QUALITY, quality - 3)
     if 0 < sent < room * 0.85:
@@ -627,7 +637,7 @@ class Video(Mode):
         if seq == self._shown:
             return None
         self._shown = seq
-        self.quality = quality_for(self.quality, self.sent_bytes, player.rate, self.fast)
+        self.quality = quality_for(self.quality, self.sent_bytes, player.rate, self.fast, self.turn)
         return await asyncio.to_thread(picture, frame, self.values["fit"])
 
     async def close(self) -> None:

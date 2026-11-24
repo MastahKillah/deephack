@@ -419,6 +419,7 @@ def render_animation(phase: str, kind: str, seed: int = 0, sky: Sky | None = Non
 # which window is dark for a moment, when lightning strikes. Random things are picked from the time slot
 # they belong to.
 PX = W // LW                                   # real pixels to one of the small canvas
+QUICK_TICK = 0.018      # ... while a car passes, for a cooler that shows a picture every turn of its panel (patch 12)
 FAST_TICK, WEATHER_TICK, SLOW_TICK = 0.033, 0.05, 0.25   # seconds between pictures: while a car passes, while
                                                         # rain or snow falls, and when only the sky moves
 LIGHT_STEP = 15                                # seconds between two looks at the sky's colours
@@ -811,7 +812,8 @@ class Scene(Mode):
             self._ground = render_ground(*of).resize((W, H), Image.NEAREST)
         cars = vehicles_at(t, busy_at(when.hour + when.minute / 60))
         falls = kind in ("rain", "thunder", "snow")
-        self.tick = FAST_TICK if cars else WEATHER_TICK if falls else SLOW_TICK       # fast from just before one
+        fast = QUICK_TICK if self.turn < 0.03 else FAST_TICK
+        self.tick = fast if cars else WEATHER_TICK if falls else SLOW_TICK            # fast from just before one
         lights = bool(street_lights(light, kind))                                    # comes into the picture
         cars = tuple(car for car in cars if in_sight(*car[:3], lights))
         look = (self._grounds, cars, t if falls else haze_at(t) if kind == "fog" else None)
