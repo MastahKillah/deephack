@@ -349,6 +349,12 @@ buffers back to the firmware's heap before an upload (15: without that an upload
 among them, could be dropped by the cooler without a word. `make_room()`, which the driver calls by
 itself).
 
+A firmware update is sent only to a cooler that has room for it: after announcing the upload the
+sender walks the cooler's heap with `21` and looks for the 2 MiB the firmware will ask for
+(`firmware.upload_room`). A cooler on a patch before 15 that has none is sent nothing; the app
+remembers the update and sends it by itself when it next starts on a cooler that has just been
+switched on, before it draws anything.
+
 **A flash that goes wrong cannot be undone from USB.** That it worked on one cooler (four times: both
 images twice, the last two from the app, 19 seconds each) says nothing certain about another unit: read "Which firmware" and "Direct drawing" in
 [docs/firmware-analysis.md](docs/firmware-analysis.md) first. A cooler that reports 2.71 would be

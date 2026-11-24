@@ -34,7 +34,7 @@ def window(tmp_path, monkeypatch):
     config = Config(tmp_path / "config.json")
     config.set("mode", "weather")
     engine = Engine(config, use_device=False)
-    for name in ("set_preview", "reload_mode", "reload_preview", "mode_value", "mode_action", "flash_firmware"):
+    for name in ("set_preview", "reload_mode", "reload_preview", "mode_value", "mode_action", "flash_firmware", "forget_firmware"):
         monkeypatch.setattr(engine, name, lambda *a, name=name: asked.append((name, *a)))
     win = main_window.MainWindow(config, engine)
     win.asked = asked
@@ -142,6 +142,22 @@ def test_the_firmware_card_works_from_the_settings_page(window, monkeypatch):
     window._on_state(state(0, stage="sending", progress=0.5))
     assert window._fw_bar.isVisible() and not window._fw_install.isVisible()
     assert "50 %" in window._fw_title.text()
+
+
+def test_an_update_that_waits_for_the_coolers_next_start_is_said_and_can_be_called_off(window):
+    window._settings_button.click()
+    window._on_state(state(9))
+    assert not window._fw_forget.isVisible() and "waiting" not in window._fw_hint.text()
+    window._on_state(dict(state(9), flash_wanted="direct"))
+    assert window._fw_forget.isVisible() and window._fw_install.isVisible()          # (it can still be tried now)
+    assert f"Version {firmware.PATCH_VERSION} is waiting to be sent" in window._fw_hint.text()
+    window.asked.clear()
+    window._fw_forget.click()
+    assert window.asked == [("forget_firmware",)]
+    window._on_state(dict(state(9), flash_wanted="stock"))
+    assert "DeepCool's own firmware is waiting to be sent" in window._fw_hint.text()
+    window._on_state(dict(state(9, stage="sending", progress=0.2), flash_wanted="direct"))
+    assert not window._fw_forget.isVisible()                                         # it is being sent
 
 
 def test_a_newer_patch_puts_a_dot_on_settings(window):

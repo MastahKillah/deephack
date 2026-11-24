@@ -27,6 +27,11 @@ What is known (docs/firmware-analysis.md has the details):
   short or damaged is not stored and nothing restarts (seen in the emulator, tests/test_flash.py).
 - An upload that stopped half way leaves the firmware waiting for the rest, and it would take the next
   picture upload for it. "dcldfinish" ends that (`end_upload`), and `send_update` sends it when it fails.
+- The firmware puts an upload into 2 MiB of its heap in one piece, and when there is no such piece it
+  throws the upload away and says nothing. A cooler whose patch can be asked for its memory (version 4)
+  is asked first (`upload_room`), and nothing is sent to one that has no room: NoRoom. Patches 3 to 14
+  hold 384 KB of buffers from the first drawn picture until the cooler loses power, which was what
+  decided it (seen on the cooler, 24 Nov 2026); 15 gives them back.
 """
 from __future__ import annotations
 
@@ -48,6 +53,11 @@ LIMIT = 2 * 1024 * 1024                      # the firmware's staging buffer; it
 RAM = range(0x2000_0000, 0x2001_0001)        # where a stack pointer can be
 KNOWN = {0x0246: "2.70", 0x0247: "2.71"}     # bcdDevice of the firmwares this is for (2.71: see above)
 FINISH = b"dcldfinish".ljust(55, b"\0")
+STAGING = 0x200000                           # the piece of its heap the firmware puts an upload into
+HEAP, HEAP_SIZE = 0x8000_0000, 8 * 1024 * 1024       # LVGL's heap. Before each block a word: its size << 1, bit 0 "in use"
+UPLOAD_WAIT = 0x2000_0C2C                    # counts up while the firmware waits for an upload's header; 0 at any other time
+WAIT_POLL, WAIT_PATIENCE = 0.01, 3.0         # seconds: how often that is asked, and for how long (it begins after 0.4 s)
+BUFFERS = 0x2000_F004                        # the patch's three frame buffers (tools/fw/patch.py, STATE + 4): pointers
 OFF_BUS, PATIENCE = 60.0, 300.0              # seconds to wait for the cooler to leave the bus, and to come back
 
 
@@ -197,6 +207,60 @@ def end_upload(driver, image: bytes, sent: int) -> bool:
     return True
 
 
+class NoRoom(RuntimeError):
+    """The cooler's heap has no piece free that an upload fits in. Nothing was sent, and the firmware was told
+    that the upload is off. `free`: the largest piece it has, in bytes."""
+
+    def __init__(self, free: int):
+        super().__init__(f"the cooler has {free // 1024} KB of its memory free in one piece, and an upload needs {STAGING // 1024}")
+        self.free = free
+
+
+def largest_free(driver) -> int | None:
+    """The largest free block of the cooler's heap, in bytes, read block by block with the patch's command 21
+    (1100 blocks in 0.3 seconds on the cooler). None when what is read is not a heap from end to end."""
+    at, best = HEAP, 0
+    while at < HEAP + HEAP_SIZE:
+        word = struct.unpack("<I", driver.peek(at, 4))[0]
+        size = word >> 1
+        if size == 0 or at + 4 + size > HEAP + HEAP_SIZE:
+            return None
+        if not word & 1:
+            best = max(best, size)
+        at += 4 + size
+    return best
+
+
+def keeps_buffers(patch: int) -> bool:
+    """Whether this version of the patch holds its frame buffers from the first drawn picture until the
+    cooler loses power (384 KB, which an update may then be short of): all before 15 (two buffers before 3)."""
+    return 0 < patch < device.RELEASE_VERSION
+
+
+def fresh(driver, patch: int) -> bool | None:
+    """True when a patch that keeps its buffers has made none yet: nothing was drawn since the cooler started,
+    and it has all the room it will ever have. None when it cannot be asked (before version 4)."""
+    if patch < device.PEEK_VERSION:
+        return None
+    return not any(driver.peek(BUFFERS, 12))
+
+
+def upload_room(driver, patience: float = WAIT_PATIENCE) -> int | None:
+    """After an upload was announced (CMD_START_DOWNLOAD) and before its header is sent: the largest piece
+    the firmware will find free when it asks for the upload's STAGING bytes. None when that cannot be told.
+
+    The firmware first makes its "Loading" screen, which takes 2.9 MB of the heap, and then waits for the
+    header in a loop that does nothing else (for six seconds: `0x69A88`). While it waits the heap does not
+    change, so what is free now is what its malloc gets: on the cooler the same number to the byte, try
+    after try. A command sent while it waits is looked at as a header, found not to be one, and dropped.
+    After the header it would be counted as the file's data: nothing may be asked from then on."""
+    for _ in range(round(patience / WAIT_POLL)):
+        if struct.unpack("<I", driver.peek(UPLOAD_WAIT, 4))[0]:
+            return largest_free(driver)
+        time.sleep(WAIT_POLL)
+    return None
+
+
 class SendFailed(RuntimeError):
     """A firmware update did not go out whole. `ended`: the firmware was told that the upload is over."""
 
@@ -209,13 +273,19 @@ def send_update(driver, image: bytes, progress=None) -> None:
     """Hand the image to the running firmware. After the last packet it stores the file and restarts.
 
     `progress(bytes sent)` is called now and then; it may raise to stop the upload. Whatever stops it, the
-    firmware is told that the upload is over, and SendFailed is raised: nothing has been flashed then."""
+    firmware is told that the upload is over, and SendFailed is raised: nothing has been flashed then.
+    NoRoom, before anything is sent: the cooler would have thrown the file away (see upload_room)."""
     check_image(image)
     # The firmware takes an upload while it changes from the upload screen to its mode's screen: with no
     # mode set (a fresh emulated cooler) it never does. Image mode is what every upload here ran under.
     driver.set_mode(device.MODE_MOTION)
+    asked = driver.draw_version() >= device.PEEK_VERSION     # the stock firmware cannot be asked, nor patches 1 to 3
     driver.make_room()                       # (a firmware without that command says no, and the update goes on)
     driver.command(device.CMD_START_DOWNLOAD)
+    free = upload_room(driver) if asked else None
+    if free is not None and free < STAGING:
+        driver.dev.write(1, FINISH, 2000)
+        raise NoRoom(free)
     sent = 0
     try:
         driver.dev.write(1, update_header(image), 5000)

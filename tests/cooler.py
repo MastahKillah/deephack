@@ -17,6 +17,15 @@ from PIL import Image
 from deephack import device
 
 FINISH = b"dcldfinish".ljust(55, b"\0")
+# The heap, as an upload finds it (seen on the cooler, 24 Nov 2026; docs/firmware-analysis.md). The firmware
+# puts an upload into STAGING bytes in one piece. While it waits for the upload's header the largest free
+# piece was 2 510 372 bytes with a stored still of 4 KB on show, 2 454 040 with one of 60 KB, and 393 276
+# less with the three buffers a patch makes for its first drawn picture.
+HEAP, HEAP_END, STAGING = 0x8000_0000, 0x8080_0000, 0x200000
+FREE_FOR_UPLOAD, BUFFERS_TAKE = 2_514_000, 393_276
+UPLOAD_WAIT = 0x2000_0C2C               # counts while the firmware waits for a header: 0 at other times
+BUFFERS = 0x2000_F004                   # the patch's three buffers
+WAIT_BEGINS = 2                         # the wait begins a moment after 0F: this many looks at it see 0 first
 NO_EFFECT = {0x05, 0x06, 0x0B, 0x0C, 0x0D, 0x0E, 0x10, 0x11, 0x15, 0x16, 0x17}   # answered, nothing to model
 
 
@@ -31,6 +40,8 @@ class CoolerModel:
                                                 # or 1 for the first patch, 2 and up for that version of it
         self.drawn: bytes | None = None         # the JPEG drawn from USB that is on screen in place of the stored still
         self.draws = 0
+        self.buffers = False                    # the patch has made its frame buffers: with its first drawn picture, and
+                                                # they stay until the cooler restarts (from patch 15: until an upload)
         self.part: tuple[int, int, bytes] | None = None     # (x, y, JPEG) of the part drawn on top of it (patch 3)
         self.parts = 0
         self._drawing: dict | None = None       # a frame that is coming in
@@ -91,7 +102,13 @@ class CoolerModel:
         elif self._upload is not None and not (is_command and data[42:46] == b"HIDC"):
             self._upload_packet(data)
         elif is_command:
-            if self._upload is not None:
+            # While the firmware waits for an upload's header, the patch answers "read memory" from the USB
+            # interrupt and the waiting loop drops the packet as "not a header". After the header the packet
+            # would be counted as the file's data.
+            waiting = self._upload is not None and self._upload["stage"] == "header" and not self._upload["files"]
+            if self._upload is not None and self._upload["stage"] == "refused":
+                self._upload = None             # it found no room, waited six seconds more for a header, and gave up
+            if self._upload is not None and not (waiting and data[2] == device.CMD_PEEK and self._peeks()):
                 self._violate(f"command {data[2]:#04x} before dcldfinish: an unfinished upload hung the firmware once")
                 self._upload = None
             self._command(ep, data)
@@ -104,6 +121,31 @@ class CoolerModel:
         if not queue:
             raise usb.core.USBTimeoutError("no reply waiting")
         return queue.pop(0)
+
+    # ---- memory, as far as anything here looks at it (command 21, patch 4)
+    def _peeks(self) -> bool:
+        return int(self.direct) >= device.PEEK_VERSION
+
+    def free_for_upload(self) -> int:
+        """The largest free piece of the heap while the firmware waits for an upload's header. The file of
+        the still on show is in the heap, and the patch's buffers if it has made them."""
+        on_show = len(self.stills[self.shown[1]][1]) if self.shown and self.shown[0] == "jpg" and self.shown[1] < len(self.stills) else 0
+        return (FREE_FOR_UPLOAD - on_show - (BUFFERS_TAKE if self.buffers else 0)) & ~3      # (blocks are whole words)
+
+    def _memory(self, address: int, count: int) -> bytes:
+        free, first = self.free_for_upload(), 0x400000
+        words = {HEAP: first << 1 | 1, HEAP + 4 + first: free << 1}                      # three blocks: in use, free, in use
+        words[HEAP + 8 + first + free] = (HEAP_END - (HEAP + 8 + first + free) - 4) << 1 | 1
+        for i in range(3):
+            words[BUFFERS + 4 * i] = 0x802BAB64 + 0x20014 * i if self.buffers else 0
+        up = self._upload
+        if up is not None and up["stage"] == "header" and not up["files"]:
+            up["looks"] = up.get("looks", 0) + (address == UPLOAD_WAIT)
+            words[UPLOAD_WAIT] = 1000 * max(0, up["looks"] - WAIT_BEGINS)
+        out = bytearray()
+        for at in range(address, address + count):
+            out.append(struct.pack("<I", words.get(at & ~3, 0))[at & 3])
+        return bytes(out)
 
     # ---- commands
     def _reply(self, ep: int, cmd: int, payload: bytes = b"", known: bool = True) -> None:
@@ -167,6 +209,14 @@ class CoolerModel:
                 self._violate(f"delete slot {payload[1]}, which does not exist")
         elif cmd == device.CMD_START_DOWNLOAD:
             self._upload = {"stage": "header", "files": []}
+            if int(self.direct) >= device.RELEASE_VERSION:      # patch 15 gives its buffers back for any upload
+                self._release()
+        elif cmd == device.CMD_RELEASE and int(self.direct) >= device.RELEASE_VERSION:
+            self._release()
+            reply = bytes([device.DIRECT_GO, int(self.direct)])
+        elif cmd == device.CMD_PEEK and self._peeks():
+            address, count = struct.unpack_from("<IB", payload)
+            reply = self._memory(address, min(count, device.PEEK_MOST))
         elif cmd == device.CMD_GET_UUID:
             reply = b"\x00" + self.uuid.encode()
         elif cmd == device.CMD_DIRECT and self.direct:
@@ -187,9 +237,16 @@ class CoolerModel:
             return
         self._reply(ep, cmd, reply)
 
+    def _release(self) -> None:
+        """The patch's buffers go back to the heap (patch 15). A picture that was in one of them is not on show
+        any more: the firmware shows deephack's own in its place."""
+        if self.buffers:
+            self.buffers, self.drawn, self.part = False, None, None
+
     # ---- direct drawing: 20 with size and sum16, then the JPEG; it replaces the stored still on screen
     def _draw_data(self, ep: int, data: bytes) -> None:
         frame = self._drawing
+        self.buffers = True
         frame["data"] += data
         if ep != 1 or len(frame["data"]) > frame["size"]:
             self._violate("a drawn frame's data on the wrong endpoint, or more of it than announced")
@@ -233,6 +290,8 @@ class CoolerModel:
                 self.log.append(("update given up", len(cur["data"])))
         elif data.startswith(b"dcldfinish"):
             self._finish(data)
+        elif up["stage"] == "refused":
+            pass                                            # thrown away, and nothing is said
         elif len(data) > 64:
             self._violate(f"{len(data)} byte packet in an upload (at most 64)")
         elif up["stage"] == "header":
@@ -246,6 +305,10 @@ class CoolerModel:
             up["current"] = {"type": ftype, "size": size, "sum": total, "count": count, "duration": duration,
                              "index": index, "id": data[20:52].decode("ascii", "replace"), "data": b""}
             up["stage"] = "data"
+            if self.free_for_upload() < STAGING:            # malloc(2 MiB) fails: the firmware waits on for a header,
+                up["stage"] = "refused"                     # and takes every packet of the file for something that is not one
+                self.log.append(("upload refused", ftype, self.free_for_upload()))
+                self._violate("an upload to a cooler whose heap has no room for it: the firmware throws it away without a word")
         else:
             cur = up["current"]
             cur["data"] += data
@@ -269,6 +332,7 @@ class CoolerModel:
         self.direct = self.firmwares[image]
         self.updates, self.off_bus = self.updates + 1, 3
         self.mode = self.shown = self.drawn = self._drawing = None
+        self.buffers = False
         self._animated = self.stuck = False
         self.log.append(("flashed", len(image)))
 
@@ -277,6 +341,9 @@ class CoolerModel:
         self.drawn = self.part = None                       # the firmware leaves its upload screen and loads the stored picture
         if data != FINISH:
             self._violate("malformed dcldfinish")
+        if up["stage"] == "refused" or up["stage"] == "header" and not up["files"] and up.get("looks"):
+            self.log.append(("upload called off", up["stage"]))     # nothing arrived, or nothing was sent after a look
+            return                                                  # at the heap: the firmware leaves its upload screen
         if up["stage"] == "data":
             self._violate("dcldfinish before all of a file's data arrived")
             return

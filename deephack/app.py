@@ -93,6 +93,20 @@ def main(argv: list[str] | None = None) -> int:
     tray.activated.connect(lambda reason: show_window() if reason == QSystemTrayIcon.ActivationReason.Trigger else None)
     tray.show()
 
+    said = {"stage": None}
+
+    def say_flash(state: dict) -> None:
+        """A firmware update that deephack sends by itself (one that waited for a freshly started cooler:
+        engine.py, _send_wanted) is said in the tray: nobody asked for it just now, and the window may be shut."""
+        flash = state.get("flash") or {}
+        stage = flash.get("stage") if state.get("flash_remembered") else None
+        if stage == said["stage"] or stage not in ("sending", "done", "failed"):
+            return
+        said["stage"] = stage
+        tray.showMessage("deephack", "Sending the firmware update that was waiting for the cooler. Do not shut the PC down "
+                         "or let it sleep for a minute." if stage == "sending" else flash.get("message", ""))
+
+    engine.stateChanged.connect(say_flash)
     engine.start()
     if args.settings:
         window.open_settings()

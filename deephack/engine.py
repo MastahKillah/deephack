@@ -47,6 +47,9 @@ BACK_PAUSE = 0.15           # on the sensor screen, when the image screen has to
 DRAW_STUCK = 2.0            # frames refused for this long: start over (see _draw)
 FLASH_SETTLE = 3.0          # after a firmware update the cooler is on the bus some seconds before it answers
 FLASH_ANSWER = 60.0         # ... and if it has not answered by then, the update is called failed
+STILL_SETTLE = 0.8          # after a stored picture was asked for, until the firmware has it up (and the last one freed)
+AT_ITS_START = (" deephack will send it by itself the next time it starts on a cooler that has just been switched on: "
+                "shut the PC down and switch it on again.")
 DEEPCOOL_EXE = "DeepCool.exe"
 _NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -153,6 +156,9 @@ class Engine(QThread):
         self._firmware: dict | None = None       # what the cooler runs: {"bcd", "version", "patch"}; None: not connected
         self._flash: dict | None = None          # the last firmware update: {"which", "stage", ...} (see _flash_firmware)
         self._flash_since = 0.0                  # when its wait for the cooler's answer began
+        self._flash_remembered = False           # ... and it was not asked for now: it had been waiting (_send_wanted)
+        self._wanted_tried = False               # a firmware update was tried since deephack started: one that
+                                                 # waits is then left for the next start
         self._drawing = False                    # ... and that is how pictures get there now (not during a slide show)
         self._still: tuple[int, bytes] = (-1, b"")   # frame seq of the picture last drawn, and its JPEG
         self._parts = False                      # ... and its patch can draw a part of the picture by itself
@@ -216,6 +222,10 @@ class Engine(QThread):
         """Send the cooler another firmware: "direct" (draws from USB) or "stock" (DeepCool's own). This can
         kill its screen: see deephack.firmware. The state's "flash" says how it goes."""
         self._commands.put(lambda: self._flash_firmware(which, stock_path))
+
+    def forget_firmware(self) -> None:
+        """Do not send the firmware update that is waiting for a freshly started cooler (config "firmware_wanted")."""
+        self._commands.put(lambda: self.config.set("firmware_wanted", None))
 
     def stop(self) -> None:
         self._stop = True
@@ -372,6 +382,12 @@ class Engine(QThread):
             self._options_applied = None
             self._uploaded_seq = -1
             self._slot_digest = {}            # unknown what the slots hold after a reconnect
+            try:
+                if self._send_wanted(patch):
+                    return                        # before anything is drawn: the cooler is being flashed
+            except (RuntimeError, usb.core.USBError):
+                self._drop_device()
+                return
         try:
             slideshow = bool(self.config.get("slideshow"))
             if slideshow != self._slideshow_applied and self._display == device.MODE_MOTION:
@@ -678,17 +694,56 @@ class Engine(QThread):
         self._flash = {"which": which, "stage": stage, **more}
         self._emit_state(bool(self.config.get("enabled")))
 
-    def _flash_firmware(self, which: str, stock_path: str | None) -> None:
+    def _send_wanted(self, patch: int) -> bool:
+        """The cooler has just been opened: if a firmware update is waiting for it (config "firmware_wanted":
+        it had no room for it, see _flash_firmware), send it now if the cooler has drawn nothing since it
+        started. True when that was done or tried: the cooler is not open any more.
+
+        A patch that cannot be asked for its memory (3) is tried once each time deephack starts."""
+        which = self.config.get("firmware_wanted")
+        if which not in ("direct", "stock"):
+            return False
+        if not firmware.keeps_buffers(patch) or self._firmware["bcd"] not in firmware.KNOWN:
+            self.config.set("firmware_wanted", None)      # it runs something else by now: nothing is waiting any more
+            return False
+        if self._wanted_tried or firmware.fresh(self._dev, patch) is False:
+            return False
+        self._flash_firmware(which, None, remembered=True)
+        return True
+
+    def _least_on_show(self) -> None:
+        """Before an update is sent to a patch that keeps its buffers: our plain still on show, if the cooler
+        has it. The firmware keeps the file of the picture on show in its heap. On the cooler, with the
+        buffers held, an update had no room by 36 KB with a stored picture of 60 KB on show, and had room by
+        19 KB with this one (deephack/firmware.py, upload_room)."""
+        index = self.config.get("slot_index")
+        if index is None or not self.config.get("ground"):
+            return
+        self._dev.set_mode(device.MODE_SITUATIONAL)       # (left and entered again: after a drawn frame the firmware
+        time.sleep(BACK_PAUSE)                            # ignores "show" for the still it has selected)
+        self._dev.set_mode(device.MODE_MOTION)
+        self._dev.set_slideshow(False)
+        self._dev.show_slot(index, device.TYPE_JPG)
+        time.sleep(STILL_SETTLE)
+
+    def _flash_firmware(self, which: str, stock_path: str | None, remembered: bool = False) -> None:
         """Send a firmware and see the cooler through its restart. Blocks the engine until the cooler is
         back on the bus (or has not come back): nothing else may talk to it meanwhile.
+
+        When the cooler has no room for the file, nothing is sent. If its patch is one that keeps its
+        buffers until the cooler loses power, the update is remembered (config "firmware_wanted") and sent
+        when deephack next finds the cooler freshly started (_send_wanted, which calls this with `remembered`).
 
         Stages, in the state's "flash": "sending" (with "progress", 0 to 1), "restarting" (with "seconds"
         and "off": the cooler has left the bus), "checking" (it is back; _flash_checked asks what it runs),
         then "done" or "failed" with a "message". "failed" with "sent": the whole file went out, so the
         cooler may have been flashed all the same."""
+        self._flash_remembered, self._wanted_tried = remembered, True
+        if self.config.get("firmware_wanted") not in (None, which):
+            self.config.set("firmware_wanted", None)      # the other firmware was asked for since
         if self._dev is None or self._firmware is None:
             return self._flash_stage(which, "failed", message="The cooler is not connected. Nothing was sent.")
-        bcd = self._firmware["bcd"]
+        bcd, keeps = self._firmware["bcd"], firmware.keeps_buffers(self._firmware["patch"])
         if bcd not in firmware.KNOWN:
             return self._flash_stage(which, "failed", message=f"The cooler reports firmware {firmware.version(bcd)}, which "
                                      "deephack does not know. Nothing was sent.")
@@ -705,7 +760,19 @@ class Engine(QThread):
 
         self._flash_stage(which, "sending", progress=0.0)
         try:
+            if keeps:
+                self._least_on_show()
             firmware.send_update(self._dev, image, progress)
+        except firmware.NoRoom:
+            self._drop_device()                    # opened again in a moment, and everything is put on show afresh
+            self._next_open = time.monotonic() + REOPEN_INTERVAL
+            if keeps:
+                self.config.set("firmware_wanted", which)
+            return self._flash_stage(which, "failed", message="The cooler has no room in its memory for the file right now, "
+                                     "so nothing was sent and nothing was changed."
+                                     + (" The firmware it runs keeps 384 KB for its pictures from the first one it draws "
+                                        "until the cooler loses power." + AT_ITS_START if keeps else
+                                        " Shut the PC down, switch it on again and try then."))
         except (firmware.SendFailed, usb.core.USBError, RuntimeError) as e:
             traceback.print_exc()
             ended = getattr(e, "ended", True)
@@ -745,15 +812,21 @@ class Engine(QThread):
             return
         patch = self._firmware["patch"]
         if patch == (firmware.PATCH_VERSION if which == "direct" else 0):
+            self.config.set("firmware_wanted", None)
             self._flash = {"which": which, "stage": "done", "message": "The cooler draws pictures straight from USB now."
                            if which == "direct" else "The cooler runs DeepCool's own firmware again."}
         else:
-            tight = not restarted and device.DIRECT_PARTS <= patch < device.RELEASE_VERSION
+            # It took every packet and did not restart: that is what a cooler without room for the file does.
+            # One that could be asked was asked before anything was sent (firmware.upload_room), so this is a
+            # patch that cannot be (3), or something not understood. Either way it is tried again on a cooler
+            # that has just started, once each time deephack starts.
+            tight = not restarted and firmware.keeps_buffers(patch)
+            self.config.set("firmware_wanted", which if tight else None)
             self._flash = {"which": which, "stage": "failed", "sent": True, "message":
                            ("The cooler restarted, but it runs the firmware it had before." if restarted else
                             "The cooler did not restart: it has not taken the file.") + " Nothing was changed."
-                           + (" The patch it runs can leave the cooler too little memory to take an update. It has the "
-                              "most right after the PC was switched on, before deephack has drawn anything." if tight else "")}
+                           + (" The firmware it runs can leave the cooler too little memory to take one." + AT_ITS_START
+                              if tight else "")}
 
     def _emit_state(self, enabled: bool) -> None:
         state = {
@@ -775,6 +848,8 @@ class Engine(QThread):
                        and self._frame_seq != self._uploaded_seq,
             "firmware": self._firmware,
             "flash": self._flash,
+            "flash_remembered": self._flash_remembered,      # ... was sent by itself (_send_wanted): the tray says so
+            "flash_wanted": self.config.get("firmware_wanted"),
         }
         if state != self._last_state:
             self._last_state = state

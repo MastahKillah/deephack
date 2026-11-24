@@ -68,6 +68,10 @@ def main() -> int:
         print("sending (do not unplug, do not switch off) ...")
         try:
             send_update(m, image, progress=lambda at: print(f"  {at * 100 // len(image):3d} %", end="\r", flush=True))
+        except firmware.NoRoom as e:
+            sys.exit(f"\nnot sent: {e}. The firmware would have thrown the file away. A patch before 15 holds 384 KB from "
+                     "the first drawn picture until the cooler loses power: switch the PC off and on, and flash before "
+                     "anything is drawn; or have a small stored picture on show.")
         except firmware.SendFailed as e:
             sys.exit(f"\nsending failed after {e.sent} bytes ({e}): the firmware has not been given a whole file, so nothing "
                      "is flashed. " + ("It was told that the upload is over." if e.ended else

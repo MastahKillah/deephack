@@ -4,6 +4,8 @@ The images here are made up: DeepCool's is not in the repository. What the real 
 update is in test_flash.py (the emulator); the tests at the end run only where DeepCool's image is.
 """
 import hashlib
+import io
+import json
 import struct
 import sys
 from pathlib import Path
@@ -19,6 +21,23 @@ ROOT = Path(__file__).resolve().parents[1]
 STOCK = struct.pack("<II", 0x2000B418, 0xE33D) + bytes(range(7, 250)) * 300     # passes for an image: a vector table
 DIRECT = STOCK + b"the patch" * 40
 RED = Image.new("RGB", (480, 640), "#a02020")
+_big = io.BytesIO()
+Image.effect_noise((480, 640), 40).convert("RGB").save(_big, "JPEG", quality=30)
+BIG = _big.getvalue()                          # a stored picture of 69 KB: with it on show the cooler had no room
+
+
+def held(cooler, patch, on_show: bytes = b"", ground: bytes | None = None) -> None:
+    """The cooler runs this patch and has drawn a picture since it started (it has made its buffers); the
+    stored still of index 0 is this file, and it is on show. `ground`: a second still, deephack's plain one."""
+    cooler.direct, cooler.buffers = patch, True
+    cooler.stills[0][1] = on_show
+    if ground is not None:
+        cooler.stills.append(["ground", ground])
+    cooler.mode, cooler.shown = device.MODE_MOTION, ("jpg", 0)
+
+
+def announced(cooler) -> int:
+    return len([e for e in cooler.log if e[:2] == ("cmd", device.CMD_START_DOWNLOAD)])
 
 
 @pytest.fixture
@@ -164,7 +183,177 @@ def test_an_update_that_breaks_off_is_called_off_if_the_cooler_still_listens(ima
     assert failed.value.ended and images.updates == 0 and images.log[-1][0] == "update given up"
 
 
+# ---- room for the file (the firmware puts it into 2 MiB of its heap in one piece, or throws it away)
+def test_a_cooler_without_room_is_sent_nothing(images):
+    held(images, 9, BIG)
+    assert images.free_for_upload() < firmware.STAGING
+    with device.Mystique() as m:
+        assert firmware.fresh(m, 9) is False
+        with pytest.raises(firmware.NoRoom) as none:
+            firmware.send_update(m, DIRECT)
+    assert none.value.free == images.free_for_upload() and "2048" in str(none.value)
+    assert images.updates == 0 and images.log[-1] == ("upload called off", "header")     # not even the header went out
+
+
+def test_a_cooler_with_room_is_asked_and_then_sent_the_update(images):
+    held(images, 9, device.encode_jpeg(RED))             # the same cooler with a small picture on show
+    with device.Mystique() as m:
+        firmware.send_update(m, DIRECT)
+    asked = [struct.unpack_from("<I", e[2])[0] for e in images.log if e[:2] == ("cmd", device.CMD_PEEK)]
+    assert asked.count(firmware.UPLOAD_WAIT) > 1 and firmware.HEAP in asked      # it waited for the firmware's wait, then walked
+    assert images.updates == 1 and images.direct == firmware.PATCH_VERSION and not images.buffers
+
+
+def test_patch_15_gives_its_buffers_back_and_has_room(images):
+    held(images, 15, BIG)
+    with device.Mystique() as m:
+        firmware.send_update(m, DIRECT)
+    assert images.updates == 1
+
+
+@pytest.mark.parametrize("patch", [False, 3])
+def test_a_firmware_that_cannot_be_asked_is_sent_the_update_unasked(images, patch):
+    images.direct = patch
+    with device.Mystique() as m:
+        assert firmware.fresh(m, int(patch)) is None
+        firmware.send_update(m, DIRECT)
+    assert images.updates == 1 and not [e for e in images.log if e[:2] == ("cmd", device.CMD_PEEK)]
+
+
+def test_the_heap_is_walked_block_by_block():
+    class Memory:
+        def __init__(self, blocks):
+            self.words, at = {}, firmware.HEAP
+            for used, size in blocks:
+                self.words[at] = size << 1 | used
+                at += 4 + size
+
+        def peek(self, address, count):
+            return struct.pack("<I", self.words.get(address, 0))
+
+    rest = firmware.HEAP_SIZE - (4 + 1000) - (4 + 5000) - (4 + 3000) - 4
+    assert firmware.largest_free(Memory([(1, 1000), (0, 5000), (0, 3000), (1, rest)])) == 5000     # (two free blocks side
+    assert firmware.largest_free(Memory([(1, 1000), (1, 5000), (1, 3000), (1, rest)])) == 0        # by side are two)
+    assert firmware.largest_free(Memory([(1, 1000), (0, 5000)])) is None        # not a heap from end to end: no verdict
+    assert firmware.keeps_buffers(3) and firmware.keeps_buffers(14) and not firmware.keeps_buffers(15) and not firmware.keeps_buffers(0)
+
+
 # ---- the engine
+def _config(tmp_path, **values) -> None:
+    (tmp_path / "config.json").write_text(json.dumps(values), encoding="utf8")
+
+
+def _started(tmp_path, states: list):
+    """deephack starts again: a new engine with the same settings, and its first look at the cooler."""
+    eng = engine.Engine(Config(tmp_path / "config.json"))
+    eng.stateChanged.connect(states.append)
+    eng._make_mode()
+    eng._device_step(True)
+    return eng
+
+
+def test_an_update_the_cooler_has_no_room_for_waits_for_its_next_start(images, tmp_path, monkeypatch):
+    import cooler as model
+
+    monkeypatch.setattr(model, "FREE_FOR_UPLOAD", 2_400_000)         # a cooler with 100 KB less than ours: with the
+    held(images, 9, device.encode_jpeg(RED))                         # buffers there is no room whatever is on show
+    _config(tmp_path, slot_index=0, ground=True)
+    eng = _engine(tmp_path, monkeypatch)
+    eng._flash_firmware("direct", None)
+    message = eng._flash["message"]
+    assert eng._flash["stage"] == "failed" and "no room" in message and "nothing was sent" in message and "by itself" in message
+    assert images.updates == 0 and announced(images) == 1 and eng.config.get("firmware_wanted") == "direct"
+    eng._next_open = 0.0
+    eng._device_step(True)                                           # the cooler is opened again: not tried twice in a run
+    eng._emit_state(True)
+    assert announced(images) == 1 and eng._last_state["flash_wanted"] == "direct" and not eng._last_state["flash_remembered"]
+
+    again = _started(tmp_path, [])                                   # deephack starts again, the cooler was not off:
+    assert announced(images) == 1 and again._flash is None           # it still has its buffers, so nothing is tried
+    again._set_frame(RED)
+    for _ in range(3):
+        again._device_step(True)
+    assert images.draws > 0 and again.config.get("firmware_wanted") == "direct"
+
+    images.buffers, images.drawn, drawn = False, None, images.draws  # the PC was off: the cooler has just started
+    states = []
+    fresh = _started(tmp_path, states)
+    assert images.updates == 1 and images.draws == drawn             # sent before anything was drawn
+    assert [s["flash"]["stage"] for s in states][0] == "sending" and states[-1]["flash"]["stage"] == "checking"
+    assert all(s["flash_remembered"] for s in states)
+    fresh._device_step(True)
+    assert fresh._flash["stage"] == "done" and fresh._firmware["patch"] == firmware.PATCH_VERSION
+    assert fresh.config.get("firmware_wanted") is None
+
+
+def test_deephacks_plain_still_goes_on_show_before_an_update_from_an_old_patch(images, tmp_path, monkeypatch):
+    held(images, 9, BIG, ground=device.encode_jpeg(Image.new("RGB", (480, 640))))
+    assert images.free_for_upload() < firmware.STAGING               # with the user's picture on show: no room
+    _config(tmp_path, slot_index=1, ground=True)
+    eng = _engine(tmp_path, monkeypatch)
+    images.shown = ("jpg", 0)
+    eng._flash_firmware("direct", None)
+    shows = [i for i, e in enumerate(images.log) if e[:2] == ("cmd", device.CMD_SHOW_SLOT) and tuple(e[2][:2]) == (device.TYPE_JPG, 1)]
+    sent = [i for i, e in enumerate(images.log) if e[:2] == ("cmd", device.CMD_START_DOWNLOAD)]
+    assert shows and sent and shows[-1] < sent[0] and images.updates == 1 and eng._flash["stage"] == "checking"
+
+
+def test_a_patch_that_cannot_be_asked_is_tried_once_each_time_deephack_starts(images, tmp_path, monkeypatch):
+    import cooler as model
+
+    monkeypatch.setattr(model, "FREE_FOR_UPLOAD", 2_400_000)
+    held(images, 3, device.encode_jpeg(RED))
+    _config(tmp_path, slot_index=0, ground=True)
+    ticks = iter(range(1_000_000))
+    monkeypatch.setattr(firmware.time, "monotonic", lambda: next(ticks) * 0.5)
+    eng = _engine(tmp_path, monkeypatch)
+    eng._flash_firmware("direct", None)                              # sent whole, and thrown away by the cooler
+    assert eng._flash == {"which": "direct", "stage": "checking", "restarted": False}
+    eng._device_step(True)
+    assert eng._flash["stage"] == "failed" and "did not restart" in eng._flash["message"] and "by itself" in eng._flash["message"]
+    assert eng.config.get("firmware_wanted") == "direct" and announced(images) == 1 and images.updates == 0
+    assert len(images.violations) == 1 and "no room" in images.violations.pop()      # the model says so too
+    eng._next_open = 0.0
+    eng._device_step(True)
+    assert announced(images) == 1                                    # not again in this run
+
+    again = _started(tmp_path, [])                                   # the next start, the cooler still with its buffers:
+    assert announced(images) == 2 and images.updates == 0            # tried, for it cannot be asked, and thrown away again
+    assert len(images.violations) == 1 and "no room" in images.violations.pop()
+    again._device_step(True)
+    assert again._flash["stage"] == "failed" and again.config.get("firmware_wanted") == "direct"
+
+    images.buffers = False                                           # and after the PC was off
+    fresh = _started(tmp_path, [])
+    assert images.updates == 1
+    fresh._device_step(True)
+    assert fresh._flash["stage"] == "done" and fresh.config.get("firmware_wanted") is None
+
+
+def test_an_update_that_waits_can_be_called_off_and_lapses_when_the_cooler_runs_something_else(images, tmp_path, monkeypatch):
+    held(images, 9)
+    _config(tmp_path, firmware_wanted="direct")
+    eng = _engine(tmp_path, monkeypatch)                             # (the cooler has its buffers: nothing is tried)
+    assert announced(images) == 0 and eng.config.get("firmware_wanted") == "direct"
+    eng.forget_firmware()
+    eng._commands.get_nowait()()
+    assert eng.config.get("firmware_wanted") is None
+
+    images.direct, images.buffers = firmware.PATCH_VERSION, False    # it was updated some other way meanwhile
+    _config(tmp_path, firmware_wanted="direct")
+    again = _started(tmp_path, [])
+    assert announced(images) == 0 and again.config.get("firmware_wanted") is None
+
+    images.direct = 9                                                # the other firmware is asked for: the wish goes
+    _config(tmp_path, firmware_wanted="direct")
+    other = _started(tmp_path, [])                                   # (fresh: it is sent at once)
+    assert images.updates == 1 and images.direct == firmware.PATCH_VERSION
+    other._device_step(True)
+    other.config.set("firmware_wanted", "direct")
+    other._flash_firmware("stock", None)
+    assert other.config.get("firmware_wanted") is None and images.updates == 2 and images.direct is False
+
+
 def test_the_engine_knows_what_the_cooler_runs(images, tmp_path, monkeypatch):
     states = []
     eng = _engine(tmp_path, monkeypatch)

@@ -8,6 +8,18 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
+## Unreleased
+
+- **A firmware update is sent only when the cooler has room for it.** The app asks the cooler first (a
+  patch from 4 on can be asked). One without room is sent nothing, and the app says so within a second.
+  Before, the file was sent whole and the cooler threw it away without a word.
+- **An update that found no room waits for the cooler's next start.** A patch before 15 keeps 384 KB
+  from the first picture it draws until the cooler loses power. The app remembers the update and sends
+  it by itself the next time it starts on a cooler that has just been switched on, before it draws
+  anything. Settings shows that it is waiting, and has a button to call it off.
+- Before an update from a patch older than 15, the app puts its own plain picture on the cooler's
+  screen: with a large stored picture on show the cooler was short of room by 36 KB.
+
 ## 0.13.0 (2026-11-24)
 
 - **Firmware patch 15: a new picture at every refresh of the panel.** The cooler's panel refreshes 55
@@ -15,7 +27,7 @@ Settings; a newer one is offered there when the cooler has an older one.
   leaves out a copy the cooler made of every frame, and has it redraw at once. 55 pictures a second
   reach the glass.
 - **Smooth video.** A video of 30 pictures a second is shown 30 times a second (it was 27), and the NBA
-  highlights play at 30. The Visualizer runs at 41 to 45 pictures a second.
+  highlights play at 30. The Visualizer runs at 41 pictures a second.
 - **Updates and uploads that were dropped without a word.** The cooler needs 2 MiB of its memory in one
   piece for an upload. With patches 3 to 14 holding their frame buffers there could be 36 KB too little:
   a firmware update was sent whole and the cooler went on as before, unchanged and unharmed. Patch 15

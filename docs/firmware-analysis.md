@@ -313,10 +313,15 @@ What was needed to know for it, all seen in the emulator:
 - **The reply routine** (`0x34D84`) writes command and status only for the commands it knows; for any
   other it sends zeros, which is why the stock firmware "answers" unknown commands with command byte 0
   and status 0. It ends in `usb_send(endpoint, data, length)` at `0x3488C`.
-- **A packet that starts `AA 2E` is always taken for a command**, during a stock upload too (`0x34C54`):
-  the dispatcher rejects it for its missing `HIDC` and the 64 bytes never reach the staging buffer. One
-  packet in 65 536 on average, so about one upload in 140 for a 30 KB picture would stall until the
-  upload loop gives up. Not seen happening; read off the code.
+- **A packet that starts `AA 2E` is always taken for a command**, during a stock upload too (`0x34C54`).
+  It was read off the code that the 64 bytes then never reach the staging buffer, and that such an
+  upload stalls. *That was wrong, in the emulator at least* (24 Nov 2026): the handler writes the
+  packet's length to `0x200006D5` before it looks at the first two bytes, so the upload loop takes the
+  packet as data all the same. An update whose 100th packet starts `AA 2E` arrived whole and the
+  firmware restarted; the dispatcher had answered that packet as a command it does not know (48 bytes
+  on the IN endpoint, which the next command's reader would get first). And the other way round: a
+  real command sent after an upload's header (`21` was tried) is answered and its 48 bytes are counted
+  as the file's.
 
 #### Version 3: a part of the picture
 
@@ -624,6 +629,42 @@ at the main loop's next pass, which on the cooler was before the "Loading" scree
 frame makes the buffers again. With them gone: **2396 KB** in one piece at the moment the firmware asks.
 Then the same state that had failed twice (frames and parts drawn, the 60 KB picture on show): the
 update was taken and the cooler restarted, and again with a drawn page on show.
+
+**Asking before sending.** That leaves the coolers that run a patch from 3 to 14, which hold their
+buffers from the first drawn picture until the cooler loses power, and which an update to 15 has to
+get past. What the sender does now (`deephack/firmware.py`, `upload_room`; 24 Nov 2026, on the cooler):
+
+- After `0F` the firmware makes its "Loading" screen and then waits for the header in a loop that does
+  nothing else (`0x69A88`). It counts its turns at `0x20000C2C`, which is 0 at any other time: the
+  count began 0.37 to 0.44 s after `0F`, ran at 2.6 million a second, and at `0xF00000`, 6.1 seconds
+  later, the firmware gave up and went back to its picture.
+- **While it waits the heap does not change.** Walked twice a second apart: the same 1131 blocks. And
+  it is the same from one try to the next, to the byte: the largest free piece was 2 510 372 bytes with
+  deephack's plain still on show (4 KB) and 2 454 040 with the stored picture of 60 KB, six tries in a
+  row each. With a patch's buffers held, 393 276 less: 2 117 176 and 2 060 852. An upload needs
+  2 097 152. (The numbers of the paragraphs above that differ from these were walked before the wait
+  had begun, while the screen was still being made.)
+- A command sent while the firmware waits is looked at as a header, found not to be one, and dropped.
+  So the heap can be walked there, with `21`: 0.3 seconds. After the header a command would be counted
+  as the file's data (see "A packet that starts `AA 2E`" above), so nothing is asked from then on.
+- So: announce, wait for the count, walk the heap, and send the header only if a free block of 2 MiB
+  is there. If not, `dcldfinish` and nothing else: `NoRoom`. 0.7 seconds either way.
+- **Checked against the firmware itself**, by sending the header (never the file) and reading its state
+  byte, in four states: patch 15 after frames, 2 454 040 free, taken, into exactly the block the walk
+  had found; patch 9 just started, 2 454 216, taken; patch 9 after 20 frames with the 60 KB picture on
+  show, 2 060 852, **refused** (state 0, no staging buffer); patch 9 with its buffers and the plain
+  still, 2 117 176, taken. The verdict was right each time.
+
+What the app does with it (`engine.py`): before an update from a patch that keeps its buffers it puts
+its plain still on show, which was the difference between room and none on this cooler. If there is
+still no room, nothing is sent and the update is remembered (`firmware_wanted` in the settings). When
+deephack next starts and finds the patch's three buffer pointers (`0x2000F004`) all zero, the cooler
+has drawn nothing since it started, and the update is sent before anything else: with patch 9 just
+started, 2 454 216 bytes free even with the 60 KB picture on show. Done on the cooler: patch 9 with
+its buffers and the 60 KB picture, refused in 0.7 s and remembered; deephack started again on the same
+cooler, nothing tried; patch 9 flashed again to have it freshly started; deephack started, and patch 15
+was on the cooler 17.6 seconds later. A patch that cannot be asked for its memory (3) is sent the file
+as before, and after one that was thrown away it is tried once each time deephack starts.
 
 What the emulator run shows for whole pictures (`tests/test_direct_draw.py`): three frames in a row are on the emulated LCD,
 decoded alternately from the two buffers, with still one file on the card; a wrong sum and a stalled

@@ -162,12 +162,39 @@ def test_the_patched_firmware_takes_an_update_too(stock, tmp_path):
     cooler.run_for(1.0)
     driver.show_slot(0)
     cooler.run_for(0.5)
+    version, uc = driver.draw_version(), cooler.machine.uc
+    assert firmware.fresh(driver, version) is True                   # nothing drawn yet: the patch has made no buffer
     driver.draw_jpeg(device.encode_jpeg(Image.new("RGB", (480, 640), "#802020")))
     cooler.run_for(0.3)
+    assert firmware.fresh(driver, version) is False
     image = stock[:68 * 1024]
+
+    def blocks() -> list:
+        out, at = [], firmware.HEAP
+        while at < firmware.HEAP + firmware.HEAP_SIZE:
+            word = struct.unpack("<I", bytes(uc.mem_read(at, 4)))[0]
+            out.append((at, word & 1, word >> 1))
+            at += 4 + (word >> 1)
+        return out
+
+    # A cooler without room: all but 1500 KB of the largest free block is made a block in use. The firmware
+    # would take the header, fail to get its 2 MiB and throw the file away; the sender asks first and sends
+    # nothing (on a real cooler this was the patch's buffers and a stored picture: 2012 KB free).
+    at, _, size = max((b for b in blocks() if not b[1]), key=lambda b: b[2])
+    keep = 1500 * 1024
+    uc.mem_write(at, struct.pack("<I", keep << 1))
+    uc.mem_write(at + 4 + keep, struct.pack("<I", (size - keep - 4) << 1 | 1))
     real_sleep, time.sleep = time.sleep, lambda seconds: cooler.run_for(seconds)
     try:
-        firmware.send_update(driver, image)
+        with pytest.raises(firmware.NoRoom) as none:
+            firmware.send_update(driver, image)
+        cooler.run_for(1.0)
+        assert none.value.free < firmware.STAGING and not {name.lower() for name in cooler.files()} & {"fw_update.bin"}
+        assert uc.mem_read(UPLOAD_STATE, 1)[0] == 0 and not any(value & 1 for value in cooler.machine.writes[WDT_CR])
+        assert struct.unpack("<I", bytes(uc.mem_read(firmware.UPLOAD_WAIT, 4)))[0] == 0      # it has stopped waiting
+        assert (at + 4 + keep, 1, size - keep - 4) in blocks()
+        uc.mem_write(at + 4 + keep, struct.pack("<I", (size - keep - 4) << 1))               # the room is there again
+        firmware.send_update(driver, image)          # asked again, and this time sent: the asking leaves the file whole
     finally:
         time.sleep = real_sleep
     cooler.run_for(1.0)

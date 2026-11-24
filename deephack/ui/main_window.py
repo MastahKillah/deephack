@@ -320,10 +320,13 @@ class MainWindow(QMainWindow):
         self._fw_install.clicked.connect(lambda: self._ask_flash("direct"))
         self._fw_restore = QPushButton("Back to DeepCool's firmware…")
         self._fw_restore.clicked.connect(lambda: self._ask_flash("stock"))
+        self._fw_forget = QPushButton("Do not send it")      # the update that waits for a freshly started cooler
+        self._fw_forget.clicked.connect(lambda: self.engine.forget_firmware())
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
         buttons.addWidget(self._fw_install)
         buttons.addWidget(self._fw_restore)
+        buttons.addWidget(self._fw_forget)
         buttons.addStretch(1)
         for widget in (self._fw_title, self._fw_bar, self._fw_hint, self._fw_result):
             fl.addWidget(widget)
@@ -395,6 +398,7 @@ class MainWindow(QMainWindow):
             self._fw_result.setStyleSheet(f"color: {style.OK if stage == 'done' else style.ERR};")
             self._fw_result.setText(flash.get("message", ""))
         install = restore = False
+        wanted = None if busy or not running else self._state.get("flash_wanted")
         if busy:
             if stage == "sending":
                 self._fw_bar.setRange(0, 1000)
@@ -428,10 +432,15 @@ class MainWindow(QMainWindow):
                 hint = "Pictures are drawn straight from USB: nothing is written to the cooler's flash."
             if not known:
                 hint = f"deephack does not know firmware {running['version']} and cannot replace it."
+            elif wanted:
+                hint += (" " + (f"Version {firmware.PATCH_VERSION}" if wanted == "direct" else "DeepCool's own firmware")
+                         + " is waiting to be sent: deephack does that by itself when it next starts on a cooler that has "
+                           "just been switched on.")
         self._fw_title.setText(title)
         self._fw_hint.setText(hint)
         self._fw_install.setVisible(install)
         self._fw_restore.setVisible(restore)
+        self._fw_forget.setVisible(bool(wanted))
         newer = install and not busy and running["patch"] > 0      # the card is a page away now: a dot says so
         self._settings_button.set_mark(style.WARN if newer else None,
                                        f"Version {firmware.PATCH_VERSION} of the direct drawing firmware can be installed" if newer else "")

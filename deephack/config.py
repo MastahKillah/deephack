@@ -32,6 +32,8 @@ DEFAULTS = {
     "gif_slot_index": None,    # index of our animation among the GIFs stored on the device
     "restore_index": 0,        # JPG shown when deephack is paused or quits
     "book": None,              # the flipbook stored on the device: {"key", "first" (index of frame 0), "count"}
+    "firmware_wanted": None,   # "direct" | "stock": a firmware update the cooler had no room for, to be sent when it
+                               # is found freshly started (engine.py, _send_wanted)
     "modes": {},               # per-mode settings, keyed by mode id
 }
 
