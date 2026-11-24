@@ -32,6 +32,23 @@ Settings; a newer one is offered there when the cooler has an older one.
   They work whatever window is in front and whatever mode is on the cooler.
 - When two settings ask for the same key, the page says which of them has it. The keys in Settings come
   before a mode's own.
+- **Now Playing: music videos that are longer than the track.** Most music videos are: a scene before
+  the song, a pause in it, credits after it. Such a video plays now too, at the right place: deephack
+  finds where in it the song is, by its sound. The video appears once that is known, some sixteen to
+  eighteen seconds into the track; until then the cover shows, and the mode's line says that it is
+  listening.
+- Of fifty well-known tracks, 16 had a video that could be played before. In a trial of the 37 that
+  have a video on the artist's channel and an upload of the track to stand in for the player, 29 were
+  followed through half the track or more; where a second way of looking knew the place, this one had
+  it right for 5,566 of 5,742 seconds. A video whose song is another recording (a live cut, another
+  mix) is not shown: played against another track's video, 4,479 looks believed nothing.
+- **Videos of the track's own length are put right too.** They turned out to be half a second to two
+  seconds off, and two of them a third of a percent slower than their track. They still play at once,
+  and move to their place when it has been heard.
+- **What it listens to:** the PC's sound output, as the Visualizer does (Windows hands a program a copy
+  of it; no microphone), while a track with a video plays and the Music video setting is on. It is
+  compared on the PC and not kept. The video's sound is read from YouTube once when the track starts:
+  three to six seconds.
 
 ## 0.14.0 (2026-11-24)
 

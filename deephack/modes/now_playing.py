@@ -14,6 +14,12 @@ picture is kept where the music is: Windows says how far into the track the play
 from there (`_music_time`), and the video's player follows that clock, leaving frames out or waiting.
 A jump in the music (seeking, the same track again) opens the video anew at that place. No video that
 fits, no net, a video that will not play: the cover, as ever.
+
+**Where in the video the song is** is found by ear (songplace.py): while a track with a video plays,
+what the PC plays is compared with the video's own sound, and the video is put that much ahead of the
+music's clock (`_lead`). A video of the track's length plays at once and is set right by it, half a
+second or two; a longer one (a scene before the song) is not shown until its place is known, which
+takes some sixteen to eighteen seconds, and a video whose song is another recording is never shown.
 """
 from __future__ import annotations
 
@@ -27,7 +33,7 @@ from functools import lru_cache
 
 from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
-from .. import musicvideo, render
+from .. import musicvideo, render, songplace
 from ..config import config_dir
 from ..render import H, W
 from . import video
@@ -244,9 +250,11 @@ class NowPlaying(Mode):
         Setting("video", "Music video", "choice", "off",
                 (("off", "Off"), ("cover", "Where the cover is"), ("screen", "Over the whole screen")),
                 hint="The track's own music video from YouTube, without its sound, in step with the music. Only a "
-                     "video of the track's exact length on the artist's own channel is taken, so that picture and "
-                     "music fit: about one track in three has one, the others keep their cover. Artist and title go "
-                     "to YouTube's search for it. Needs the direct drawing firmware."),
+                     "video on the artist's own channel is taken. deephack listens to what the PC plays (its sound "
+                     "output, not a microphone) to find where in the video the song is: a video longer than the track "
+                     "appears once that is known, some sixteen to eighteen seconds in, and one whose song is another recording "
+                     "does not appear. The others keep their cover. Artist and title go to YouTube's search for it. "
+                     "Needs the direct drawing firmware."),
     )
 
     SETTLE = 2.5          # a track must stay current this long before it is drawn (skipping through a playlist)
@@ -276,6 +284,10 @@ class NowPlaying(Mode):
         self._frozen: float | None = None                  # ... or, while it is paused, this
         self._addresses: dict = {}                         # link -> (when, where its stream is)
         self._sought = float("-inf")                       # when the video was last opened anew to catch up
+        self._make_place = songplace.Place
+        self._place = None                                 # listens for where in the video the song is, while a video plays
+        self._lead: float | None = None                    # seconds the video is ahead of the music; None: not heard yet
+        self._longer = False                               # the video is longer than the track: no picture before that
 
     async def _track(self) -> Track | None:
         if self._manager is None:
@@ -329,6 +341,22 @@ class NowPlaying(Mode):
                 self._offset += (said - self._offset) * 0.25
             self._frozen = None
 
+    def _music_time_at(self, when: float) -> float | None:
+        """Where in the track the music was at that time (time.monotonic()). None: it was not playing."""
+        offset = self._offset
+        return None if offset is None else offset + when
+
+    def _video_time(self) -> float | None:
+        """Where in the video the music is right now. None: not known (the music's place is not, or the
+        video is longer than the track and where the song is in it has not been heard yet)."""
+        at = self._music_time()
+        place = self._place
+        if place is not None and place.lead is not None:
+            self._lead = place.lead                        # (kept when the place is lost again: the song's end, say)
+        if at is None or (self._lead is None and self._longer):
+            return None
+        return max(0.0, at + (self._lead or 0.0))
+
     def _address(self, link: str):
         """Where the video's stream is; asked of YouTube once in a while, not at every opening."""
         kept, now = self._addresses.get(link), time.monotonic()
@@ -341,6 +369,9 @@ class NowPlaying(Mode):
         clip, self._clip = self._clip, None
         if clip is not None:
             clip.stop()
+        place, self._place, self._lead = self._place, None, None
+        if place is not None:
+            place.close()
 
     def _ended(self) -> None:                              # (in the player's thread)
         self._clip_over = True
@@ -352,9 +383,10 @@ class NowPlaying(Mode):
         key = musicvideo.Found.key(track.artist, track.title, track.duration) if wanted else None
         if key != self._clip_key:                          # another track
             self._drop_clip()
-            self._clip_key, self._link, self._finding, self._clip_over = key, None, None, False
+            self._clip_key, self._link, self._finding, self._clip_over, self._longer = key, None, None, False, False
             if key is not None:
                 self._link = self._found.get(track.artist, track.title, track.duration)
+                self._longer = musicvideo.longer(self._found.length(track.artist, track.title, track.duration), track.duration)
                 if self._link is None:
                     self._finding = asyncio.ensure_future(asyncio.to_thread(self._find, track.artist, track.title, track.duration))
         if self._finding is not None and self._finding.done():
@@ -362,17 +394,25 @@ class NowPlaying(Mode):
             try:
                 found = finding.result()
                 self._link = found.link if found else ""
-                self._found.put(track.artist, track.title, track.duration, self._link)
+                self._longer = bool(found) and musicvideo.longer(found.seconds, track.duration)
+                self._found.put(track.artist, track.title, track.duration, self._link, length=found.seconds if found else 0.0)
             except Exception:                              # noqa: BLE001  (no net: not kept, asked again another time)
                 self._link = ""
         if not self._link or self._clip_over:
+            if self._place is not None:                    # nothing to place any more: nobody listens
+                self._place.close()
+                self._place = None
             return None
-        at = self._music_time()
+        if self._place is None and track.playing:
+            self._place = self._make_place(self._link, self._music_time_at, track.duration)
+        at = self._video_time()
+        if at is None:
+            return None
         if self._clip is None:
-            if not track.playing or at is None:
+            if not track.playing:
                 return None
             self._clip = self._make_player(self._link, resolve=self._address, on_end=self._ended, speaker=None,
-                                           follow=self._music_time)
+                                           follow=self._video_time)
             self._clip.seek(at + OPENING)
             self._sought = now
         clip = self._clip
@@ -454,6 +494,8 @@ class NowPlaying(Mode):
                     draw_progress(picture, *progress)
             self._last = picture
             return picture
+        if how != "off" and self._longer and self._lead is None and self._place is not None and not self._clip_over:
+            self.status += " · listening for where its video begins" if self._place.state != "failed" else ""
         if self._fade is None:                             # (a fade sets its own pace)
             self.tick = WAIT_TICK if how != "off" and (self._finding is not None or self._clip is not None) else None
         look = (key, layout, progress)

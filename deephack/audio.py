@@ -15,7 +15,9 @@ last 43 milliseconds of samples. It needs no FFT library: a band's strength is t
 products of the samples with a windowed sine and cosine at the band's frequency, and math.sumprod
 does those in C (half a millisecond for all 24 bands).
 
-Listener runs on a small thread while someone keeps asking, and stops a few seconds after.
+Listener runs on a small thread while someone keeps asking, and stops a few seconds after. Whoever
+wants the samples themselves, as they are captured, puts a function in its `taps` (songplace.py does,
+to find where in a music video the song is).
 """
 from __future__ import annotations
 
@@ -260,6 +262,13 @@ class Listener:
         self._spectrum = Spectrum()
         self._spectrum_at = 0.0
         self.available = True                    # False while there is no sound output to listen to
+        self.taps: list = []                     # each is called with (samples, rate, time.monotonic()) for every
+                                                 # read of the capture, in the listener's thread
+
+    def ask(self) -> None:
+        """Keep listening, for somebody who wants neither levels nor a spectrum (a tap)."""
+        with self._lock:
+            self._ask()
 
     def _ask(self) -> None:
         self._asked = time.monotonic()
@@ -293,6 +302,11 @@ class Listener:
                             capture.close()
                         capture, opened = self._capture(), now
                     samples = capture.read()
+                    for tap in list(self.taps):
+                        try:
+                            tap(samples, capture.rate, now)
+                        except Exception:                # noqa: BLE001  (whatever it is, the listening goes on)
+                            self.taps.remove(tap)
                     levels = bands.feed(samples, capture.rate, now - last)
                     if samples:
                         heard = now

@@ -1,6 +1,7 @@
 """A track's music video: which YouTube video it is (musicvideo.py), the player following the music's clock,
 and the Now Playing mode showing it. YouTube and Windows' media player are stood in for."""
 import asyncio
+import json
 import time
 from types import SimpleNamespace
 
@@ -27,7 +28,8 @@ def test_the_artists_own_video_of_the_tracks_length_is_it():
 
 
 @pytest.mark.parametrize("candidate, why", [
-    (Candidate("a", "Numb (Official Music Video) – Linkin Park", "Linkin Park", 240, 1, True), "longer: a scene before the song"),
+    (Candidate("a", "Numb (Official Music Video) – Linkin Park", "Linkin Park", 170, 1, True), "shorter: a part of the song is missing"),
+    (Candidate("k", "Numb (Official Music Video) – Linkin Park", "Linkin Park", 500, 1, True), "longer by more than five minutes"),
     (Candidate("b", "Linkin Park - Numb (Lyrics)", "7clouds Rock", 188, 1, True), "the words on a still picture"),
     (Candidate("c", "Linkin Park - Numb (Official Audio)", "Linkin Park", 188, 1, True), "the cover standing still"),
     (Candidate("d", "Numb", "Linkin Park - Topic", 188, 1, True), "YouTube's own copy of the album"),
@@ -62,9 +64,20 @@ def test_the_best_of_what_fits_is_picked_and_a_missing_channel_is_looked_up():
         return Candidate(candidate.id, candidate.title, "Linkin Park", candidate.seconds, 7, True)
 
     unnamed = [Candidate(str(i), "Numb (Official Music Video) – Linkin Park", "", 188) for i in range(3)]
-    far = Candidate("z", "Numb (Official Music Video) – Linkin Park", "", 300)
+    far = Candidate("z", "Numb (Official Music Video) – Linkin Park", "", 600)
     assert pick([far, *unnamed], *NUMB, look).id == "0" and looked == ["0", "1"]          # two at most, and none that is too long
     assert pick(unnamed, *NUMB) is None                                                    # nobody to ask: unknown stays unknown
+
+
+def test_a_longer_video_will_do_where_there_is_none_of_the_tracks_length():
+    scene = Candidate("s", "Numb (Official Music Video) – Linkin Park", "Linkin Park", 240, 9_000_000, True)    # a scene before the song
+    credits = Candidate("c", "Linkin Park - Numb (Official Music Video)", "Linkin Park", 420, 9_000_000_000, True)
+    plain = Candidate("y", "Linkin Park - Numb", "Linkin Park", 188, 9, True)
+    assert judge(scene, *NUMB) is not None and musicvideo.longer(scene.seconds, 188.0) and not musicvideo.longer(190.0, 188.0)
+    assert pick([credits, scene], *NUMB) is scene                             # the one that is less long
+    assert pick([credits, scene, plain], *NUMB) is plain                      # one of the track's length before any longer one,
+    assert pick([scene, OFFICIAL, plain], *NUMB) is OFFICIAL                  # however little it says for itself
+    assert judge(Candidate("b", "Linkin Park - Numb (Lyrics)", "7clouds Rock", 240, 1, True), *NUMB) is None    # the other rules hold
 
 
 def test_the_search_is_asked_once_and_tracks_without_enough_to_go_by_not_at_all():
@@ -98,6 +111,20 @@ def test_what_was_found_is_kept_and_nothing_found_is_believed_for_a_week(tmp_pat
         again.put("A", f"Song {i}", 100, "")
     assert len(Found(tmp_path / "found.json")._known) == musicvideo.KEEP
     assert Found(tmp_path / "missing" / "found.json").get(*NUMB) is None      # no file, no folder: nothing known
+
+
+def test_the_videos_length_is_kept_and_a_nothing_by_older_rules_is_looked_for_again(tmp_path):
+    path = tmp_path / "found.json"
+    path.write_text(json.dumps({Found.key("Oasis", "Wonderwall", 259): ["", 1000.0],            # as 0.14 kept them
+                                Found.key(*NUMB): [OFFICIAL.link, 1000.0]}), encoding="utf8")
+    found = Found(path)
+    assert found.get("Oasis", "Wonderwall", 259, now=2000.0) is None          # longer videos did not count then
+    assert found.get(*NUMB) == OFFICIAL.link and found.length(*NUMB) == 0.0   # what was found stays (of the track's length)
+    found.put("Oasis", "Wonderwall", 259, "https://www.youtube.com/watch?v=w", now=2000.0, length=280.0)
+    found.put("Miles Davis", "So What", 548, "", now=2000.0)
+    again = Found(path)
+    assert again.length("Oasis", "Wonderwall", 259) == 280.0 and again.length("Nobody", "Nothing", 100) == 0.0
+    assert again.get("Miles Davis", "So What", 548, now=3000.0) == ""         # by today's rules: believed for a week
 
 
 # ---------------------------------------------------------------- the player follows the music
@@ -202,10 +229,20 @@ class Clip:
         self.stopped = True
 
 
+class Spot:
+    """Stands in for songplace.Place, which listens for where in the video the song is: nothing is heard here."""
+
+    def __init__(self, link, clock, seconds):
+        self.link, self.clock, self.seconds, self.lead, self.state, self.closed = link, clock, seconds, None, "listening", False
+
+    def close(self):
+        self.closed = True
+
+
 def make(tmp_path, monkeypatch, values=None, found=OFFICIAL, direct=True):
     """The mode, with a track that plays and a search that finds `found` (an exception: it raises it)."""
     world = SimpleNamespace(clock=100.0, title="Numb", artist="Linkin Park", at=30.0, since=100.0, playing=True, seconds=188.0,
-                            searched=[], clips=[])
+                            searched=[], clips=[], spots=[])
     monkeypatch.setattr(now_playing.time, "monotonic", lambda: world.clock)
 
     async def track():
@@ -227,6 +264,7 @@ def make(tmp_path, monkeypatch, values=None, found=OFFICIAL, direct=True):
     mode = now_playing.NowPlaying({"video": "cover", **(values or {})})
     mode.direct = direct
     mode._track, mode._find, mode._make_player = track, find, player
+    mode._make_place = lambda link, clock, seconds: world.spots.append(Spot(link, clock, seconds)) or world.spots[-1]
     mode._found = Found(tmp_path / "found.json")
     return mode, world
 
@@ -330,7 +368,7 @@ def test_the_video_follows_pause_a_jump_and_the_next_track(tmp_path, monkeypatch
 
         world.clips[1].on_end()                                              # the video is over before the track is
         await steps(mode, world, 3)
-        assert "music video" not in mode.status
+        assert "music video" not in mode.status and world.spots[-1].closed   # and nobody listens for its place any more
 
         world.title = None                                                   # nothing plays any more
         world.clock += now_playing.POLL
@@ -338,6 +376,64 @@ def test_the_video_follows_pause_a_jump_and_the_next_track(tmp_path, monkeypatch
         assert mode._clip is None
 
     asyncio.run(main())
+
+
+def test_a_video_of_the_tracks_length_plays_at_once_and_is_set_right_by_ear(tmp_path, monkeypatch):
+    async def main():
+        mode, world = make(tmp_path, monkeypatch)
+        await steps(mode, world, 8)
+        clip, spot = world.clips[0], world.spots[0]
+        assert len(world.spots) == 1 and spot.link == OFFICIAL.link and spot.seconds == 188.0
+        music = world.at + world.clock - world.since
+        assert abs(clip.follow() - music) < 0.05 and abs(spot.clock(world.clock) - music) < 0.05     # until it is heard
+        spot.lead = 0.86                                                     # the video's song begins that much later
+        assert abs(clip.follow() - (music + 0.86)) < 0.05
+        await steps(mode, world, 2)
+        assert clip.sought == clip.sought[:1]                                # too little to open it anew: its player catches up
+        spot.lead = None                                                     # the place is lost (the song's end): the video stays
+        music = world.at + world.clock - world.since
+        assert abs(clip.follow() - (music + 0.86)) < 0.05
+        world.title, world.seconds, world.at, world.since = "In the End", 216.0, 0.0, world.clock
+        world.clock += now_playing.POLL
+        await steps(mode, world, 8)
+        assert spot.closed and len(world.spots) == 2 and world.spots[1].lead is None
+        assert abs(world.clips[1].follow() - (world.clock - world.since)) < 0.2      # the next track starts without a lead
+        await mode.close()
+        assert world.spots[1].closed
+
+    asyncio.run(main())
+
+
+def test_a_longer_video_is_shown_once_its_place_is_heard(tmp_path, monkeypatch):
+    scene = Candidate("s", "Numb (Official Music Video) – Linkin Park", "Linkin Park", 240, 9, True)        # 52 s longer
+
+    async def main():
+        mode, world = make(tmp_path, monkeypatch, found=scene)
+        await steps(mode, world, 8)
+        assert world.clips == [] and len(world.spots) == 1                   # found, and listened for: no picture yet
+        assert mode.status == "Linkin Park — Numb · listening for where its video begins"
+        assert mode._found.length(*NUMB) == 240.0
+        spot = world.spots[0]
+        spot.lead = 22.5                                                     # the song begins 22.5 s into the video
+        await steps(mode, world, 4)
+        clip = world.clips[0]
+        music = world.at + world.clock - world.since
+        assert 22.5 + 30.0 < clip.sought[0] < music + 22.5 + now_playing.OPENING + 0.1               # opened there
+        assert abs(clip.follow() - (music + 22.5)) < 0.05 and mode.status == "Linkin Park — Numb · music video"
+        spot.lead = 25.1                                                     # the video put a pause in: 2.6 s more
+        assert abs(clip.follow() - (music + 25.1)) < 0.05
+        spot.state, spot.lead = "failed", None
+        await steps(mode, world, 2)
+        assert "music video" in mode.status                                  # it goes on from the place that was known
+        return mode
+
+    asyncio.run(main())
+    again, world = make(tmp_path, monkeypatch, found=scene)                  # the next time the track plays: no search,
+    asyncio.run(steps(again, world, 6))                                      # and it is known to be a longer one
+    assert world.searched == [] and world.clips == [] and "listening" in again.status
+    world.spots[0].state = "failed"                                          # its sound cannot be read: the cover, and no word
+    asyncio.run(steps(again, world, 2))
+    assert world.clips == [] and again.status == "Linkin Park — Numb"
 
 
 def test_a_video_that_will_not_play_gives_way_to_the_cover(tmp_path, monkeypatch):
