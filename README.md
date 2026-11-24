@@ -154,14 +154,16 @@ with DeepCool's own firmware its page then says so and leads to the firmware in 
 Releases are built by GitHub (`.github/workflows/release.yml`): the tests run, then the standalone app is
 built with PyInstaller (`packaging/deephack.spec`), started once to see that it comes up, and published
 with the wheel, the source archive and their checksums. To make one, set `__version__` in
-`deephack/__init__.py` (the only place the version is written), commit, and push a tag of that version:
+`deephack/__init__.py` (the only place the version is written), write what changed under a heading for
+that version in [`CHANGELOG.md`](CHANGELOG.md), commit, and push a tag of that version:
 
 ```powershell
 git tag v0.2.0
 git push origin v0.2.0
 ```
 
-A tag that does not match the version fails the run before anything is built. "Run workflow" on the
+The release's notes are the version's section of the changelog (`packaging/release_notes.py`). A
+version without one, or a tag that does not match the version, fails the run before anything is built. "Run workflow" on the
 repository's Actions page is a trial run: the same tests and builds, kept with the run, nothing published.
 To build the app on your own PC: `pip install -e .[package]`, then
 `pyinstaller --noconfirm packaging/deephack.spec` makes `dist\deephack\`.
