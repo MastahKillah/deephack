@@ -8,6 +8,20 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
+## Unreleased
+
+- **Claude Code: a live page.** With the direct drawing firmware the numbers no longer wait for a refresh:
+  today's tokens and requests are shown in full and count up as requests are logged, and the limit bars
+  move when the limits do. On DeepCool's own firmware the mode is as it was.
+- **What burns.** A flame and a number for the tokens a minute that the last sixty seconds took, all
+  sessions together, with the output tokens among them and the last half hour as a small graph. The flame
+  has five sizes, the largest from three million tokens a minute, and goes out when nothing is asked.
+- **Who is at it.** A line for each session that is working, with its name and how long it has been busy,
+  and one in amber for each that waits for you, with what it waits for. Claude Code's own record of its
+  sessions says which they are, so a session that thinks for minutes without writing anything still counts.
+- Measured on the cooler: eight pictures a second while a session works, 7 % of a processor core for the
+  whole app. When no session works the page stands still.
+
 ## 0.15.0 (2026-11-25)
 
 - **Photo Frame: "Fill and move across".** A new choice under Fit. A photo that is wider or taller than
