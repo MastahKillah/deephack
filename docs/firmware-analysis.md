@@ -722,8 +722,13 @@ the RAM sticks beside the pump head, where the right side's light falls:
 
 - All 14 red, green, blue: the sticks red, green, blue. Left side green and right side blue: the sticks
   blue, and green on the case wall at the other side. So lights 7 to 13 are the picture's right side.
-- One light white at a time: 7 lit the top of the sticks, 10 their middle, 13 their bottom. The left
-  side's lights cannot be seen from where the camera stands; their order is the stock firmware's.
+- One light white at a time: 7 lit the top of the sticks, 10 their middle, 13 their bottom.
+- The left side, with the camera moved to face the pump head (the same day): lights 0 to 6 together lit
+  the ribs to the left of the screen and nothing on the right, 7 to 13 the sticks and nothing on the
+  left. Each alone, as the difference from a frame with all of them off: the middle of the glow went up
+  the left side from light 0 to light 6 (y 530, 502, 488, 464, 421, 442, 432 in the frame; 5 and 6 are
+  faint there) and down the right side from 7 to 13 (331, 356, 387, 424, 460, 479, 519). So the order
+  is the stock firmware's: 0 at the bottom left, up, across, and down to 13 at the bottom right.
 - From off to white at the pace of a page (two thirds of the way in 0.4 s): darker to brighter over
   seven frames, 0.1 s apart. A command and its answer: 0.4 ms.
 - deephack's engine with pictures of its own: a picture's red half gave red on its side and its blue
