@@ -1,5 +1,6 @@
 """Webcam pointed at the cooler: grab frames of the LCD so probing runs can be reviewed without a human
 taking photos. Needs opencv-python-headless (not a dependency of the app)."""
+import atexit
 from pathlib import Path
 
 import cv2
@@ -16,6 +17,8 @@ class Cam:
     which blows the LCD out."""
 
     def __init__(self, index=0, exposure=-6):
+        self.index = index
+        atexit.register(self.close)             # the exposure set here stays in the camera's driver: see close
         self.cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 960)
@@ -52,8 +55,17 @@ class Cam:
         return path
 
     def close(self):
+        """Hand the exposure back to the camera and let go of it. Also done when the program ends, and also
+        when the capture was released by hand: a fixed exposure for a dark PC case stays in the driver, and
+        the next program that uses the camera in a lit room gets a white picture (26 Nov 2026: half of it
+        blown out, until this was run). Not done by a program that ends with os._exit."""
+        if self.cap is None:
+            return
+        if not self.cap.isOpened():
+            self.cap = cv2.VideoCapture(self.index, cv2.CAP_DSHOW)
         self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.75)
         self.cap.release()
+        self.cap = None
 
 
 def sheet(names, out, cols=6):
