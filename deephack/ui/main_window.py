@@ -78,7 +78,7 @@ class MainWindow(QMainWindow):
                                "key_draw": lambda: self.set_enabled(not self.config.get("enabled"))}
         self._app_key_notes: dict[str, QLabel] = {}
         self.setWindowTitle("deephack")
-        self.setFixedSize(960, 620)
+        self.setFixedSize(960 + 2 * Preview.GLOW, 620)     # as wide as it was before the preview had its lights beside it
 
         root = QWidget()
         self.setCentralWidget(root)
