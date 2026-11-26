@@ -16,6 +16,8 @@ to it. What each light gets here:
   pictures (LIFT), which would leave the lights all but off: these LEDs are linear, a screen is not.
 
 All of it on a picture reduced to 6 x 21 cells first, so it costs well under a millisecond.
+
+cooler_colours is what DeepCool's firmware picks, for the window's preview of a cooler that picks itself.
 """
 from __future__ import annotations
 
@@ -36,6 +38,9 @@ LIFT = 0.5                     # level = brightness ** LIFT: 1 would be true to 
 DEEPEN = 1.4                   # the two weaker channels are taken to this power: more of the colour, less white
 DARK = 0.0015                  # a strip darker than this (as light, 0 to 1) is black: no glow from an empty screen
 _TO_LIGHT = tuple((v / 255) ** GAMMA for v in range(256))
+COOLER_PIXELS = ((5, 635), (5, 505), (5, 405), (5, 305), (5, 205), (5, 105), (5, 5),             # the pixel of a
+                 (475, 5), (475, 105), (475, 205), (475, 305), (475, 405), (475, 505), (475, 635))  # 480 x 640 picture
+                                                # that DeepCool's firmware gives each light (docs/firmware-analysis.md)
 
 
 @lru_cache(maxsize=1)
@@ -80,6 +85,18 @@ def _side(cells, mirrored: bool) -> list[tuple[float, float, float]]:
         level = bright ** LIFT
         lights.append(tuple(level * (c / top) ** (DEEPEN if c < top else 1) for c in (red, green, blue)))
     return lights
+
+
+def cooler_colours(picture: Image.Image) -> list[tuple[int, int, int]]:
+    """What the cooler's own firmware has the 14 lights show for this picture: one pixel each, as its frame
+    buffer holds it (5, 6 and 5 bits), sent to the light as it is."""
+    rgb = picture if picture.mode == "RGB" else picture.convert("RGB")
+    width, height = rgb.size
+    picked = []
+    for x, y in COOLER_PIXELS:
+        r, g, b = rgb.getpixel((min(width - 1, x * width // 480), min(height - 1, y * height // 640)))
+        picked.append((r & 0xF8, g & 0xFC, b & 0xF8))
+    return picked
 
 
 def colours(picture: Image.Image, level: float = 1.0) -> list[tuple[int, int, int]]:

@@ -1,11 +1,15 @@
 """Small custom widgets: toggle switch, LCD preview, status dot, mode button, app icon."""
 from __future__ import annotations
 
+import time
+
+from PIL import Image
 from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (QAbstractButton, QAbstractItemView, QComboBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton,
                                QSizePolicy, QVBoxLayout, QWidget)
 
+from .. import device, light
 from ..modes.base import parse_order
 from . import style
 
@@ -57,8 +61,21 @@ class Switch(QAbstractButton):
         p.drawEllipse(QRectF(3 + (self.width() - d - 6) * self._pos, 3, d, d))
 
 
+def _picture(image: QImage) -> Image.Image:
+    """A frame of the preview as the picture it was made from, for deephack.light."""
+    if image.format() != QImage.Format.Format_RGB888:
+        image = image.convertToFormat(QImage.Format.Format_RGB888)
+    return Image.frombuffer("RGB", (image.width(), image.height()), bytes(image.constBits()), "raw", "RGB", image.bytesPerLine())
+
+
 class Preview(QWidget):
-    """The cooler's LCD: a 3:4 screen in a dark bezel."""
+    """The cooler's LCD: a 3:4 screen in a dark bezel, and beside it the glow of the pump head's lights,
+    seven along each long side, as the cooler shows them for this picture (set_lights)."""
+
+    SCREEN = QSize(354, 466)        # the bezel
+    GLOW = 40                       # pixels of glow to either side of it
+    UNDER = 16                      # ... and how far the glow reaches in under the bezel's round corners
+    QUICK = 0.2                     # frames that come closer together than this fade as a video's do
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -68,33 +85,125 @@ class Preview(QWidget):
         self._dimmed = False
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._advance)
+        self._how: str | None = None                # who picks the lights' colours: "deephack", "cooler", None: no lights
+        self._level = 1.0
+        self._picked: dict[int, list] = {}          # frame index -> its 14 colours
+        self._goal: list | None = None              # where the lights go, and where they are: 14 x [r, g, b]
+        self._lights: list | None = None
+        self._pace = 0.0                            # the share of what is left that a step covers
+        self._last = 0.0                            # when the last frames came
+        self._fade = QTimer(self)
+        self._fade.setInterval(round(device.LIGHT_STEP * 1000))
+        self._fade.timeout.connect(self._step)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(354, 466)
+        return QSize(self.SCREEN.width() + 2 * self.GLOW, self.SCREEN.height())
 
     def set_frames(self, frames: list[QImage], duration_ms: int = 0, dimmed: bool = False) -> None:
         """Show a still (one frame) or loop an animation that lasts duration_ms."""
+        now = time.monotonic()
+        quick, self._last = len(frames) > 1 or now - self._last < self.QUICK, now
         self._frames, self._index, self._dimmed = frames, 0, dimmed
         self._image = frames[0] if frames else None
+        self._picked = {}
         self._timer.stop()
         if len(frames) > 1 and duration_ms > 0:
             self._timer.start(max(20, duration_ms // len(frames)))
+        self._light(quick)
         self.update()
 
     def _advance(self) -> None:
         self._index = (self._index + 1) % len(self._frames)
         self._image = self._frames[self._index]
+        self._light(True)
         self.update()
 
     def set_dimmed(self, dimmed: bool) -> None:
         self._dimmed = dimmed
+        self._light(False)
         self.update()
+
+    # ---- the lights
+    def set_lights(self, how: str | None, level: float = 1.0) -> None:
+        """Who picks the colours of the lights beside the screen: "deephack" (deephack.light, and the cooler
+        fades to them: the direct drawing firmware from 16 on), "cooler" (DeepCool's firmware: one pixel a
+        light, and no fade), or None for no lights (they follow something else than the screen).
+        `level`: deephack's, that much dimmer."""
+        if (how, level) != (self._how, self._level):
+            self._how, self._level, self._picked = how, level, {}
+            self._light(False)
+            self.update()
+
+    def lights(self) -> list | None:
+        """The 14 colours where the lights are going, 0 to 255, in the cooler's order; None: no lights."""
+        return None if self._goal is None else [tuple(colour) for colour in self._goal]
+
+    def _light(self, quick: bool) -> None:
+        """The current frame has changed, or what is asked of the lights: where they go now."""
+        if self._how is None or self._image is None or self._dimmed:
+            self._goal = self._lights = None
+            self._fade.stop()
+            return
+        if self._index not in self._picked:
+            picture = _picture(self._image)
+            self._picked[self._index] = (light.colours(picture, self._level) if self._how == "deephack"
+                                         else light.cooler_colours(picture))
+        self._goal = [list(colour) for colour in self._picked[self._index]]
+        seconds = 0.0 if self._how == "cooler" else 0.12 if quick else 0.4       # the engine's LIGHT_FADE_FAST, LIGHT_FADE
+        self._pace = device.light_pace(seconds) / 256
+        if self._lights is None or not self._pace:
+            self._lights = [list(map(float, colour)) for colour in self._goal]
+        if self._lights != self._goal and not self._fade.isActive():
+            self._fade.start()
+
+    def _step(self) -> None:
+        """The lights a step on, as the cooler moves them: a share of what is left, and the last bit at once."""
+        moving = False
+        for now, goal in zip(self._lights or (), self._goal or ()):
+            for i in range(3):
+                left = goal[i] - now[i]
+                now[i] = float(goal[i]) if abs(left) * self._pace < 0.5 else now[i] + left * self._pace
+                moving = moving or now[i] != goal[i]
+        if not moving:
+            self._fade.stop()
+        self.update()
+
+    def _glow(self, p: QPainter, bezel: QRectF) -> None:
+        """The light the lights throw to either side of the pump head: brightest at its edge. An LED is
+        linear and a monitor is not, so a light at a tenth of its power is drawn at a third."""
+        width, height = self.GLOW + self.UNDER, round(bezel.height())
+        for side, lights in (("left", self._lights[6::-1]), ("right", self._lights[7:])):          # top to bottom
+            tile = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+            tile.fill(Qt.GlobalColor.transparent)
+            down = QLinearGradient(0, 0, 0, height)
+            for k, colour in enumerate(lights):
+                shown = QColor(*(round(255 * (max(0.0, c) / 255) ** (1 / light.GAMMA)) for c in colour))
+                down.setColorAt((k + 0.5) / len(lights), shown)
+            t = QPainter(tile)
+            t.fillRect(tile.rect(), down)
+            t.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+            out = QLinearGradient(0, 0, width, 0)
+            edge = self.GLOW / width                    # where the bezel's edge is, from the tile's outer side
+            for at, alpha in ((0.0, 0), (edge * 0.35, 30), (edge * 0.7, 110), (edge, 235), (1.0, 235)):
+                out.setColorAt(at if side == "left" else 1 - at, QColor(0, 0, 0, alpha))
+            t.fillRect(tile.rect(), out)
+            ends = QLinearGradient(0, 0, 0, height)     # ... and it runs out towards the top and the bottom
+            for at, alpha in ((0.0, 0), (0.07, 255), (0.93, 255), (1.0, 0)):
+                ends.setColorAt(at, QColor(0, 0, 0, alpha))
+            t.fillRect(tile.rect(), ends)
+            t.end()
+            x = bezel.left() - self.GLOW if side == "left" else bezel.right() - self.UNDER
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+            p.drawImage(QRectF(x, bezel.top(), width, height), tile)
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
     def paintEvent(self, _):  # noqa: N802
         p = QPainter(self)
         p.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
-        bezel = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        bezel = QRectF(self.rect()).adjusted(self.GLOW + 1, 1, -self.GLOW - 1, -1)
+        if self._lights is not None:
+            self._glow(p, bezel)
         p.setPen(QPen(QColor("#34374a"), 1.5))
         p.setBrush(QColor("#07080c"))
         p.drawRoundedRect(bezel, 26, 26)

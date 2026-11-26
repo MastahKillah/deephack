@@ -56,6 +56,8 @@ one pixel near the edge and switches from one colour to the next. With the [dire
 (16 or newer) deephack picks the colours for the pictures it draws: each light gets a share of a strip a quarter
 of the picture wide, a coloured shape counts for more than the dark page or the white text around it, dark
 pictures still glow, and the cooler fades from one colour to the next. **Light brightness** dims it.
+The window shows the lights beside its preview of the screen, as the cooler has them for that picture:
+deephack's colours and their fade, or the cooler's own one pixel a light on a firmware that picks itself.
 
 **Keep on screen** (in Settings) decides whether the cooler stays on deephack's image or cycles through every image
 stored on it (the cooler's own slideshow).

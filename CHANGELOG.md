@@ -29,6 +29,9 @@ Settings; a newer one is offered there when the cooler has an older one.
   and older firmware are as before.
 - **Direct drawing firmware 16**, offered in Settings: a command for the lights' colours, and the fade,
   sixty steps a second, done on the cooler.
+- **The lights in the window.** The preview of the screen has the glow of the 14 lights beside it, as the
+  cooler shows them for that picture: with their fade where deephack picks the colours, and the cooler's
+  own one pixel a light where it picks them itself. No cooler is needed to see it.
 
 ## 0.15.0 (2026-11-25)
 

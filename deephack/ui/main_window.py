@@ -8,7 +8,7 @@ from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
                                QKeySequenceEdit, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from .. import __version__, autostart, firmware, ytdlp
+from .. import __version__, autostart, device, firmware, ytdlp
 from ..config import Config
 from ..engine import Engine, quit_deepcool
 from ..hotkeys import Hotkeys, same
@@ -263,7 +263,7 @@ class MainWindow(QMainWindow):
         self._now.setFixedWidth(354)
         self._caption = _label("", "caption")
         self._caption.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        left.addWidget(self._now)
+        left.addWidget(self._now, 0, Qt.AlignmentFlag.AlignHCenter)
         left.addWidget(self._caption)
         left.addStretch(1)
         row.addLayout(left)
@@ -344,6 +344,8 @@ class MainWindow(QMainWindow):
                                              "drawing firmware (16 or newer): deephack picks the colours then, and the "
                                              "light fades from one to the next.", "light_level",
                                              tuple((p, f"{p} %") for p in (100, 75, 50, 30, 15)))
+        for box in (self._light, self._light_level, self._keep):
+            (box.toggled if box is self._keep else box.currentIndexChanged).connect(lambda *_: self._refresh_lights())
         self._brightness = self._choice_row(cl, "Screen brightness", "Of the cooler's screen.", "brightness",
                                             tuple((p, f"{p} %") for p in (100, 85, 70, 50, 30)))
         cards.addWidget(cooler)
@@ -743,8 +745,22 @@ class MainWindow(QMainWindow):
 
     def _show_frames(self, frames: list, duration_ms: int, placeholder: bool) -> None:
         self._placeholder = placeholder
+        self._refresh_lights()
         self._preview.set_frames(frames, duration_ms, dimmed=self._viewing == self._live and not self.config.get("enabled"))
         self._refresh_caption()
+
+    def _refresh_lights(self) -> None:
+        """The glow beside the preview: the pump head's lights as the cooler shows them for this picture.
+        None while they follow something else than the screen, and for a picture that is not on show (a
+        mode's "nothing to show yet"). deephack picks the colours when the cooler's firmware lets it (patch
+        16) and the picture is drawn, and for a cooler that is not there; otherwise the cooler does."""
+        how = None
+        if self.config.get("light") == "screen" and not self._placeholder:
+            running = (self._state or {}).get("firmware")
+            there = (self._state or {}).get("device") == "connected" and running is not None
+            itself = there and (running["patch"] < device.LIGHT_VERSION or bool(self.config.get("slideshow")))
+            how = "cooler" if itself else "deephack"
+        self._preview.set_lights(how, int(self.config.get("light_level") or 0) / 100)
 
     def _on_state(self, state: dict) -> None:
         self._state = state
@@ -781,6 +797,7 @@ class MainWindow(QMainWindow):
             now = state.get("preview_status", "") if state.get("preview") == self._viewing else ""
         self._now.setText(self._now.fontMetrics().elidedText(now, Qt.TextElideMode.ElideRight, 350))
         self._refresh_caption()
+        self._refresh_lights()
         self._refresh_firmware()
         self._refresh_needs()
 

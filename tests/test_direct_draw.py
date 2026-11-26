@@ -4,8 +4,10 @@ Needs DeepCool's firmware image (from the installed app) and the emulator's pack
 skipped without them. Nothing here touches a real cooler.
 """
 import io
+import os
 import struct
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -590,3 +592,38 @@ def test_stock_firmware_is_not_told_the_lights_colours():
     driver.set_mode(device.MODE_MOTION)
     driver.set_options(brightness=70, light=device.LIGHT_SCREEN)
     assert driver.set_light([(255, 0, 0)] * 14) is False and driver.uuid() == ""
+
+
+def test_the_window_on_the_emulated_cooler_sees_its_screen_and_its_lights(stock_image, tmp_path):
+    """tools/emu/view.py: the firmware runs by itself in a thread, the driver talks to it from another,
+    and what the window shows is the frame buffer and the lights' wire."""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    import view
+
+    image = tmp_path / "patched.bin"
+    image.write_bytes(patch.build(stock_image))
+    live = view.LiveCooler(image)
+    try:
+        driver = view.driver_for(live)()
+        assert driver.draw_version() == patch.VERSION
+        driver.set_mode(device.MODE_SITUATIONAL)                          # not passed on: the emulator has no such screen
+        driver.set_mode(device.MODE_MOTION)
+        driver.set_options(brightness=70, light=device.LIGHT_SCREEN)
+        ground = card("#000000", (0, 0, 1, 1))
+        driver.upload_jpeg(STORED_ID, ground)
+        driver.show_slot(0)
+        wanted = [(255, 0, 0)] * 7 + [(0, 0, 255)] * 7
+        assert driver.set_light(wanted, pace=0) is True
+        frame = card("#206030", (100, 100, 300, 300))
+        driver.draw_jpeg(frame, patience=5.0)
+        seen, until = live.look(), time.monotonic() + 30
+        while (seen["lights"] != [list(c) for c in wanted] or not seen["ours"]) and time.monotonic() < until:
+            time.sleep(0.2)
+            driver.set_light(wanted, pace=0)                              # (kept: the cooler takes them back after 3 s)
+            seen = live.look()
+        assert seen["lights"] == [list(c) for c in wanted] and seen["ours"] and seen["follows"]
+        assert seen["size"] == (480, 640) and len(seen["raw"]) == 480 * 640 * 2 and any(seen["raw"])
+        assert not live.stopped
+    finally:
+        live.running = False
+        live.thread.join(10)

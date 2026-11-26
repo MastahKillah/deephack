@@ -381,3 +381,68 @@ def test_a_key_that_two_settings_ask_for_goes_to_the_first_and_the_other_says_so
     assert any(t.startswith("Windows will not give deephack this key") for t in said)
     assert not any(t.startswith("This is the key for") for t in said)
     assert hotkeys.same("Media Play") == hotkeys.same("Toggle Media Play/Pause") != hotkeys.same("Media Next")
+
+
+# ---- the lights beside the preview
+def _halves(left, right):
+    from PIL import Image, ImageDraw
+
+    picture = Image.new("RGB", (480, 640), left)
+    ImageDraw.Draw(picture).rectangle((240, 0, 479, 639), fill=right)
+    return picture
+
+
+def test_the_preview_shows_the_lights_the_cooler_would(window):
+    """deephack's picking for a cooler that takes it (patch 16) and for one that is not there, the cooler's
+    own one pixel a light otherwise, and none when the lights follow something else than the screen."""
+    from deephack import device, light
+    from deephack.engine import to_qimage
+
+    picture = _halves((255, 0, 0), (0, 0, 255))
+    preview = window._preview
+    window._on_frame([to_qimage(picture)], 0, False)
+    assert preview.lights() == light.colours(picture)                     # no cooler: as patch 16 would
+    window._on_state(state(device.LIGHT_VERSION))
+    assert preview.lights() == light.colours(picture)
+    window._on_state(state(device.LIGHT_VERSION - 1))
+    assert preview.lights() == light.cooler_colours(picture) == [(248, 0, 0)] * 7 + [(0, 0, 248)] * 7
+    window._on_state(state(device.LIGHT_VERSION))
+    window._keep.setChecked(False)                                        # a slide show: stored pictures, the cooler's picking
+    assert preview.lights() == light.cooler_colours(picture)
+    window._keep.setChecked(True)
+    window._light_level.setCurrentIndex(window._light_level.findData(50))
+    assert preview.lights() == light.colours(picture, 0.5) and preview.lights()[0] == (128, 0, 0)
+    window._light.setCurrentIndex(window._light.findData("warning"))
+    assert preview.lights() is None
+    window._light.setCurrentIndex(window._light.findData("screen"))
+    assert preview.lights() is not None
+    window._on_frame([to_qimage(picture)], 0, True)                       # "nothing to show yet" is not on the cooler
+    assert preview.lights() is None
+    window._on_frame([to_qimage(picture)], 0, False)
+    window.set_enabled(False)                                             # paused: the cooler shows a stored picture
+    assert preview.lights() is None
+    assert preview.grab().width() == preview.sizeHint().width() == 354 + 2 * preview.GLOW
+
+
+def test_the_previews_lights_fade_as_the_coolers_do(window):
+    from deephack import device, light
+    from deephack.engine import to_qimage
+
+    preview = window._preview
+    red, blue = _halves((255, 0, 0), (255, 0, 0)), _halves((0, 0, 255), (0, 0, 255))
+    window._on_frame([to_qimage(red)], 0, False)
+    assert preview._lights[0] == [255.0, 0.0, 0.0] and not preview._fade.isActive()      # the first picture: at once
+    preview._last -= 5                                                    # some seconds later: a page, not a video
+    window._on_frame([to_qimage(blue)], 0, False)
+    assert preview.lights() == light.colours(blue) and preview._fade.isActive()
+    assert preview._fade.interval() == round(device.LIGHT_STEP * 1000)
+    preview._step()
+    first = preview._lights[0][2]
+    assert 0 < first < 30 and preview._lights[0][0] > 225                 # a 26th of the way, as pace 10 is
+    for _ in range(400):
+        preview._step()
+    assert preview._lights[0] == [0.0, 0.0, 255.0] and not preview._fade.isActive()
+    window._on_state(state(device.LIGHT_VERSION - 1))                     # the cooler's own picking does not fade
+    window._on_frame([to_qimage(red)], 0, False)
+    assert preview._lights[0] == [248.0, 0.0, 0.0] and not preview._fade.isActive()
+    preview.grab()                                                        # and it paints

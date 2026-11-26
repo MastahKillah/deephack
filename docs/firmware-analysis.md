@@ -1058,6 +1058,14 @@ answers an empty id on a fresh card), and **an upload**: the driver's `upload_jp
 after `show_slot(0)` the picture is in the emulated frame buffer. The whole run (boot, upload, show)
 takes about ten seconds.
 
+`tools/emu/view.py` is a window on all of that (26 Nov 2026): the emulated firmware runs by itself in a
+thread, deephack's own engine draws a mode on it through the driver, and the window shows the frame
+buffer the LCD controller is pointed at and, beside it, the 14 lights as the firmware puts them on
+their wire. With the patched image the Scene was drawn and the lights had deephack's colours; with the
+stock image a mode's still was stored and shown, and the lights were the firmware's own picking. The
+firmware's clock ran at 0.7 to 1 times the PC's. The sensor screens are not in the emulated `ui.bin`,
+so the viewer's driver does not switch to them. `--save clip.gif` records it.
+
 The JPEG decoder model does not decode from the tables the firmware writes to the decoder's registers.
 The header is in RAM right in front of the data the firmware points the decoder at, so the model finds
 it there and lets Pillow decode the file. A patch that programmed the tables wrongly would not be

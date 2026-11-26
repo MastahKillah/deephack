@@ -225,3 +225,17 @@ def test_a_slide_show_and_older_firmware_are_left_to_the_cooler(tmp_path, monkey
     older = _engine(tmp_path / "older", monkeypatch) if (tmp_path / "older").mkdir() is None else None
     _show(older, halves((255, 0, 0), (0, 0, 255)))
     assert cooler.screen[0] == "drawn" and cooler.light_commands == 0 and not older._lights
+
+
+def test_what_the_coolers_own_firmware_picks():
+    """One pixel a light, 5 in from the edge, through the frame buffer's 5, 6 and 5 bits."""
+    page = Image.new("RGB", (480, 640), (14, 14, 20))
+    draw = ImageDraw.Draw(page)
+    draw.rectangle((30, 250, 100, 390), fill=(255, 120, 0))               # the orange mark of the test above: not seen
+    draw.point((5, 305), fill=(255, 255, 255))                            # ... and one white pixel is a whole light
+    draw.point((475, 635), fill=(1, 2, 3))
+    picked = light.cooler_colours(page)
+    assert picked[3] == (248, 252, 248) and picked[13] == (0, 0, 0)
+    assert all(c == (8, 12, 16) for i, c in enumerate(picked) if i not in (3, 13))
+    assert len(light.COOLER_PIXELS) == device.LIGHTS
+    assert light.cooler_colours(halves((255, 0, 0), (0, 0, 255)).resize((240, 320))) == [(248, 0, 0)] * 7 + [(0, 0, 248)] * 7
