@@ -26,6 +26,8 @@ DEFAULTS = {
     "close_to_tray": True,
     "ytdlp_current": False,    # True: look for a newer yt-dlp once a day and when a link will not open (ytdlp.py)
     "light": "screen",         # the pump head's light strip: screen (edge colours) | motherboard | warning
+    "light_level": 100,        # ... how bright, percent, when it follows the screen and deephack picks its colours
+                               # (direct drawing firmware, patch 16; light.py)
     "brightness": 70,          # screen backlight, percent (70 is what the official app sends)
     "slot_index": None,        # index of our image among the JPGs stored on the device
     "ground": False,           # True: that image is the plain one frames are drawn over (direct drawing firmware)

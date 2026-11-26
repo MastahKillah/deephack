@@ -121,9 +121,9 @@ def cooler(stock_image, tmp_path_factory):
     return cooler
 
 
-def test_patch_only_adds_code_and_five_jumps(stock_image):
+def test_patch_only_adds_code_and_six_jumps(stock_image):
     patched = patch.build(stock_image)
-    assert len(patch.HOOKS) == 5
+    assert len(patch.HOOKS) == 6
     code = patch.assemble(patch.APP + len(stock_image))[0]
     assert patched[len(stock_image):] == code + patch.logo()              # the code, then the start screen's picture
     changed = [at for at in range(len(stock_image)) if patched[at] != stock_image[at]]
@@ -174,7 +174,7 @@ def test_frames_are_drawn_from_ram_without_a_file(cooler, tmp_path):
     now = state(cooler)
     assert now["shown"] == 3 and now["phase"] == 0 and not decoder.errors
     buffers = (now["first"], now["second"], now["third"])
-    assert all(buffers) and patch.STATE_SIZE == 68
+    assert all(buffers) and patch.STATE_SIZE == 208
     used = [next(b for b in buffers if b + 16 <= s < b + 16 + patch.MAX_FRAME) for s in sources]
     assert used[0] != used[1] and used[1] != used[2]          # never the buffer that is on screen
     assert on_card(cooler) == {f"img/000_{STORED_ID}/angle_0.jpg": cooler.stored}      # nothing was written
@@ -511,3 +511,82 @@ def test_a_word_of_memory_can_be_written(cooler):
         with pytest.raises(ValueError):
             driver.poke(address, 1)
     assert driver.peek(patch.APP, 4) == boot.DEFAULT_IMAGE.read_bytes()[:4] and driver.uuid() == ""      # 21 as before
+
+
+LIGHT_WIRE = 0x20005B54                                     # what the stock firmware sends the 14 lights: a byte a bit
+LIGHT_SENDS = 0x3DAE8                                       # ... and where it starts sending it
+
+
+def on_the_wire(cooler) -> list:
+    """The 14 colours as they last went out to the lights: green, red, blue, eight bits each, high bit first,
+    a bit as the byte FC (one) or E0 (nought)."""
+    raw = bytes(cooler.machine.uc.mem_read(LIGHT_WIRE, device.LIGHTS * 24))
+    assert set(raw) <= {0xFC, 0xE0}
+    values = [sum((raw[at + k] == 0xFC) << (7 - k) for k in range(8)) for at in range(0, len(raw), 8)]
+    return [(values[i + 1], values[i], values[i + 2]) for i in range(0, len(values), 3)]
+
+
+def light_task(cooler) -> int:
+    """The period of the task that runs the loop for the light, as LVGL keeps it (found by its callback)."""
+    heap = bytes(cooler.machine.uc.mem_read(boot.EXT_RAM[0], boot.EXT_RAM[1]))
+    at = heap.find(struct.pack("<I", 0x72ED1))
+    assert at >= 8 and heap.find(struct.pack("<I", 0x72ED1), at + 1) < 0
+    return struct.unpack_from("<I", heap, at - 8)[0]
+
+
+def test_the_lights_go_where_the_host_says_and_fade_there(cooler, tmp_path):
+    """Version 16: command 24. The stock firmware gives each light one pixel of the frame buffer and sends
+    the 14 when one has changed; with the command they go to the host's colours, a step every 16 ms."""
+    driver, machine = cooler.driver(), cooler.machine
+    assert driver.draw_version() >= device.LIGHT_VERSION
+    driver.set_options(brightness=70, light=device.LIGHT_SCREEN)
+    cooler.run_for(0.8)
+    picked = on_the_wire(cooler)                                          # the cooler's own picking: a pixel a light
+    assert len(set(picked)) <= 2 and picked != [(0, 0, 0)] * 14 and light_task(cooler) == patch.LIGHT_STOCK_MS == 35
+    start = picked[0]
+
+    wanted = [(255, 0, 0)] * 7 + [(0, 0, 255)] * 6 + [(10, 20, 30)]
+    sends = machine.blocks[LIGHT_SENDS]
+    assert driver.set_light(wanted, pace=64) is True
+    cooler.run_for(0.08)
+    under_way = on_the_wire(cooler)
+    assert light_task(cooler) == patch.LIGHT_STEP_MS == 16
+    assert start[0] < under_way[0][0] < 255 and under_way[0] != wanted[0]     # between what it was and what it goes to
+    assert under_way[7][2] < 255 and under_way[7] != picked[7] and under_way[13] != wanted[13]
+    cooler.run_for(0.9)
+    assert on_the_wire(cooler) == wanted                                  # there, to the last bit
+    assert machine.blocks[LIGHT_SENDS] - sends >= 4                       # sent on the way, not only at its end (the
+                                                                          # emulated main loop comes round less often)
+    sends = machine.blocks[LIGHT_SENDS]
+    cooler.run_for(0.5)
+    assert machine.blocks[LIGHT_SENDS] == sends                           # and then no more: the stock picking, which
+    assert on_the_wire(cooler) == wanted                                  # still runs, never reaches the lights
+
+    assert driver.set_light([(1, 2, 3)] * 14, pace=0) is True             # pace 0: at once
+    cooler.run_for(0.05)
+    assert on_the_wire(cooler) == [(1, 2, 3)] * 14
+    frame = card("#f0f000", (200, 300, 280, 380))                         # a drawn frame changes nothing for them
+    driver.draw_jpeg(frame)
+    cooler.run_for(0.4)
+    assert on_screen(cooler, frame, tmp_path) and on_the_wire(cooler) == [(1, 2, 3)] * 14
+
+    assert driver.release_light() is True                                 # given back: the cooler picks again
+    cooler.run_for(0.4)
+    theirs = on_the_wire(cooler)
+    assert theirs != [(1, 2, 3)] * 14 and len(set(theirs)) == 1 and light_task(cooler) == 35
+
+    assert driver.set_light(wanted, pace=0) is True                       # a host that falls silent
+    cooler.run_for(0.2)
+    assert on_the_wire(cooler) == wanted
+    cooler.run_for(patch.LIGHT_TIMEOUT_MS / 1000 + 0.3)
+    assert on_the_wire(cooler) == theirs and light_task(cooler) == 35
+    assert struct.unpack_from("<B", machine.uc.mem_read(patch.STATE + patch.L_ON, 1))[0] == 0
+    assert driver.uuid() == "" and machine.stuck is None                  # and commands work as before
+
+
+def test_stock_firmware_is_not_told_the_lights_colours():
+    stock = bench.EmulatedCooler()
+    driver = stock.driver()
+    driver.set_mode(device.MODE_MOTION)
+    driver.set_options(brightness=70, light=device.LIGHT_SCREEN)
+    assert driver.set_light([(255, 0, 0)] * 14) is False and driver.uuid() == ""

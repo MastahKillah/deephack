@@ -64,6 +64,11 @@ CMD_POKE = 0x22             # <address:u32> <count:u8> <value:u32>: write a word
 POKE_VERSION = 10
 CMD_RELEASE = 0x23          # give the frame buffers back to the heap: an upload needs the room. From its version 15,
 RELEASE_VERSION = 15        # answered as CMD_DIRECT is: DIRECT_GO when none is held, DIRECT_LATER when it is being done
+CMD_LIGHT = 0x24            # the colours of the 14 lights on the pump head, which the cooler fades to. From its
+LIGHT_VERSION = 16          # version 16; see light_packet
+LIGHTS = 14                 # seven up the left side of the screen, then seven down the right
+LIGHT_STEP = 0.016          # seconds between two steps of the cooler's fade
+LIGHT_KEEP = 3.0            # seconds without the command after which the cooler picks the colours itself again
 WRITABLE = ((0x2000_0000, 0x2001_0000), (0x8000_0000, 0x8080_0000))      # what poke may be asked for: RAM
 READABLE = ((0x0000_0000, 0x0008_0000), (0x2000_0000, 0x2001_0000), (0x8000_0000, 0x8080_0000))
                             # what peek may be asked for: the chip's flash, its RAM, the SDRAM. An address
@@ -115,6 +120,29 @@ def frame(cmd: int, payload: bytes = b"") -> bytes:
     b[42:46] = b"HIDC"
     struct.pack_into("<H", b, 46, sum16(b[:46]))
     return bytes(b)
+
+
+def light_packet(colours, pace: int = 0, on: bool = True) -> bytes:
+    """Command 24 of the patched firmware: where the 14 lights go, as one packet of 64 bytes. The command's
+    own 48 hold 13 lights; the 14th, `on` and `pace` follow them. `colours`: 14 of (red, green, blue),
+    0 to 255, as the lights are to show them (they are not gamma corrected by anyone after this). In the
+    cooler's order: 0 at the bottom of the screen's left side, 6 at its top, 7 at the top of the right
+    side, 13 at its bottom. `pace`: how much of the way that is left the lights cover every LIGHT_STEP,
+    in 256ths (0: all of it at once). `on` False: the cooler picks the colours itself again."""
+    flat = bytes(max(0, min(255, round(c))) for colour in colours for c in colour)
+    if len(flat) != LIGHTS * 3:
+        raise ValueError(f"need {LIGHTS} colours of three values")
+    if not 0 <= pace <= 255:
+        raise ValueError("the pace is 0 to 255")
+    return frame(CMD_LIGHT, flat[:39]) + flat[39:] + bytes([1 if on else 0, pace]) + bytes(11)
+
+
+def light_pace(seconds: float) -> int:
+    """The pace at which the lights have covered two thirds of the way to a new colour after `seconds`
+    (63 %: the fade is a share of what is left with every step, so it has no end to name)."""
+    if seconds <= LIGHT_STEP:
+        return 0
+    return max(1, min(255, round(256 * LIGHT_STEP / seconds)))
 
 
 def sensor_payload(**values: float) -> bytes:
@@ -338,6 +366,24 @@ class Mystique:
             raise RuntimeError("this firmware cannot be told to write its memory" if len(r) == 48 and r[2] == 0
                                else f"unexpected reply to cmd {CMD_POKE:#04x}: {r.hex()}")
         return struct.unpack_from("<I", r, 3)[0]
+
+    def set_light(self, colours, pace: int = 0) -> bool:
+        """Have the 14 lights on the pump head go to these colours (see light_packet), which they show for
+        as long as this is sent again within LIGHT_KEEP seconds and the cooler's light follows the screen
+        (set_options with LIGHT_SCREEN). False from a firmware without the command: the stock one, or one
+        patched before LIGHT_VERSION."""
+        return self._light(light_packet(colours, pace))
+
+    def release_light(self) -> bool:
+        """The cooler picks the lights' colours itself again, at once."""
+        return self._light(light_packet([(0, 0, 0)] * LIGHTS, on=False))
+
+    def _light(self, packet: bytes) -> bool:
+        self.dev.write(1, packet, self.timeout)
+        r = bytes(self.dev.read(0x81, 64, self.timeout))
+        if len(r) != 48 or r[0] != 0x55 or sum16(r[:46]) != struct.unpack_from("<H", r, 46)[0]:
+            raise RuntimeError(f"unexpected reply to cmd {CMD_LIGHT:#04x}: {r.hex()}")
+        return r[3] == DIRECT_GO and r[4] >= LIGHT_VERSION
 
     def can_draw(self) -> bool:
         """True when the cooler runs a firmware that draws without storing."""

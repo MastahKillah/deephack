@@ -43,6 +43,9 @@ class CoolerModel:
         self.buffers = False                    # the patch has made its frame buffers: with its first drawn picture, and
                                                 # they stay until the cooler restarts (from patch 15: until an upload)
         self.part: tuple[int, int, bytes] | None = None     # (x, y, JPEG) of the part drawn on top of it (patch 3)
+        self.lights: tuple[list, int] | None = None         # (14 colours, pace) the host has the lights go to (patch
+                                                            # 16); None: the cooler picks them itself
+        self.light_commands = 0
         self.parts = 0
         self._drawing: dict | None = None       # a frame that is coming in
         self._animated = False                  # an animation has been on the image screen since it was entered
@@ -96,6 +99,9 @@ class CoolerModel:
         if self.off_bus:
             raise usb.core.USBError("the cooler is restarting")
         data = bytes(data)
+        more = b""
+        if len(data) == 64 and data[:3] == bytes([0xAA, 0x2E, device.CMD_LIGHT]):
+            data, more = data[:48], data[48:]       # the lights: one packet, of which the first 48 bytes are the command
         is_command = len(data) == 48 and data[:2] == b"\xaa\x2e"
         if self._drawing is not None:           # while a frame is coming in, everything on endpoint 1 is picture data
             self._draw_data(ep, data)
@@ -111,7 +117,7 @@ class CoolerModel:
             if self._upload is not None and not (waiting and data[2] == device.CMD_PEEK and self._peeks()):
                 self._violate(f"command {data[2]:#04x} before dcldfinish: an unfinished upload hung the firmware once")
                 self._upload = None
-            self._command(ep, data)
+            self._command(ep, data, more)
         else:
             self._violate(f"{len(data)} stray bytes on endpoint {ep:#x} outside an upload")
         return len(data)
@@ -156,7 +162,7 @@ class CoolerModel:
         struct.pack_into("<H", b, 46, device.sum16(b[:46]))
         self._replies[0x80 | ep].append(bytes(b))
 
-    def _command(self, ep: int, data: bytes) -> None:
+    def _command(self, ep: int, data: bytes, more: bytes = b"") -> None:
         if data[42:46] != b"HIDC" or device.sum16(data[:46]) != struct.unpack_from("<H", data, 46)[0]:
             self._violate(f"malformed command frame {data.hex()}")
             return
@@ -213,6 +219,15 @@ class CoolerModel:
                 self._release()
         elif cmd == device.CMD_RELEASE and int(self.direct) >= device.RELEASE_VERSION:
             self._release()
+            reply = bytes([device.DIRECT_GO, int(self.direct)])
+        elif cmd == device.CMD_LIGHT and int(self.direct) >= device.LIGHT_VERSION:
+            # 13 lights in the command, the 14th, "on" and the pace after it; a plain command of 48 bytes has
+            # zeros there, which says "pick them yourself"
+            flat, (on, pace) = payload + more[:3], (more[3:5] or b"\0\0")
+            self.lights = ([tuple(flat[i:i + 3]) for i in range(0, 42, 3)], pace) if on else None
+            self.light_commands += 1
+            if on and self.light != device.LIGHT_SCREEN:
+                self._violate("the lights' colours sent while the light does not follow the screen: they would not show")
             reply = bytes([device.DIRECT_GO, int(self.direct)])
         elif cmd == device.CMD_PEEK and self._peeks():
             address, count = struct.unpack_from("<IB", payload)
@@ -332,7 +347,7 @@ class CoolerModel:
         self.direct = self.firmwares[image]
         self.updates, self.off_bus = self.updates + 1, 3
         self.mode = self.shown = self.drawn = self._drawing = None
-        self.buffers = False
+        self.buffers, self.lights = False, None
         self._animated = self.stuck = False
         self.log.append(("flashed", len(image)))
 

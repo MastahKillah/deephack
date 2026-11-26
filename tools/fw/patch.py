@@ -12,7 +12,7 @@ has it: without this assembler, and without DeepCool's image. Do that after ever
 compares the two).
 
 The stock image (v2.70 only, checked by hash) is DeepCool's and is read from the installed app. The
-patch appends about 800 bytes of code after it and redirects five places in it:
+patch appends about 2000 bytes of code after it and redirects six places in it:
 
     where                         stock                         patched
     0x109A4  main, before loop    sets a "running" flag         ... and clears the patch's state
@@ -20,6 +20,7 @@ patch appends about 800 bytes of code after it and redirects five places in it:
     0x64088  lv_task_handler      "start over with the tasks"   show a finished frame, then the same
     0x2F158  command dispatcher   reply(command, 0, status 0)   command 20 starts a frame, then the same
     0x34C54  USB, endpoint 1 OUT  "is this packet a command?"   while a frame is coming in, it is data
+    0x72ED0  the light's task     the stock loop for the light  the host's colours, eased; then the same
 
 The new command, on endpoint 1 like the others:
 
@@ -74,6 +75,30 @@ address and answers as 21 does, with `count` bytes read back from there. It is f
 the running firmware (how often LVGL redraws, say) before a patch is made of it: what it changes is gone
 with the next start. deephack.device.Mystique.poke keeps to the RAM.
 
+The light (version 16). The strip on the pump head is 14 lights, seven up the left side of the screen
+and seven down the right. The stock firmware, told to follow the screen (command 02, fourth byte 2),
+gives each the colour of one pixel of the frame buffer, 5 pixels in from the edge (0x2FD5C, ten times a
+second), and sends the 14 when one of them has changed, with nothing in between: see docs/firmware-
+analysis.md. Command 24 has the host say what they show:
+
+    AA 2E 24 <13 lights: R G B each> "HIDC" <sum16> <the 14th: R G B> <on:u8> <pace:u8>
+
+64 bytes in one packet: the command's own 48, whose 39 bytes of payload hold 13 lights, and what did not
+fit after them (the USB handler has the whole packet in RAM; the dispatcher only looks at 48). The lights
+in the stock firmware's order: 0 at the bottom of the left side, 6 at its top, 7 at the top of the right
+side, 13 at its bottom. `on` 1: the lights go to these colours; 0 (which is what a plain 48 byte command
+24 says): the cooler picks them again. `pace`: how much of what is left to a colour is covered every
+16 ms, in 256ths; 0 is at once. Answered as command 20 is, with GO.
+
+The colours are where the lights go to, not what they show: the task that runs the stock loop for the
+light (35 ms) is the patch's now while the host's colours are on, comes round every 16 ms, moves each of
+the 42 values a step on (8.8 fixed point), puts the result where the stock loop has its 14 colours and
+lets that send them. So the host says a colour once and the cooler fades to it; nothing goes over USB for
+the fade. The stock picking still runs and is written over before the loop looks. When no command 24 has
+come for three seconds the host is taken to have gone, and the cooler picks again: a host that keeps the
+light sends its colours once a second at least. Command 02 decides as before whether the lights follow
+the screen at all.
+
 The start screen (version 5). While it starts the cooler shows DeepCool's logo for four seconds: a
 picture from a file on its serial flash, which nothing reaches over USB. The patch puts deephack's own
 over it: logo.jpg (made by logo.py), which lies after the patch's code in the image. The first time the
@@ -91,7 +116,7 @@ command 21, erases the firmware's whole area up to the end of the chip's flash a
 writes the update file 4 KiB at a time until there, whatever its size. So patch and logo together have
 15 848 bytes.
 
-RAM: 68 bytes at 0x2000F000, above the firmware's stack (which starts at 0x2000B418); the emulated
+RAM: 208 bytes at 0x2000F000, above the firmware's stack (which starts at 0x2000B418); the emulated
 firmware never touches anything up there.
 """
 from __future__ import annotations
@@ -111,10 +136,15 @@ COMMAND = 0x20
 PEEK = 0x21                                 # read memory (version 4)
 POKE = 0x22                                 # write a word of memory, and read it back (version 10)
 RELEASE = 0x23                              # give the buffers back to the heap (version 15)
+LIGHT = 0x24                                # the colours of the 14 lights, from the host (version 16)
+LIGHTS = 14
+LIGHT_STEP_MS = 16                          # how often the lights move a step on while the host has them
+LIGHT_STOCK_MS = 35                         # ... and how often the stock firmware has its loop for them run
+LIGHT_TIMEOUT_MS = 3000                     # no command 24 for so long: the cooler picks the colours again
 UPLOAD = 0x0F                               # the stock firmware's "an upload is coming"
 PEEK_MOST = 39                              # bytes a reply carries
 GO, LATER, REFUSED, NO_PAGE = 0x10, 0x11, 0x12, 0x13
-VERSION = 15                                # of this patch, in every reply to the command (see CHANGES)
+VERSION = 16                                # of this patch, in every reply to the command (see CHANGES)
 CHANGES = {
     1: "the first: draws a JPEG from USB. Answers 0 where the version is now",
     2: "frames are also shown while lv_task_handler does not return (#22); the reply has the version",
@@ -131,8 +161,9 @@ CHANGES = {
     13: "the firmware's own redraws of a picture that has not changed (ten a second) are left out while ours is on show",
     14: "a packet is copied by the firmware's own memcpy and the frame's sum is checked in the main loop, not byte by byte in the USB interrupt",
     15: "the three buffers go back to the heap when an upload is announced, or when asked: an upload needs 2 MiB of it in one piece",
+    16: "the 14 lights on the pump head take their colours from the host and fade to them, sixty steps a second",
 }
-STATE_SIZE = 68                             # bytes of the patch's RAM (see the layout above SOURCE)
+STATE_SIZE = 208                            # bytes of the patch's RAM (see the layout above SOURCE)
 TIMEOUT_MS = 2000
 
 # the stock firmware's own routines and data (real addresses, v2.70)
@@ -154,7 +185,11 @@ SYMBOLS = {
     "memclr": 0x29D50,                      # memclr(address, length)
     "usb_done": 0x34BAE,                    # the USB handler's "pop {r4, r5, r7, pc}"
     "usb_command": 0x34C5A,                 # ... its check of the packet's second byte
+    "light_loop": 0x2F910,                  # the stock loop for the light: sends the 14 colours when they have changed
 }
+PACKET = 0x200006F0                         # the packet as it came from USB: 64 bytes, cleared before each
+LIGHT_COLOURS = 0x200007D0                  # the 14 colours the stock loop sends: a word each, 0x00RRGGBB
+L_ON, L_PACE, L_SEEN, L_STEPPED, L_TARGET, L_NOW = 68, 69, 72, 76, 80, 124       # in the patch's state, see below
 TICKS = 0x200071DC                          # milliseconds since start
 COMMAND_COPY = 0x20000674                   # the command being handled; its payload starts at +3
 REPLY = 0x200006A4                          # where the firmware builds its 48 byte answers
@@ -181,8 +216,9 @@ HOOKS = [
     (0x64088, None, "bl loop_hook"),                    # bl lv_ll_get_head, where lv_task_handler starts over
     (0x2F158, None, "bl command_hook"),                 # bl reply
     (0x34C54, "2078 aa28", "b.w usb_hook"),             # ldrb r0, [r4] ; cmp r0, #0xaa
+    (0x72ED0, None, "b.w light_hook"),                  # b.w light_loop: all there is to the light's task
 ]
-STOCK_CALLS = {0x109A8: "lv_task_handler", 0x64088: "lv_ll_get_head", 0x2F158: "reply"}
+STOCK_CALLS = {0x109A8: "lv_task_handler", 0x64088: "lv_ll_get_head", 0x2F158: "reply", 0x72ED0: "light_loop"}
 BRANCHES = {"b", "bl", "cbz", "cbnz"} | {"b" + c for c in "eq ne hs lo mi pl vs vc hi ls ge lt gt le".split()}
 
 # state: +0 u8 phase (0 idle, 1 receiving, 2 ready to show)   +1 u8 buffers wanted
@@ -198,6 +234,9 @@ BRANCHES = {"b", "bl", "cbz", "cbnz"} | {"b" + c for c in "eq ne hs lo mi pl vs 
 #        +62 u8 a picture of ours waits to be redrawn   +63 u8 ... and it is a new page under a part, which
 #            is to be copied into the other buffer this once
 #        +64 that picture: its lv_img_dsc_t, in RAM
+#        +68 u8 the lights show the host's colours   +69 u8 pace: 256ths of what is left, every step
+#        +72 tick of the last command 24   +76 tick of the last step
+#        +80 where the lights go to: 14 x R G B   +124 where they are: 42 x u16, 8.8 fixed point
 #
 # The copy (version 11). LVGL draws into the frame buffer that is not on the glass, has the panel take
 # it at its next turn, and then copies what it drew into the other buffer, so that both hold the same
@@ -355,6 +394,8 @@ command_hook:                           @ r0 = command, r1 = 0, r2 = 0; runs in 
     beq     command_poke
     cmp     r0, #{RELEASE}
     beq     command_release
+    cmp     r0, #{LIGHT}
+    beq     command_light
     cmp     r0, #{UPLOAD}
     bne     command_stock
     movw    r3, #{STATE & 0xFFFF}       @ An upload is coming, a picture or a firmware: the stock firmware puts
@@ -370,6 +411,8 @@ command_poke:
     b.w     poke
 command_release:
     b.w     release_asked
+command_light:                          @ (a short jump to a short jump: Keystone gets what follows a long
+    b       light_asked                 @ conditional one wrong by two bytes)
 command_ours:
     push    {{r4, r5, r6, lr}}
     movw    r4, #{STATE & 0xFFFF}
@@ -492,6 +535,31 @@ command_out:                            @ the reply, made here: the stock routin
     movs    r2, #48
     pop.w   {{r4, r5, r6, lr}}
     b.w     usb_send
+light_asked:                            @ command 24: where the 14 lights are to go. Answered as command 20 is.
+                                        @ (After command_out, not with the other commands before it: there it
+                                        @ made two of their short jumps to command_out long ones, and Keystone
+                                        @ gets the calls that follow a jump it had to lengthen wrong.)
+    push    {{r4, r5, r6, lr}}
+    movw    r4, #{STATE & 0xFFFF}
+    movt    r4, #{STATE >> 16}
+    movw    r5, #{PACKET & 0xFFFF}      @ the packet as it came: the dispatcher's copy ends after 48 bytes, and
+    movt    r5, #{PACKET >> 16}         @ this one has 16 more (zeros, when the host sent 48: "pick them yourself")
+    add.w   r0, r4, #{L_TARGET}
+    adds    r1, r5, #3
+    movs    r2, #39
+    bl      lv_memcpy                   @ 13 lights from the command's payload
+    ldrh.w  r0, [r5, #48]
+    strh.w  r0, [r4, #{L_TARGET + 39}]
+    ldrb.w  r0, [r5, #50]
+    strb.w  r0, [r4, #{L_TARGET + 41}]  @ and the 14th from after it
+    ldrh.w  r0, [r5, #51]
+    strh.w  r0, [r4, #{L_ON}]           @ on, and the pace above it
+    movw    r0, #{TICKS & 0xFFFF}
+    movt    r0, #{TICKS >> 16}
+    ldr     r0, [r0]
+    str     r0, [r4, #{L_SEEN}]
+    movs    r2, #{GO}
+    b       command_out
 
 peek:                                   @ command 21: up to 39 bytes of memory, in a reply of the usual form
     push    {{r4, r5, r6, lr}}
@@ -961,6 +1029,102 @@ logo_on:                                @ r0 = a screen (or 0), r5 = our picture
     bl      lv_img_set_src
 logo_on_out:
     pop     {{r4, pc}}
+
+light_hook:                             @ r0 = the light's task (an lv_task_t: its period is its first word)
+    push.w  {{r3, r4, r5, r6, r7, r8, r9, lr}}
+    mov     r9, r0
+    movw    r4, #{STATE & 0xFFFF}
+    movt    r4, #{STATE >> 16}
+    movw    r1, #{TICKS & 0xFFFF}
+    movt    r1, #{TICKS >> 16}
+    ldr     r1, [r1]
+    ldrb.w  r0, [r4, #{L_ON}]
+    cmp     r0, #0
+    beq     light_theirs
+    ldr     r2, [r4, #{L_SEEN}]
+    subs    r2, r1, r2
+    movw    r3, #{LIGHT_TIMEOUT_MS}
+    cmp     r2, r3
+    bls     light_ours
+    movs    r0, #0                      @ nothing from the host for three seconds: it has gone
+    strb.w  r0, [r4, #{L_ON}]
+light_theirs:                           @ The cooler picks. What it shows is kept as "where the lights are", so
+    movs    r0, #{LIGHT_STOCK_MS}       @ that the host's colours, when they come, begin from there.
+    str.w   r0, [r9, #0]
+    movw    r5, #{LIGHT_COLOURS & 0xFFFF}
+    movt    r5, #{LIGHT_COLOURS >> 16}
+    add.w   r6, r4, #{L_NOW}
+    movs    r2, #{LIGHTS}
+light_follow:
+    ldr     r0, [r5], #4
+    lsrs    r1, r0, #16
+    uxtb    r1, r1
+    lsls    r1, r1, #8
+    strh    r1, [r6], #2
+    lsrs    r1, r0, #8
+    uxtb    r1, r1
+    lsls    r1, r1, #8
+    strh    r1, [r6], #2
+    uxtb    r1, r0
+    lsls    r1, r1, #8
+    strh    r1, [r6], #2
+    subs    r2, #1
+    bne     light_follow
+    b       light_stock
+light_ours:
+    movs    r0, #{LIGHT_STEP_MS}
+    str.w   r0, [r9, #0]                @ the task comes round this often now
+    ldr     r2, [r4, #{L_STEPPED}]
+    subs    r2, r1, r2
+    lsrs    r2, r2, #4                  @ steps of 16 ms since the last (a redraw can keep the task waiting)
+    beq     light_put
+    str     r1, [r4, #{L_STEPPED}]
+    cmp     r2, #8
+    it      hi
+    movhi   r2, #8
+    mov     r12, r2
+    ldrb.w  r3, [r4, #{L_PACE}]
+    add.w   r5, r4, #{L_TARGET}
+    add.w   r6, r4, #{L_NOW}
+    mov.w   r8, #{LIGHTS * 3}
+light_channel:
+    ldrb    r0, [r5], #1
+    lsls    r0, r0, #8                  @ where this one goes
+    ldrh    r1, [r6]                    @ where it is
+    mov     r2, r12
+light_step:
+    subs    r7, r0, r1                  @ what is left
+    muls    r7, r3, r7
+    asrs    r7, r7, #8                  @ so much of it. Rounded down: never more than is left, and never nothing
+    it      eq                          @ while it is above, so it gets there. From below, and with pace 0, the
+    subeq   r7, r0, r1                  @ last bit is one jump.
+    add     r1, r7
+    subs    r2, #1
+    bne     light_step
+    strh    r1, [r6], #2
+    subs.w  r8, r8, #1
+    bne     light_channel
+light_put:                              @ Every time, steps or none: the stock picking writes there ten times a
+    movw    r5, #{LIGHT_COLOURS & 0xFFFF}   @ second, and the stock loop must find ours.
+    movt    r5, #{LIGHT_COLOURS >> 16}
+    add.w   r6, r4, #{L_NOW}
+    movs    r2, #{LIGHTS}
+light_word:
+    ldrh    r0, [r6], #2
+    lsrs    r0, r0, #8
+    lsls    r0, r0, #16
+    ldrh    r1, [r6], #2
+    lsrs    r1, r1, #8
+    orr.w   r0, r0, r1, lsl #8
+    ldrh    r1, [r6], #2
+    orr.w   r0, r0, r1, lsr #8
+    str     r0, [r5], #4
+    subs    r2, #1
+    bne     light_word
+light_stock:
+    mov     r0, r9
+    pop.w   {{r3, r4, r5, r6, r7, r8, r9, lr}}
+    b.w     light_loop
 
 init_hook:
     movs    r1, #1

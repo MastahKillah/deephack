@@ -48,8 +48,14 @@ which is why Ctrl+Alt+PgDown can be Next in each of them. When two settings ask 
 page says which of them has it; the keys in Settings come first.
 
 **Cooler light** (in Settings) picks what drives the light strip on the side of the pump head: the colours at the edges
-of the picture on screen (picked by the cooler itself, ambilight style), the motherboard's ARGB effects
+of the picture on screen (ambilight style, see below), the motherboard's ARGB effects
 (needs the cooler's ARGB cable on a motherboard header) or the cooler's fixed warning colour.
+
+The strip is 14 lights, seven along each long side of the screen. DeepCool's firmware gives each the colour of
+one pixel near the edge and switches from one colour to the next. With the [direct drawing firmware](#protocol)
+(16 or newer) deephack picks the colours for the pictures it draws: each light gets a share of a strip a quarter
+of the picture wide, a coloured shape counts for more than the dark page or the white text around it, dark
+pictures still glow, and the cooler fades from one colour to the next. **Light brightness** dims it.
 
 **Keep on screen** (in Settings) decides whether the cooler stays on deephack's image or cycles through every image
 stored on it (the cooler's own slideshow).
@@ -202,7 +208,7 @@ AA 2E <cmd> <payload, zero padded to 39 bytes> 'H' 'I' 'D' 'C' <sum16 LE of byte
 | cmd | meaning | payload |
 | --- | --- | --- |
 | `01` | sensor values (ep 2, once a second) | 3-byte fields, see below |
-| `02` | device options | five bytes, the official app sends `01 01 00 01 46`. The fourth picks the side light's source: `0` the motherboard's ARGB signal, `1` a fixed warning colour (the app switches to it at 90 °C), `2` the colours at the edges of the picture shown, picked by the firmware when an image is shown (it follows frames drawn with command `20` as well, see [docs/firmware-analysis.md](docs/firmware-analysis.md)). The fifth is the backlight brightness in percent (0 turns the screen off). The first three showed no visible effect (the app's names: noLoadScreen, gyroStatus, screenRotate) |
+| `02` | device options | five bytes, the official app sends `01 01 00 01 46`. The fourth picks the side light's source: `0` the motherboard's ARGB signal, `1` a fixed warning colour (the app switches to it at 90 °C), `2` the colours at the edges of the picture shown: one pixel a light, picked by the firmware ten times a second (it follows frames drawn with command `20` as well; with the patched firmware's command `24` the host says the colours and the cooler fades to them, see [docs/firmware-analysis.md](docs/firmware-analysis.md)). The fifth is the backlight brightness in percent (0 turns the screen off). The first three showed no visible effect (the app's names: noLoadScreen, gyroStatus, screenRotate) |
 | `03` | display mode | `mode` (1 = sensor dashboard, 2 = stored images, 3 = recorder) |
 | `05` | recorder layout | `0` frequency + temperature graphs, `1` frequency graph only |
 | `07` | slideshow | `duration` `animation` (0 none, 1 slide, 2 fade) |

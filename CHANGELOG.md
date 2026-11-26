@@ -21,6 +21,14 @@ Settings; a newer one is offered there when the cooler has an older one.
   sessions says which they are, so a session that thinks for minutes without writing anything still counts.
 - Measured on the cooler: eight pictures a second while a session works, 7 % of a processor core for the
   whole app. When no session works the page stands still.
+- **The cooler's light, picked by deephack.** DeepCool's firmware gives each of the 14 lights on the pump
+  head the colour of one pixel near the screen's edge, and jumps from one colour to the next. With the
+  direct drawing firmware 16, each light gets a share of the whole edge of the picture and fades to it.
+- **What a light sees.** A coloured shape counts for more than the dark page or the white text around
+  it, and a dark picture still glows. A new setting, Light brightness, dims the light. Stored pictures
+  and older firmware are as before.
+- **Direct drawing firmware 16**, offered in Settings: a command for the lights' colours, and the fade,
+  sixty steps a second, done on the cooler.
 
 ## 0.15.0 (2026-11-25)
 

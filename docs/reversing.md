@@ -67,8 +67,8 @@ Here the handler's `push` was skipped once in a few million ticks, and it return
 
 ## 4. The patch: drawing without storing
 
-[`tools/fw/patch.py`](../tools/fw/patch.py) appends code to the image and changes twenty bytes of it:
-five 4-byte jumps. Its first job, in 504 bytes, was one new command, `20`: a size and a checksum, then
+[`tools/fw/patch.py`](../tools/fw/patch.py) appends code to the image and changes twenty-four bytes of it:
+six 4-byte jumps (five until version 16, which took the light's task). Its first job, in 504 bytes, was one new command, `20`: a size and a checksum, then
 a JPEG. The frame is received inside the USB interrupt, so its speed is the bus's and not the main
 loop's, and handed to the firmware's own JPEG decoder from the main loop. Nothing is stored.
 

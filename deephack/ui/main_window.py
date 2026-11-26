@@ -340,6 +340,10 @@ class MainWindow(QMainWindow):
         self._light = self._choice_row(cl, "Cooler light", "The light strip on the pump head.", "light",
                                        (("screen", "Picks up the screen's edges"), ("motherboard", "Synced with the motherboard"),
                                         ("warning", "The cooler's warning colour")))
+        self._light_level = self._choice_row(cl, "Light brightness", "While it picks up the screen's edges, with the direct "
+                                             "drawing firmware (16 or newer): deephack picks the colours then, and the "
+                                             "light fades from one to the next.", "light_level",
+                                             tuple((p, f"{p} %") for p in (100, 75, 50, 30, 15)))
         self._brightness = self._choice_row(cl, "Screen brightness", "Of the cooler's screen.", "brightness",
                                             tuple((p, f"{p} %") for p in (100, 85, 70, 50, 30)))
         cards.addWidget(cooler)

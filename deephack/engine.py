@@ -20,13 +20,18 @@ from PIL import Image
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
-from . import device, firmware, render, ytdlp
+from . import device, firmware, light, render, ytdlp
 from .config import GIF_SLOT_ID, SLOT_ID, Config, book_id
 from .modes import BY_ID, MODES, Mode
 from .modes.base import Animation, Dashboard, Flipbook, Part
 
 LIGHTS = {"screen": device.LIGHT_SCREEN, "motherboard": device.LIGHT_MOTHERBOARD, "warning": device.LIGHT_WARNING}
 RESHOW_DELAY = 1.5           # the firmware picks up the edges of an image shown a moment after a light change
+LIGHT_EVERY = 0.06           # seconds between two times the lights' colours are sent, at the least (patch 16:
+                             # deephack picks them, see _light_step), so that a video is not kept waiting for them
+LIGHT_AGAIN = 1.0            # ... and at the most: the cooler keeps them for device.LIGHT_KEEP seconds, then picks itself
+LIGHT_FADE, LIGHT_FADE_FAST = 0.4, 0.12      # seconds in which the lights cover two thirds of the way to a new colour:
+                                             # under a page, and under pictures that come many a second
 MIN_UPLOAD_INTERVAL = 8.0     # seconds between flash writes, whatever the mode asks for
 REOPEN_INTERVAL = 3.0
 TICK = 0.5
@@ -149,6 +154,12 @@ class Engine(QThread):
         self._slideshow_applied: bool | None = None
         self._options_applied: tuple | None = None
         self._reshow_at: float | None = None     # after a light change: show the picture again then
+        self._lights = False                     # the cooler's firmware takes the lights' colours from here (patch 16)
+        self._lit = None                         # (what, picture): the picture that was drawn last, for the lights
+        self._light_for = None                   # ... what the colours were last picked for, and at which level
+        self._light_colours: list | None = None  # ... and the colours
+        self._light_sent: tuple | None = None    # (colours, pace) the cooler was last told
+        self._light_at = 0.0                     # ... and when
         self._book_storing: list | None = None   # [key, index of frame 0, frames stored so far, frames to store]
         self._book_room = True                   # False: the cooler is too full for a flipbook
         self._flipped = 0.0                      # when the last stored frame of a flipbook was shown
@@ -338,6 +349,7 @@ class Engine(QThread):
                 modes_due = started + min(m.tick or TICK for m in (self._mode, self._preview) if m is not None)
             if self.use_device:
                 self._device_step(enabled)
+                self._light_step(enabled)
             self._emit_state(enabled)
             # The cooler may be due before the modes are: the next frame of an animation played from here, or
             # a picture that could not be drawn yet. Timed with perf_counter and slept in a thread: on
@@ -367,6 +379,7 @@ class Engine(QThread):
                 self._parts = patch >= device.DIRECT_PARTS
                 self._fast = patch >= device.DIRECT_FAST
                 self._turn = device.TURN if patch >= device.DIRECT_EVERY_TURN else device.SLOW_TURN
+                self._lights = patch >= device.LIGHT_VERSION
                 self._veiled = self._can_draw     # a deephack that was killed may have left a drawn frame up
             except device.DeviceBusy:
                 self._dev, self._dev_state = None, "busy"
@@ -511,9 +524,11 @@ class Engine(QThread):
             self._slot_digest.pop(device.TYPE_JPG, None)
         return main
 
-    def _draw(self, what, jpeg, now: float, again: float, at: tuple[int, int] | None = None) -> bool:
+    def _draw(self, what, jpeg, now: float, again: float, at: tuple[int, int] | None = None,
+              picture: Image.Image | None = None) -> bool:
         """Put a picture on screen straight from USB: nothing is stored. True once `what` is on screen.
         `at`: it is a part of the picture, to be put there on the page that was drawn last (_draw_part).
+        `picture`: all that is on screen then, for the lights (_light_step).
 
         `what` names the picture, `jpeg()` makes its data when it has to be sent, and an unchanged one is
         sent again every `again` seconds. Needs the direct drawing firmware (tools/fw). It draws over a
@@ -525,7 +540,7 @@ class Engine(QThread):
         if self._on_screen != "drawn":
             self._show_stored(self._ground(), device.TYPE_JPG, afresh=True)
             self._on_screen, self._drawn, self._draw_from, self._refused = "drawn", None, now + DRAW_SETTLE, None
-            self._page = None
+            self._page = self._lit = None
             self._again = DRAW_RETRY
             return False
         if now < self._draw_from:
@@ -551,7 +566,42 @@ class Engine(QThread):
             self._drawn, self._drawn_at, self._veiled, self._refused = what, now, True, None
             if at is None:
                 self._page = what             # a whole picture: the page a part would lie on
+        if picture is not None and (self._lit is None or self._lit[0] != what):
+            self._lit = (what, picture)
         return True
+
+    def _light_step(self, enabled: bool) -> None:
+        """The 14 lights on the pump head, while a picture of ours is drawn and they are set to follow the
+        screen: deephack picks their colours from that picture (deephack.light) and the cooler fades to
+        them (patch 16). Said again every LIGHT_AGAIN seconds, changed or not: a cooler that hears nothing
+        for device.LIGHT_KEEP takes the lights back and picks as DeepCool's firmware does, which is also
+        what it does for stored pictures, on its sensor screens, and when deephack is gone."""
+        if self._dev is None or not self._lights:
+            return
+        now = time.monotonic()
+        ours = (enabled and self._on_screen == "drawn" and self._lit is not None
+                and self.config.get("light") == "screen")
+        try:
+            if not ours:
+                if self._light_sent is not None:
+                    self._dev.release_light()
+                    self._light_sent = None
+                return
+            what, picture = self._lit
+            level = int(self.config.get("light_level") or 0)
+            if self._light_for != (what, level):
+                self._light_for, self._light_colours = (what, level), light.colours(picture, level / 100)
+            quick = isinstance(self._frame, (Animation, Flipbook)) or (self._mode.tick or TICK) <= FAST_TICK
+            told = (self._light_colours, device.light_pace(LIGHT_FADE_FAST if quick else LIGHT_FADE))
+            since = now - self._light_at
+            if (told != self._light_sent and since >= LIGHT_EVERY) or since >= LIGHT_AGAIN or self._light_sent is None:
+                self._dev.set_light(*told)
+                self._light_sent, self._light_at = told, now
+            elif told != self._light_sent:
+                self._again = min(self._again or LIGHT_EVERY, LIGHT_EVERY - since)
+        except (usb.core.USBError, RuntimeError):
+            traceback.print_exc()
+            self._drop_device()
 
     def _draw_part(self, part: Part, now: float) -> None:
         """Draw a picture of which only a part changed: the page under it once, then only the parts.
@@ -562,7 +612,7 @@ class Engine(QThread):
         page = ("page", id(part.page))
         if self._on_screen != "drawn" or self._page != page:
             self._page_kept = part.page
-            if self._draw(page, lambda: frame_jpeg(part.page), now, REDRAW_STILL):
+            if self._draw(page, lambda: frame_jpeg(part.page), now, REDRAW_STILL, picture=part.page):
                 self._again = DRAW_RETRY      # and now the part, without waiting for the mode's next picture
             return
 
@@ -574,7 +624,8 @@ class Engine(QThread):
                     self._mode.sent_bytes = len(self._still[1])
             return self._still[1]
 
-        if self._draw(("part", self._frame_seq), jpeg, now, REDRAW_STILL, at=part.at) and self._frame_seq != self._uploaded_seq:
+        if (self._draw(("part", self._frame_seq), jpeg, now, REDRAW_STILL, at=part.at, picture=part.whole)
+                and self._frame_seq != self._uploaded_seq):
             self._uploaded_seq = self._frame_seq
             self._last_upload_wall = time.time()
 
@@ -589,7 +640,7 @@ class Engine(QThread):
                 frames[book.index] = device.encode_jpeg(book.frames[book.index], quality=DRAW_QUALITY, tuned=True)
             return frames[book.index]
 
-        if self._draw((book.key, book.index), jpeg, now, REDRAW):
+        if self._draw((book.key, book.index), jpeg, now, REDRAW, picture=book.frames[book.index]):
             self._uploaded_seq = self._frame_seq
 
     def _draw_animation(self, animation: Animation, now: float) -> None:
@@ -603,7 +654,7 @@ class Engine(QThread):
         period = max(0.02, animation.duration_ms / 1000 / len(jpegs))
         at = (now - started) / period
         jpeg = jpegs[int(at) % len(jpegs)]
-        if self._draw((seq, jpeg), lambda: jpeg, now, REDRAW_STILL):
+        if self._draw((seq, jpeg), lambda: jpeg, now, REDRAW_STILL, picture=animation.frames[int(at) % len(jpegs)]):
             self._again = max(0.01, (int(at) + 1 - at) * period)       # until the next frame is due
             if seq != self._uploaded_seq:
                 self._uploaded_seq = seq
@@ -620,7 +671,8 @@ class Engine(QThread):
                     self._mode.sent_bytes = len(self._still[1])
             return self._still[1]
 
-        if self._draw(("still", self._frame_seq), jpeg, now, REDRAW_STILL) and self._frame_seq != self._uploaded_seq:
+        if (self._draw(("still", self._frame_seq), jpeg, now, REDRAW_STILL, picture=picture)
+                and self._frame_seq != self._uploaded_seq):
             self._uploaded_seq = self._frame_seq
             self._last_upload_wall = time.time()
 
@@ -688,6 +740,7 @@ class Engine(QThread):
             except Exception:
                 pass
         self._dev, self._dev_state, self._firmware = None, "missing", None
+        self._lights, self._light_sent = False, None
 
     # ---- firmware updates (deephack.firmware)
     def _flash_stage(self, which: str, stage: str, **more) -> None:
@@ -859,6 +912,8 @@ class Engine(QThread):
         if self._dev is None:
             return
         try:
+            if self._lights and self._light_sent is not None:
+                self._dev.release_light()                    # the cooler picks the lights' colours again
             if self._on_screen not in (None, "restore"):     # ours, or a sensor screen
                 self._show_stored(self.config.get("restore_index"), device.TYPE_JPG)
         except (usb.core.USBError, RuntimeError):

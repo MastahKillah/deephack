@@ -104,7 +104,7 @@ Command details beyond the README (*inferred unless noted*):
 
 | cmd | firmware behaviour |
 | --- | --- |
-| `02` | byte1=1 enables accelerometer auto-rotation; byte3 is an RGB lighting mode for 14 outputs (0 off, 1 colour-follows-CPU-temp, 2 third mode); byte4 is brightness; byte0/byte2 stored, use not traced |
+| `02` | byte1=1 enables accelerometer auto-rotation; byte3 is what the 14 lights on the pump head show (0 the motherboard's signal passed through, 1 a colour by the CPU's temperature, 2 one pixel of the screen each: see "Version 16: the light"); byte4 is brightness; byte0/byte2 stored, use not traced |
 | `03` | accepts modes 1–4; mode 4 has no branch in the screen selector (unknown effect) |
 | `04` | byte2 is never read by the screen selector — explains its lack of visible effect |
 | `05` | two flag bytes, not one value: `1 0` / `0 1` / `1 1` select three layouts, `0 0` is a no-op |
@@ -258,7 +258,8 @@ to 64 bytes. The reply's status byte says what to do:
 | `12` | refused: size 0 or more than 128 KiB |
 | `13` | version 3, for a part of the picture: no page of ours is under it. Draw the page first |
 
-Command `21` (version 4) reads memory: see "Versions 4 to 6".
+Command `21` (version 4) reads memory: see "Versions 4 to 6". Command `24` (version 16) says what the
+14 lights show: see "Version 16: the light", which also added a sixth jump (`0x72ED0`, the light's task).
 | `00` | what the **stock** firmware answers to every command it does not know. `deephack.device` takes it for "no direct drawing here" and sends no picture data (data without an upload in progress would be left in the endpoint's buffer, and the endpoint would stay shut) |
 
 The byte after the status is the **version of the patch** (2 now; version 1 leaves it 0). A command
@@ -670,6 +671,64 @@ What the emulator run shows for whole pictures (`tests/test_direct_draw.py`): th
 decoded alternately from the two buffers, with still one file on the card; a wrong sum and a stalled
 frame are handled as described; an upload and `08` work afterwards; the stock image refuses nothing and
 is sent nothing.
+
+#### Version 16: the light
+
+**What the stock firmware does with its light** (read from the image, and run in the emulator, 26 Nov
+2026). The strip on the pump head is 14 lights of the WS2812 kind on one wire: the firmware keeps a byte
+for each bit (`FC` one, `E0` nought; green, red, blue, high bit first; 336 bytes at `0x20005B54`) and
+has them sent from there (`0x3DAE8`). Its state is at `0x200007B0`: `+8` 1 when the motherboard's signal
+is passed through, `+0xA` what the cooler shows otherwise (0 one colour, 2 by the CPU's temperature, 3
+by the screen), `+0x20` fourteen colours, a word each, `0x00RRGGBB`. Command `02`'s fourth byte sets
+those: 0 the motherboard, 1 the temperature, 2 the screen.
+
+- **A light is one pixel.** With "screen", the image screen's timer calls `0x2FD5C` ten times a second:
+  it reads 14 pixels of the frame buffer and writes them to those fourteen words as they are (RGB565
+  made 24 bits wide). The pixels, as x, y in the 480 x 640 picture, in the order of the lights: (5, 635),
+  (5, 505), (5, 405), (5, 305), (5, 205), (5, 105), (5, 5) and then (475, 5), (475, 105), (475, 205),
+  (475, 305), (475, 405), (475, 505), (475, 635). So seven lights go up the picture's left side and
+  seven down its right, and a light knows nothing of the picture but one pixel, 5 in from the edge.
+- **Nothing between two colours.** A task (`0x72ED0`, every 35 ms) runs the light's loop (`0x2F910`),
+  which sends the fourteen when they differ from what it sent last. No fade, no change to the values.
+- **It reads the buffer that is being drawn into** (LVGL's `buf_act`), not the one on the glass. With
+  the stock firmware the two hold the same picture. Since patch 11 they do not while frames are drawn:
+  the light is one frame behind, which nobody sees while frames keep coming, and a page that is drawn
+  once and stays has the edge colours of the page before it. (Seen in the emulator: after one drawn
+  yellow frame the fourteen words were still those of the stored picture.)
+
+**Version 16 has the host say the colours** (command `24`, see the head of `tools/fw/patch.py` for its
+bytes: 64 in one packet, because 14 colours do not fit a command's 39). The sixth jump is the light's
+task itself: while the host's colours are on, the task comes round every 16 ms, moves each of the 42
+values a step towards where the host said (a share of what is left, the host says how large; 8.8 fixed
+point), writes the fourteen words and lets the stock loop send them. The stock picking still runs and
+writes the same words ten times a second; the task writes over them before the loop looks. Three
+seconds without the command and the cooler picks again by itself, from where the lights are. What is
+"on" otherwise stays command `02`'s business.
+
+In the emulator (`tests/test_direct_draw.py`): from the stock picking's colours the lights are on their
+way after 80 ms and at the host's colours, to the last bit, a second later; nothing is sent once they
+are there; pace 0 is at once; a drawn frame changes nothing; given back, and after three seconds'
+silence, the wire has the stock picking's colours again and the task its 35 ms. The code that runs all
+the time (the two loop hooks and the USB handler) lies at the same addresses as in version 15.
+
+What deephack puts in the command is `deephack/light.py`: for each light a share of a strip a quarter
+of the picture wide, weighted by how much colour is there, lifted for dark pictures. 0.25 ms a picture.
+
+**Version 16 on the cooler** (26 Nov 2026, 463 904 bytes; off the bus for 11.8 s). Before it was sent,
+the RAM it newly uses was read from the cooler (`21`): `0x2000B400` to `0x20010000` is not zero there,
+as it is in the emulator, but what the chip woke up with, and not a byte of it changed through five
+seconds, an options command and five drawn frames. Then, with the screen drawn black and the webcam on
+the RAM sticks beside the pump head, where the right side's light falls:
+
+- All 14 red, green, blue: the sticks red, green, blue. Left side green and right side blue: the sticks
+  blue, and green on the case wall at the other side. So lights 7 to 13 are the picture's right side.
+- One light white at a time: 7 lit the top of the sticks, 10 their middle, 13 their bottom. The left
+  side's lights cannot be seen from where the camera stands; their order is the stock firmware's.
+- From off to white at the pace of a page (two thirds of the way in 0.4 s): darker to brighter over
+  seven frames, 0.1 s apart. A command and its answer: 0.4 ms.
+- deephack's engine with pictures of its own: a picture's red half gave red on its side and its blue
+  half blue; pages gave the colour of what is on them (the Claude Code page orange, the weather page
+  blue, a red album cover red).
 
 #### On the cooler
 
