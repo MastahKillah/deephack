@@ -236,3 +236,19 @@ def test_preview_never_reaches_the_cooler_and_is_promoted_when_shown(tmp_path, m
     clock[0] += engine.MIN_UPLOAD_INTERVAL + 1
     eng._device_step(True)
     assert cooler.flash_writes == 1 and cooler.screen == ("jpg", 1) and cooler.still(1).getpixel((5, 5))[0] > 200
+
+
+def test_the_chosen_modes_own_lights_are_autos(monkeypatch):
+    a, clock = make(), [0.0]
+    step(a, clock, monkeypatch)
+    assert a.lights is None and a.lights_fade is None        # the fallback says nothing: the picture's edge
+    own = [(1, 2, 3)] * 14
+    a.children["b"].lights, a.children["b"].lights_fade = own, 0.25
+    step(a, clock, monkeypatch)
+    assert a.lights is None                                  # b is not on screen: its lights are nobody's
+    a.children["b"].active = True
+    step(a, clock, monkeypatch)
+    assert a.chosen == "b" and a.lights == own and a.lights_fade == 0.25
+    a.children["b"].active = False
+    step(a, clock, monkeypatch, auto.LINGER + 1)
+    assert a.chosen == "weather" and a.lights is None and a.lights_fade is None

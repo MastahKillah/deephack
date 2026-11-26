@@ -55,6 +55,7 @@ CARD = (255, 255, 255, 14)
 TEXT, MUTED, DIM = (240, 242, 248), (140, 146, 166), (86, 92, 112)
 CPU_C, GPU_C, MEM_C, FAN_C = (255, 140, 82), (120, 206, 126), (112, 162, 255), (120, 210, 230)
 AMBER, RED = (240, 180, 70), (236, 96, 96)
+CPU_LIMITS, GPU_LIMITS = (85, 95), (80, 88)      # °C from which a temperature is warm, and hot
 
 
 # ------------------------------------------------------------------ readings
@@ -446,7 +447,7 @@ def _temp_range(readings: list[Reading], key: str) -> tuple[float, float]:
     return lo, hi
 
 
-def _temp_colour(value: float, warm: float, hot: float):
+def temp_colour(value: float, warm: float, hot: float):
     return RED if value >= hot else AMBER if value >= warm else TEXT
 
 
@@ -505,13 +506,13 @@ def render_system(readings: list[Reading], now: float, span: float, live: bool =
         chart(img, (x0 + 16, y + 84, x1 - 16, y + h - 12), shown, t0, now, colour, line,
               area, _temp_range(shown, line) if line else (0, 100))
 
-    for i, (name, colour, temp_key, load_key, power_key, warm, hot) in enumerate((
-            ("CPU", CPU_C, "cpu_temp", "cpu_load", "cpu_power", 85, 95),
-            ("GPU", GPU_C, "gpu_temp", "gpu_load", "gpu_power", 80, 88))):
+    for i, (name, colour, temp_key, load_key, power_key, (warm, hot)) in enumerate((
+            ("CPU", CPU_C, "cpu_temp", "cpu_load", "cpu_power", CPU_LIMITS),
+            ("GPU", GPU_C, "gpu_temp", "gpu_load", "gpu_power", GPU_LIMITS))):
         temp, load, power = getattr(latest, temp_key), getattr(latest, load_key), getattr(latest, power_key)
         temps = [getattr(r, temp_key) for r in shown if getattr(r, temp_key) is not None]
         if temp is not None:
-            value, value_colour = f"{temp:.0f}°", _temp_colour(temp, warm, hot)
+            value, value_colour = f"{temp:.0f}°", temp_colour(temp, warm, hot)
             sub = f"{_fmt(load, '%')} load" + (f"  ·  {power:.0f} W" if power is not None else "")
         else:
             value, value_colour = _fmt(load, "%"), TEXT

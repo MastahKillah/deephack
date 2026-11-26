@@ -124,6 +124,9 @@ class Auto(Mode):
         self.tick = self.children[self.chosen].tick if self.chosen else None   # the mode on screen may want
         self.quality = self.children[self.chosen].quality if self.chosen else None    # its frames faster for a
                                                                                # while, and packed its way
+        shown = self.children[self.chosen] if self.chosen else None            # ... and the lights are its own,
+        self.lights = shown.lights if shown else None                          # when it says what they show
+        self.lights_fade = shown.lights_fade if shown else None
         if self.chosen is None:
             fallback = self.children[self.fallback]
             self.status = f"{fallback.title}: {fallback.status}" if fallback.status else "Looking for something to show"

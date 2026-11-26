@@ -8,6 +8,17 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
+## Unreleased
+
+- **Game Cover: temperatures while you play.** With the direct drawing firmware a strip along the bottom of
+  the cover shows the CPU's and the GPU's temperature and load, new every second, for as long as the game
+  runs. A setting leaves the cover alone. On DeepCool's own firmware the mode is as it was.
+- **Game Cover: the lights as two temperature meters** (firmware 16): the CPU's up the left side, the GPU's
+  up the right, blue through green and yellow to red, and a side that pulses red when it is hot. Or the
+  cover's colours, as before: a setting.
+- **Auto** hands on the lights of the mode that has the screen. Until now the Claude Code page's fire and a
+  game's team colours were only shown with that mode picked itself, not when Auto showed it.
+
 ## 0.17.0 (2026-11-26)
 
 - **The lights as a mode's own.** With the direct drawing firmware 16 a mode can say what the 14 lights on
