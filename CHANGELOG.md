@@ -8,7 +8,7 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
-## Unreleased
+## 0.17.0 (2026-11-26)
 
 - **The lights as a mode's own.** With the direct drawing firmware 16 a mode can say what the 14 lights on
   the pump head show, in place of the colours of its picture's edge. The window's preview shows them too.
