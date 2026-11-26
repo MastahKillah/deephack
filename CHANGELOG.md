@@ -8,7 +8,7 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
-## Unreleased
+## 0.16.0 (2026-11-26)
 
 - **Claude Code: a live page.** With the direct drawing firmware the numbers no longer wait for a refresh:
   today's tokens and requests are shown in full and count up as requests are logged, and the limit bars
