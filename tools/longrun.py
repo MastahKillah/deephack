@@ -6,7 +6,8 @@ Each part of the plan is `mode=hours`, with settings for the mode after a colon 
 them with commas; a value may hold `=` and `:` but no comma). The settings file used is a copy of the
 app's own, so nothing the run changes stays. A line a minute:
 
-    time  mode  pictures a second  refused  longest wait between two pictures  errors  share of a CPU core
+    time  mode  pictures a second  refused  longest wait between two pictures  the lights told their colours
+          a second (and not taken by the cooler)  errors  share of a CPU core
           memory (working set / private, MB)  handles  threads  what the mode says
 
 and for a video how often its stream was opened, for TikTok how many videos it has played. The app must
@@ -67,7 +68,22 @@ class Count:
 
     def reset(self, now: float) -> None:
         self.drawn = self.refused = self.failed = self.bytes = 0
+        self.lit = self.unlit = 0
         self.last, self.wait, self.took = now, 0.0, 0.0
+
+    def light(self, real, dev, packet):
+        """The lights told their colours (or given back): how often, and how often the cooler did not take it."""
+        try:
+            taken = real(dev, packet)
+        except Exception as error:
+            with self.lock:
+                self.unlit += 1
+                self.errors.append(f"light: {type(error).__name__}: {error}")
+            raise
+        with self.lock:
+            self.lit += 1
+            self.unlit += not taken
+        return taken
 
     def draw(self, real, dev, jpeg, *args, **kwargs):
         started = time.perf_counter()
@@ -142,6 +158,8 @@ def main() -> int:
     count = Count()
     real_draw = device.Mystique.draw_jpeg
     device.Mystique.draw_jpeg = lambda dev, jpeg, *a, **k: count.draw(real_draw, dev, jpeg, *a, **k)
+    real_light = device.Mystique._light
+    device.Mystique._light = lambda dev, packet: count.light(real_light, dev, packet)
     real_hook = sys.excepthook
     stderr_lines: list[str] = []
 
@@ -181,6 +199,7 @@ def main() -> int:
                     wall, cpu = time.perf_counter() - started, time.process_time() - cpu
                     with count.lock:
                         drawn, refused, failed, size, wait, took = count.drawn, count.refused, count.failed, count.bytes, count.wait, count.took
+                        lit, unlit = count.lit, count.unlit
                         errors, count.errors = count.errors, []
                         count.reset(time.perf_counter())
                     if stderr_lines:
@@ -196,7 +215,8 @@ def main() -> int:
                         more += f"  videos {changes} ({len(seen)} different)"
                     total, lines = total + drawn, lines + 1
                     say(f"{mode_id:9s} {drawn / wall:5.1f}/s  refused {refused:3d}  wait {wait:5.2f} s  "
-                        f"{size / max(1, drawn) / 1024:4.0f} KB {1000 * took / max(1, drawn):3.0f} ms  errors {failed + len(errors):2d}  "
+                        f"{size / max(1, drawn) / 1024:4.0f} KB {1000 * took / max(1, drawn):3.0f} ms  "
+                        f"lights {lit / wall:4.1f}/s not taken {unlit:2d}  errors {failed + len(errors):2d}  "
                         f"cpu {100 * cpu / wall:3.0f} %  mem {working:5.0f}/{private:5.0f} MB  handles {handles:5d}  threads {threads:3d}{more}  | "
                         f"{eng._dev_state} | {(mode.status if mode else '')[:70]}")
                     for error in errors:
