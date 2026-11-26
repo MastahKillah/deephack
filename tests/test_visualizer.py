@@ -482,3 +482,34 @@ def test_a_cooler_that_shows_a_picture_every_turn_gets_fifty_five_a_second(monke
     m.direct = False                                                      # DeepCool's firmware: the flipbook, as ever
     asyncio.run(m.frame())
     assert m.tick == visualizer.TICK and m.quality is None
+
+
+def test_the_lights_are_two_level_meters_in_the_looks_colours():
+    """Issue #57: the left side's lights rise with the low notes, the right side's with the high ones."""
+    silent = visualizer.lights("fire", 0.0, 0.0)
+    assert silent == [(0, 0, 0)] * device.LIGHTS
+    loud = visualizer.lights("fire", 1.0, 0.0)
+    assert all(max(c) == 255 for c in loud[:7]) and loud[7:] == [(0, 0, 0)] * 7           # the left side, all of it
+    assert loud[0] != loud[6] and loud[0][0] == 255                       # the look's colours from quiet to loud
+    half = visualizer.lights("fire", 0.0, 0.5)
+    lit = [max(c) > 0 for c in half[7:]]                                  # the right side, top to bottom
+    assert half[:7] == [(0, 0, 0)] * 7 and lit[-4:] == [True] * 4 and lit[:2] == [False] * 2     # from the bottom up
+    assert visualizer.lights("mono", 1.0, 1.0) == [(255, 255, 255)] * 14
+
+    listener = SpectrumListener()
+    m = visualizer.Visualizer({}, listener=listener)
+    m.direct = True
+    asyncio.run(m.frame())
+    assert m.lights == [(0, 0, 0)] * 14 and m.lights_fade == visualizer.LIGHT_FADE
+    levels = [0.0] * audio.BANDS
+    levels[2] = 1.0                                                       # a low note
+    listener.bars = (levels, levels)
+    asyncio.run(m.frame())
+    assert max(m.lights[0]) > 0 and m.lights[7:] == [(0, 0, 0)] * 7
+    asyncio.run(m.frame())                                                # the same sound: no picture, the lights stay
+    assert max(m.lights[0]) > 0
+
+    orb = visualizer.Visualizer({"style": "orb"}, listener=FakeListener())
+    orb.listener.now = (0.0, 1.0)
+    asyncio.run(orb.frame())
+    assert orb.lights[:7] == [(0, 0, 0)] * 7 and all(max(c) == 255 for c in orb.lights[7:])

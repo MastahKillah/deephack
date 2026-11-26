@@ -18,6 +18,9 @@ to it. What each light gets here:
 All of it on a picture reduced to 6 x 21 cells first, so it costs well under a millisecond.
 
 cooler_colours is what DeepCool's firmware picks, for the window's preview of a cooler that picks itself.
+
+A mode may say what the lights show itself (Mode.lights, issue #57): `led`, `meter` and `arrange` are for
+that.
 """
 from __future__ import annotations
 
@@ -85,6 +88,31 @@ def _side(cells, mirrored: bool) -> list[tuple[float, float, float]]:
         level = bright ** LIFT
         lights.append(tuple(level * (c / top) ** (DEEPEN if c < top else 1) for c in (red, green, blue)))
     return lights
+
+
+def led(colour, power: float = 1.0) -> tuple[int, int, int]:
+    """A colour as a picture has it, as what a light shows at `power` (0 to 1) of what it can: the colour
+    alone says which colour, not how bright. Deepened as the picked ones are."""
+    r, g, b = (_TO_LIGHT[max(0, min(255, round(c)))] for c in colour)
+    top = max(r, g, b)
+    if top <= 0 or power <= 0:
+        return 0, 0, 0
+    return tuple(round(255 * min(1.0, power) * (c / top) ** (DEEPEN if c < top else 1)) for c in (r, g, b))
+
+
+def meter(level: float, colours, power: float = 1.0) -> list[tuple[int, int, int]]:
+    """A side's lights as a level meter, bottom to top: as many of them lit as `level` (0 to 1) of their
+    number, the topmost of those as much as is left of it. `colours`: theirs, bottom to top."""
+    lit = max(0.0, min(1.0, level)) * len(colours)
+    return [led(colour, power * max(0.0, min(1.0, lit - i))) for i, colour in enumerate(colours)]
+
+
+def arrange(left, right) -> list[tuple[int, int, int]]:
+    """The 14 lights in the cooler's order from the two sides' seven, each given bottom to top."""
+    left, right = list(left), list(right)
+    if len(left) != SIDE or len(right) != SIDE:
+        raise ValueError(f"a side has {SIDE} lights")
+    return left + right[::-1]
 
 
 def cooler_colours(picture: Image.Image) -> list[tuple[int, int, int]]:

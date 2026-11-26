@@ -304,3 +304,49 @@ def test_the_mode_on_a_cooler_that_stores_is_as_it_was(claude):
     picture = asyncio.run(mode.frame())
     assert picture is not None and mode.tick is None and mode._live is None
     assert mode.status == "500 output tokens today" and asyncio.run(mode.frame()) is None
+
+
+# ---- the pump head's lights (issue #57)
+def _steady() -> float:
+    return 1.0                                                            # no flicker
+
+
+def test_the_lights_are_a_fire_while_a_session_works_and_amber_while_one_waits():
+    now = time.time()
+    busy, waiting, idle = (cu.Session(state, state, state, now) for state in ("busy", "waiting", "idle"))
+    assert cu.live_lights([idle], 5e6, 0.0) is None and cu.live_lights([], 0, 0.0) is None       # the page's own edge
+    thinking = cu.live_lights([busy], 0, 0.0, _steady)                    # works, and nothing has burnt this minute
+    assert len(thinking) == 14 and max(thinking[0]) == 255 and thinking[1:13] == [(0, 0, 0)] * 12 and thinking[13] == thinking[0]
+    some = cu.live_lights([busy], 50_000, 0.0, _steady)                   # the flame's first size: two lights and a bit
+    assert [max(c) > 0 for c in some[:7]] == [True, True, True, False, False, False, False]
+    most = cu.live_lights([busy], 5e6, 0.0, _steady)
+    assert all(max(c) == 255 for c in most) and most[0][1] < most[6][1]   # all seven: red below, yellow above
+    assert most[:7] == most[13:6:-1]                                      # the same up both sides
+    flickering = cu.live_lights([busy], 5e6, 0.0, lambda: 0.0)
+    assert all(140 < max(c) < 160 for c in flickering)                    # never under six tenths
+
+    asked = cu.live_lights([waiting, idle], 0, 0.0)
+    assert len(set(asked)) == 1 and asked[0][0] > asked[0][1] > asked[0][2]              # amber, all of them
+    high, low = cu.live_lights([waiting], 0, cu.LIGHT_BREATH / 4), cu.live_lights([waiting], 0, 3 * cu.LIGHT_BREATH / 4)
+    assert high[0][0] > 1.8 * low[0][0] and low[0][0] > 40                # it breathes, and never goes out
+    both = cu.live_lights([busy, waiting], 5e6, 0.0, _steady)
+    assert both[5] == both[6] == asked[0] and both[:5] == most[:5]        # the top two say "waiting" over the fire
+
+
+def test_the_mode_gives_its_lights_only_on_the_live_page(claude):
+    mode = claude
+    mode.said("m1", 500)
+    mode.state("busy")
+    asyncio.run(mode.frame())
+    assert mode.lights is not None and len(mode.lights) == 14 and max(mode.lights[0]) > 0 and mode.lights_fade == 0.25
+    mode.state("idle")
+    mode.again()
+    asyncio.run(mode.frame())
+    assert mode.lights is None
+    mode.state("waiting", waitingFor="input needed")
+    mode.again()
+    asyncio.run(mode.frame())
+    assert mode.lights is not None and len(set(mode.lights)) == 1
+    mode.direct = False                                                   # a cooler that stores its pictures: no lights
+    asyncio.run(mode.frame())
+    assert mode.lights is None

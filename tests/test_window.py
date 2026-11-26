@@ -446,3 +446,28 @@ def test_the_previews_lights_fade_as_the_coolers_do(window):
     window._on_frame([to_qimage(red)], 0, False)
     assert preview._lights[0] == [248.0, 0.0, 0.0] and not preview._fade.isActive()
     preview.grab()                                                        # and it paints
+
+
+def test_the_preview_shows_a_modes_own_lights(window):
+    """Issue #57: a mode may say what the lights show; the preview has them, for the page that is open."""
+    from deephack import device, light
+    from deephack.engine import to_qimage
+
+    picture = _halves((255, 0, 0), (0, 0, 255))
+    preview = window._preview
+    window._on_frame([to_qimage(picture)], 0, False)
+    own = light.arrange([(0, 255, 0)] * 7, [(255, 255, 0)] * 7)
+    window._on_lights("scene", own)                                       # another mode's: not this page's
+    assert preview.lights() == light.colours(picture)
+    window._on_lights("weather", own)
+    assert preview.lights() == own
+    window._light_level.setCurrentIndex(window._light_level.findData(50))
+    assert preview.lights()[0] == (0, 128, 0)
+    window._on_state(state(device.LIGHT_VERSION - 1))                     # a cooler that picks itself does not take them
+    assert preview.lights() == light.cooler_colours(picture)
+    window._on_state(state(device.LIGHT_VERSION))
+    window._on_lights("weather", None)                                    # the mode leaves them to the picture again
+    assert preview.lights() == light.colours(picture, 0.5)
+    window.view_mode("scene")                                             # the other page: that mode's
+    window._on_preview("scene", [to_qimage(picture)], 0, False)
+    assert preview.lights()[0] == (0, 128, 0)

@@ -25,7 +25,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from PIL import Image, ImageDraw
 
-from .. import highlights, render
+from .. import highlights, light, render
 from ..config import config_dir
 from ..render import H, W
 from . import video
@@ -288,6 +288,18 @@ def _points(score: str | None) -> int:
         return int(score or 0)
     except ValueError:
         return 0
+
+
+def live_lights(game: Game) -> list:
+    """The pump head's lights while a game is on (firmware patch 16): each side in the colour of the team
+    whose score stands on it, the away team's on the left, and the side that is behind dimmer, as its score
+    is. A team whose colour is black gets white."""
+    a, h = _points(game.away.score), _points(game.home.score)
+    sides = []
+    for side, behind in ((game.away, a < h), (game.home, h < a)):
+        colour = _rgb(side.color, (255, 255, 255))
+        sides.append([light.led(colour if max(colour) >= 40 else (255, 255, 255), 0.3 if behind else 0.8)] * light.SIDE)
+    return light.arrange(*sides)
 
 
 def render_live(team: str, game: Game) -> Image.Image:
@@ -584,6 +596,7 @@ class Nba(Mode):
     async def frame(self):
         self.active = self.claiming()
         if await self._highlights():
+            self.lights = None                             # (the video's own edge)
             self.tick = video.TICK                         # as sharp as the cooler can take in the video's time
             self.quality = video.quality_for(self.quality or video.QUALITY, self.sent_bytes, self._reel.rate, self.fast, self.turn)
             return self._reel_frame()
@@ -600,6 +613,7 @@ class Nba(Mode):
             return None
         self._schedule(upcoming, live)
         self._games = (past, upcoming, live)
+        self.lights, self.lights_fade = (live_lights(live), 0.6) if live is not None else (None, None)
         self.active = self.claiming()
         if live is not None:
             self.status = f"LIVE {live.away.abbr} {live.away.score or 0} – {live.home.score or 0} {live.home.abbr} · {live_label(live)}"

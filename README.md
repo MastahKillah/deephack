@@ -59,6 +59,12 @@ pictures still glow, and the cooler fades from one colour to the next. **Light b
 The window shows the lights beside its preview of the screen, as the cooler has them for that picture:
 deephack's colours and their fade, or the cooler's own one pixel a light on a firmware that picks itself.
 
+Some modes say what the lights show themselves (with that firmware; everywhere else the lights are as
+above): the **Visualizer** makes them two level meters in its colours, the left side for the low notes and
+the right side for the high ones; the **Claude Code** page a fire up both sides while a session works,
+higher the more tokens a minute burn, and amber that breathes while a session waits for you; **NBA**, while
+your team's game is on, each side in the colour of the team whose score stands there, the one behind dimmer.
+
 **Keep on screen** (in Settings) decides whether the cooler stays on deephack's image or cycles through every image
 stored on it (the cooler's own slideshow).
 

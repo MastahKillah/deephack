@@ -32,6 +32,7 @@ LIGHT_EVERY = 0.06           # seconds between two times the lights' colours are
 LIGHT_AGAIN = 1.0            # ... and at the most: the cooler keeps them for device.LIGHT_KEEP seconds, then picks itself
 LIGHT_FADE, LIGHT_FADE_FAST = 0.4, 0.12      # seconds in which the lights cover two thirds of the way to a new colour:
                                              # under a page, and under pictures that come many a second
+LIGHT_EVERY_OWN = 0.03       # ... and for a mode that says the colours itself (Mode.lights): it may be following a beat
 MIN_UPLOAD_INTERVAL = 8.0     # seconds between flash writes, whatever the mode asks for
 REOPEN_INTERVAL = 3.0
 TICK = 0.5
@@ -127,6 +128,8 @@ def _placeholder_frames(mode: Mode) -> tuple[list[QImage], int]:
 
 class Engine(QThread):
     frameChanged = Signal(object, int, bool)   # list[QImage], loop duration in ms (0 for a still), is_placeholder
+    lightsChanged = Signal(str, object)        # mode id, and what that mode has the lights show (Mode.lights; None: the
+                                               # engine picks them from its picture). For the window's preview
     previewChanged = Signal(str, object, int, bool)   # mode id, then as frameChanged
     stateChanged = Signal(dict)
 
@@ -160,6 +163,7 @@ class Engine(QThread):
         self._light_colours: list | None = None  # ... and the colours
         self._light_sent: tuple | None = None    # (colours, pace) the cooler was last told
         self._light_at = 0.0                     # ... and when
+        self._own_said: dict[str, list | None] = {}     # mode id -> its own lights, as last given to the window
         self._book_storing: list | None = None   # [key, index of frame 0, frames stored so far, frames to store]
         self._book_room = True                   # False: the cooler is too full for a flipbook
         self._flipped = 0.0                      # when the last stored frame of a flipbook was shown
@@ -274,6 +278,14 @@ class Engine(QThread):
         self._frame_seq += 1
         self.frameChanged.emit(*_qt_frames(img), False)
 
+    def _say_lights(self, mode: Mode) -> None:
+        """Tell the window what this mode has the lights show, when that has changed."""
+        own = mode.lights if mode.lights is not None and len(mode.lights) == device.LIGHTS else None
+        own = None if own is None else [tuple(colour) for colour in own]
+        if self._own_said.get(mode.id) != own:
+            self._own_said[mode.id] = own
+            self.lightsChanged.emit(mode.id, own)
+
     def _emit_placeholder(self) -> None:
         self._placeholder_shown = self._mode.placeholder
         self.frameChanged.emit(*_placeholder_frames(self._mode), True)
@@ -306,6 +318,7 @@ class Engine(QThread):
         except Exception:
             traceback.print_exc()
             mode.status, img = "Mode error, see console", None
+        self._say_lights(mode)
         if img is not None:
             if isinstance(img, Part):
                 img = img.whole
@@ -339,6 +352,7 @@ class Engine(QThread):
                         traceback.print_exc()
                         self._mode.status = "Mode error, see console"
                         img = None
+                    self._say_lights(self._mode)
                     if img is not None:
                         self._set_frame(img)
                     elif self._frame is None and self._mode.placeholder != self._placeholder_shown:
@@ -589,16 +603,24 @@ class Engine(QThread):
                 return
             what, picture = self._lit
             level = int(self.config.get("light_level") or 0)
-            if self._light_for != (what, level):
-                self._light_for, self._light_colours = (what, level), light.colours(picture, level / 100)
-            quick = isinstance(self._frame, (Animation, Flipbook)) or (self._mode.tick or TICK) <= FAST_TICK
-            told = (self._light_colours, device.light_pace(LIGHT_FADE_FAST if quick else LIGHT_FADE))
+            own = self._mode.lights
+            if own is not None and len(own) == device.LIGHTS:      # the mode says what they show
+                fade = self._mode.lights_fade
+                told = ([tuple(round(c * level / 100) for c in colour) for colour in own],
+                        device.light_pace(LIGHT_FADE_FAST if fade is None else fade))
+                every = LIGHT_EVERY_OWN
+            else:
+                if self._light_for != (what, level):
+                    self._light_for, self._light_colours = (what, level), light.colours(picture, level / 100)
+                quick = isinstance(self._frame, (Animation, Flipbook)) or (self._mode.tick or TICK) <= FAST_TICK
+                told = (self._light_colours, device.light_pace(LIGHT_FADE_FAST if quick else LIGHT_FADE))
+                every = LIGHT_EVERY
             since = now - self._light_at
-            if (told != self._light_sent and since >= LIGHT_EVERY) or since >= LIGHT_AGAIN or self._light_sent is None:
+            if (told != self._light_sent and since >= every) or since >= LIGHT_AGAIN or self._light_sent is None:
                 self._dev.set_light(*told)
                 self._light_sent, self._light_at = told, now
             elif told != self._light_sent:
-                self._again = min(self._again or LIGHT_EVERY, LIGHT_EVERY - since)
+                self._again = min(self._again or every, every - since)
         except (usb.core.USBError, RuntimeError):
             traceback.print_exc()
             self._drop_device()

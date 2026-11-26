@@ -8,6 +8,17 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
+## Unreleased
+
+- **The lights as a mode's own.** With the direct drawing firmware 16 a mode can say what the 14 lights on
+  the pump head show, in place of the colours of its picture's edge. The window's preview shows them too.
+- **Visualizer:** the lights are two level meters in the look's colours, the left side's for the low notes
+  and the right side's for the high ones, as the spectrum has them.
+- **Claude Code:** a fire up both sides while a session works, higher the more tokens a minute burn, each
+  light flickering; and amber that breathes while a session waits for you.
+- **NBA:** while your team's game is on, each side in the colour of the team whose score stands on it, and
+  the side that is behind dimmer.
+
 ## 0.16.0 (2026-11-26)
 
 - **Claude Code: a live page.** With the direct drawing firmware the numbers no longer wait for a refresh:

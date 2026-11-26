@@ -24,6 +24,7 @@ import asyncio
 import json
 import math
 import os
+import random
 import re
 import time
 from dataclasses import dataclass, field
@@ -33,7 +34,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from .. import render
+from .. import light, render
 from ..config import config_dir
 from ..render import H, W
 from .base import Mode, Setting
@@ -539,6 +540,37 @@ def ago(seconds: float) -> str:
     return f"{s // 3600} h" if s >= 2 * 3600 else f"{s // 60} min" if s >= 60 else "a moment"
 
 
+LIGHT_FIRE = ((255, 100, 0), (255, 120, 0), (255, 140, 0), (255, 160, 10), (255, 180, 30), (255, 200, 60), (255, 225, 110))
+                                # the pump head's lights as a fire, a side's seven from the bottom up (patch 16): as
+                                # a picture would have the colours. A light gets much less green of them (light.led):
+                                # 14 of 255 at the bottom, which is ember red, to 173 at the top, which is yellow
+LIGHT_BREATH = 3.0              # seconds from one breath to the next of the lights that say "a session waits for you"
+
+
+def live_lights(sessions, burn: float, t: float, flicker=random.random) -> list | None:
+    """What the pump head's 14 lights show for the live page: a fire up both sides while a session works,
+    higher the more tokens a minute burn (one light for a session that thinks, all seven from three
+    million), each light flickering by itself; and amber that breathes while a session waits for its
+    user: the top two lights of either side over a fire, all of them without one. None when no session
+    works or waits: the lights are the page's edge then, as the engine picks them."""
+    working = any(s.state == "busy" for s in sessions)
+    waiting = any(s.state == "waiting" for s in sessions)
+    if not working and not waiting:
+        return None
+    breath = 0.25 + 0.3 * (0.5 + 0.5 * math.sin(2 * math.pi * t / LIGHT_BREATH))
+    sides = []
+    for _ in range(2):
+        side = []
+        for at in range(light.SIDE):
+            lit = max(0.0, min(1.0, (1 + flame_level(burn) * 1.2) - at)) if working else 0.0
+            if waiting and (not working or at >= light.SIDE - 2):
+                side.append(light.led(AMBER, breath))
+            else:
+                side.append(light.led(LIGHT_FIRE[at], lit * (0.6 + 0.4 * flicker())))
+        sides.append(side)
+    return light.arrange(*sides)
+
+
 def flame_level(burn: float) -> int:
     """How large the flame is for so many tokens a minute: 0 (nothing burns) to 5."""
     return 0 if burn < 1 else 1 + sum(burn >= level for level in FLAME_LEVELS)
@@ -796,6 +828,7 @@ class ClaudeUsage(Mode):
                 f"{at_work} working" if at_work else "", f"{compact(trail[-1])} tokens a minute" if trail[-1] else "",
                 f"5-hour limit {five[0]}%" if five else "", f"{compact(totals['output'])} output tokens today") if text)
         limits, totals, sessions, trail, last = self._live
+        self.lights, self.lights_fade = live_lights(sessions, trail[-1], now), 0.25
         moving = [roll.step(now - (self._stepped or now)) for roll in self._rolls.values()]
         self._stepped = now
         lively = any(moving) or any(s.state == "busy" for s in sessions)
@@ -816,7 +849,7 @@ class ClaudeUsage(Mode):
         self.active = await self._activity.busy()
         if self.direct:
             return await self._live_frame()
-        self.tick = None
+        self.tick, self.lights = None, None
         if time.monotonic() < self._next:
             return None
         self._next = time.monotonic() + int(self.values["refresh"]) * 60

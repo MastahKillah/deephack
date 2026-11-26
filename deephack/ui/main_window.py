@@ -68,6 +68,7 @@ class MainWindow(QMainWindow):
         self.quitting = False
         self._placeholder = True
         self._state: dict = {}
+        self._own: dict[str, list | None] = {}   # mode id -> what that mode has the lights show (engine.lightsChanged)
         self._viewing = ""                       # the mode whose page is open; config "mode" is the one on the cooler.
                                                  # Empty while the Settings page is
         self._live_frames: tuple | None = None   # last frames of the mode on the cooler, to show again
@@ -90,6 +91,7 @@ class MainWindow(QMainWindow):
 
         engine.frameChanged.connect(self._on_frame)
         engine.previewChanged.connect(self._on_preview)
+        engine.lightsChanged.connect(self._on_lights)
         engine.stateChanged.connect(self._on_state)
         if config.get("mode") not in BY_ID:
             config.set("mode", MODES[0].id)
@@ -760,7 +762,13 @@ class MainWindow(QMainWindow):
             there = (self._state or {}).get("device") == "connected" and running is not None
             itself = there and (running["patch"] < device.LIGHT_VERSION or bool(self.config.get("slideshow")))
             how = "cooler" if itself else "deephack"
-        self._preview.set_lights(how, int(self.config.get("light_level") or 0) / 100)
+        self._preview.set_lights(how, int(self.config.get("light_level") or 0) / 100, self._own.get(self._viewing))
+
+    def _on_lights(self, mode_id: str, colours) -> None:
+        """A mode says what the lights show itself (or leaves it to the engine again: None)."""
+        self._own[mode_id] = colours
+        if mode_id == self._viewing:
+            self._refresh_lights()
 
     def _on_state(self, state: dict) -> None:
         self._state = state

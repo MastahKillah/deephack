@@ -119,3 +119,18 @@ def test_mode_switches_to_the_scoreboard_while_the_team_plays(tmp_path, monkeypa
 
     off = nba.Nba({"team": "GS", "live": "off"})
     assert asyncio.run(off.frame()) is not None and not off.status.startswith("LIVE")
+
+
+def test_the_lights_are_the_two_teams_colours_while_a_game_is_on():
+    """Issue #57. The away team's score stands on the left and the home team's on the right."""
+    from deephack import light
+
+    game = nba.parse_event(live_event())                                  # MEM 83 at GS 78; GS is fdb927, MEM has none
+    lights = nba.live_lights(game)
+    assert len(lights) == 14 and len(set(lights[:7])) == 1 and len(set(lights[7:])) == 1
+    assert lights[0] == light.led((255, 255, 255), 0.8)                   # no colour: white, and ahead: bright
+    assert lights[7] == light.led((0xFD, 0xB9, 0x27), 0.3)                # the home team's gold, behind: dim
+    black = nba.Game(game.when, "in", "", 1, nba.Side("BKN", "10", False, None, color="000000"),
+                     nba.Side("GS", "10", False, None, color="fdb927"))
+    level = nba.live_lights(black)
+    assert level[0] == light.led((255, 255, 255), 0.8) and level[7] == light.led((0xFD, 0xB9, 0x27), 0.8)     # a tie: both bright

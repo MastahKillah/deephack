@@ -138,6 +138,13 @@ class Mode:
                                                           # can put on its glass. 0.018 from patch 12: 55 a second
         self.audible = False                              # set by the engine: this is the mode on the cooler, not one
                                                           # that only shows in the window. Only that one may make sound
+        self.lights: list | None = None                   # set by the mode, in frame(): what the pump head's 14 lights
+                                                          # show while its picture is drawn, in place of what the engine
+                                                          # picks from that picture (None). 14 of (r, g, b) as the lights
+                                                          # take them, in the cooler's order: deephack.light has led,
+                                                          # meter and arrange for it. Firmware patch 16; else unused
+        self.lights_fade: float | None = None             # ... and the seconds in which they cover two thirds of the way
+                                                          # to a new colour (None: as for a picture that changes often)
 
     @classmethod
     def build(cls, settings) -> Mode:

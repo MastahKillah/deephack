@@ -21,6 +21,25 @@ def _engine(tmp_path, monkeypatch):
     return eng
 
 
+def _clock(monkeypatch) -> list:
+    """The engine's clock, to be set by the test (its first entry). Only the engine's: the module `time`
+    itself is everyone's, and a thread of another test that found it running backwards has died of it."""
+    import time
+
+    now = [100.0]
+
+    class Clock:
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+        @staticmethod
+        def monotonic() -> float:
+            return now[0]
+
+    monkeypatch.setattr(engine, "time", Clock())
+    return now
+
+
 def _show(eng, frame, steps=2, enabled=True):
     eng._set_frame(frame)
     for _ in range(steps):
@@ -142,8 +161,7 @@ def test_the_lights_follow_what_is_drawn(tmp_path, monkeypatch, cooler):
 def test_they_are_said_again_before_the_cooler_takes_them_back(tmp_path, monkeypatch, cooler):
     cooler.direct = 16
     eng = _engine(tmp_path, monkeypatch)
-    now = [100.0]
-    monkeypatch.setattr(engine.time, "monotonic", lambda: now[0])
+    now = _clock(monkeypatch)
     _show(eng, halves((255, 0, 0), (0, 0, 255)))
     told = cooler.light_commands
     now[0] += engine.LIGHT_AGAIN - 0.1
@@ -159,8 +177,7 @@ def test_a_new_colour_waits_its_turn_and_is_not_lost(tmp_path, monkeypatch, cool
     colour gets there."""
     cooler.direct = 16
     eng = _engine(tmp_path, monkeypatch)
-    now = [100.0]
-    monkeypatch.setattr(engine.time, "monotonic", lambda: now[0])
+    now = _clock(monkeypatch)
     first, second = halves((255, 0, 0), (0, 0, 255)), halves((0, 255, 0), (0, 255, 0))
     _show(eng, first)
     told = cooler.light_commands
@@ -239,3 +256,55 @@ def test_what_the_coolers_own_firmware_picks():
     assert all(c == (8, 12, 16) for i, c in enumerate(picked) if i not in (3, 13))
     assert len(light.COOLER_PIXELS) == device.LIGHTS
     assert light.cooler_colours(halves((255, 0, 0), (0, 0, 255)).resize((240, 320))) == [(248, 0, 0)] * 7 + [(0, 0, 248)] * 7
+
+
+# ---- a mode's own lights (issue #57)
+def test_a_colour_for_a_light_and_a_side_as_a_meter():
+    assert light.led((255, 0, 0)) == (255, 0, 0) and light.led((128, 0, 0)) == (255, 0, 0)       # the colour, not how bright
+    assert light.led((255, 0, 0), 0.5) == (128, 0, 0) and light.led((255, 0, 0), 0) == light.led((0, 0, 0)) == (0, 0, 0)
+    orange = light.led((255, 128, 0))
+    assert orange[0] == 255 and 20 < orange[1] < 60 and orange[2] == 0    # deeper than the picture's, as the picked ones
+    assert light.led((300, -4, 0), 2.0) == (255, 0, 0)
+    reds = [(255, 0, 0)] * 7
+    assert light.meter(0, reds) == [(0, 0, 0)] * 7 and light.meter(1, reds) == [(255, 0, 0)] * 7
+    half = light.meter(0.5, reds)                                         # three and a half of seven, from the bottom
+    assert half[:3] == [(255, 0, 0)] * 3 and half[3] == (128, 0, 0) and half[4:] == [(0, 0, 0)] * 3
+    assert light.meter(1, reds, power=0.5) == [(128, 0, 0)] * 7 and light.meter(7, reds) == light.meter(1, reds)
+    left, right = [(i, 0, 0) for i in range(7)], [(0, i, 0) for i in range(7)]
+    all14 = light.arrange(left, right)                                    # up the left side, down the right
+    assert all14[:7] == left and all14[7] == (0, 6, 0) and all14[13] == (0, 0, 0) and len(all14) == device.LIGHTS
+    with pytest.raises(ValueError):
+        light.arrange(left, right[:6])
+
+
+def test_a_mode_may_say_what_the_lights_show(tmp_path, monkeypatch, cooler):
+    cooler.direct = 16
+    eng = _engine(tmp_path, monkeypatch)
+    now = _clock(monkeypatch)
+    said = []
+    eng.lightsChanged.connect(lambda mode, colours: said.append((mode, colours)))
+    picture = halves((255, 0, 0), (0, 0, 255))
+    _show(eng, picture)
+    assert cooler.lights[0] == light.colours(picture)                     # it says nothing: the picture's edge
+    own = light.arrange([(0, 255, 0)] * 7, [(255, 255, 0)] * 7)
+    eng._mode.lights = own
+    eng._light_step(True)
+    assert cooler.lights[0] == light.colours(picture)                     # too soon after the last ones ...
+    now[0] += engine.LIGHT_EVERY_OWN
+    eng._light_step(True)
+    assert cooler.lights == (own, device.light_pace(engine.LIGHT_FADE_FAST))      # ... and then they are the mode's
+    eng._mode.lights_fade = 0.6
+    eng.config.set("light_level", 50)
+    now[0] += engine.LIGHT_EVERY_OWN
+    eng._light_step(True)
+    assert cooler.lights == ([(0, 128, 0)] * 7 + [(128, 128, 0)] * 7, device.light_pace(0.6))
+    eng._mode.lights = [(1, 2, 3)] * 5                                    # not 14 of them: as if it had said nothing
+    now[0] += 1
+    eng._light_step(True)
+    assert cooler.lights[0] == light.colours(picture, 0.5)
+    eng._mode.lights = None
+    eng._say_lights(eng._mode)
+    eng._mode.lights = own
+    eng._say_lights(eng._mode)
+    eng._say_lights(eng._mode)                                            # the window hears of a change, once
+    assert said == [(eng._mode.id, [tuple(c) for c in own])]

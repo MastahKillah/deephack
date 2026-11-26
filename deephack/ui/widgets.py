@@ -87,6 +87,7 @@ class Preview(QWidget):
         self._timer.timeout.connect(self._advance)
         self._how: str | None = None                # who picks the lights' colours: "deephack", "cooler", None: no lights
         self._level = 1.0
+        self._own: list | None = None               # what the mode has them show, where deephack would pick
         self._picked: dict[int, list] = {}          # frame index -> its 14 colours
         self._goal: list | None = None              # where the lights go, and where they are: 14 x [r, g, b]
         self._lights: list | None = None
@@ -125,14 +126,16 @@ class Preview(QWidget):
         self.update()
 
     # ---- the lights
-    def set_lights(self, how: str | None, level: float = 1.0) -> None:
+    def set_lights(self, how: str | None, level: float = 1.0, own: list | None = None) -> None:
         """Who picks the colours of the lights beside the screen: "deephack" (deephack.light, and the cooler
         fades to them: the direct drawing firmware from 16 on), "cooler" (DeepCool's firmware: one pixel a
         light, and no fade), or None for no lights (they follow something else than the screen).
-        `level`: deephack's, that much dimmer."""
-        if (how, level) != (self._how, self._level):
-            self._how, self._level, self._picked = how, level, {}
-            self._light(False)
+        `level`: deephack's, that much dimmer. `own`: what the mode has them show in place of what deephack
+        would pick (Mode.lights), 14 colours."""
+        if (how, level, own) != (self._how, self._level, self._own):
+            quick = own is not None and (how, level) == (self._how, self._level)
+            self._how, self._level, self._own, self._picked = how, level, own, {}
+            self._light(quick)
             self.update()
 
     def lights(self) -> list | None:
@@ -145,11 +148,14 @@ class Preview(QWidget):
             self._goal = self._lights = None
             self._fade.stop()
             return
-        if self._index not in self._picked:
-            picture = _picture(self._image)
-            self._picked[self._index] = (light.colours(picture, self._level) if self._how == "deephack"
-                                         else light.cooler_colours(picture))
-        self._goal = [list(colour) for colour in self._picked[self._index]]
+        if self._how == "deephack" and self._own is not None:
+            self._goal = [[round(c * self._level) for c in colour] for colour in self._own]
+        else:
+            if self._index not in self._picked:
+                picture = _picture(self._image)
+                self._picked[self._index] = (light.colours(picture, self._level) if self._how == "deephack"
+                                             else light.cooler_colours(picture))
+            self._goal = [list(colour) for colour in self._picked[self._index]]
         seconds = 0.0 if self._how == "cooler" else 0.12 if quick else 0.4       # the engine's LIGHT_FADE_FAST, LIGHT_FADE
         self._pace = device.light_pace(seconds) / 256
         if self._lights is None or not self._pace:

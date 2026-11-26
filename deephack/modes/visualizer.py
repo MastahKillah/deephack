@@ -18,6 +18,8 @@ a Flipbook. What the engine does with it depends on the cooler's firmware:
 
 The frames' edges glow in their colour, and the cooler's own light, when set to follow the screen,
 takes its colour from them: it pulses along, with drawn frames as with stored ones (seen on the cooler).
+With firmware patch 16 the mode says what the pump head's 14 lights show itself (`lights`, issue #57): two
+level meters in the look's colours, the left side's for the low notes and the right side's for the high.
 
 The sound comes from what the PC is playing (see audio.py); nothing is recorded or sent anywhere.
 """
@@ -31,6 +33,7 @@ from functools import lru_cache
 
 from PIL import Image, ImageDraw, ImageFilter
 
+from .. import light
 from ..audio import BANDS, LISTENER
 from ..render import H, W
 from . import video
@@ -50,6 +53,8 @@ BARS_LEFT = (W - BANDS * BAR_W - (BANDS - 1) * BAR_GAP) // 2
 FLOOR, REACH = 452, 392                        # where the bars stand, and how tall the loudest is
 MIRROR = 0.36                                  # their reflection under the floor: this much of the height
 GLOWS = 8                                      # steps of the glow behind them, which follows the bass
+LOW_BANDS = 8                                  # the lights: the left side's follow these bands, the right side's the rest
+LIGHT_FADE = 0.05                              # seconds in which they cover two thirds of the way: as quick as a beat
 
 
 def _colour(palette: str, level: int) -> tuple[int, int, int]:
@@ -153,6 +158,25 @@ def render_bars(ground: Image.Image, palette: str, heights, marks) -> Image.Imag
     return img
 
 
+@lru_cache(maxsize=8)
+def light_colours(palette: str) -> tuple[tuple, ...]:
+    """A side's seven lights, bottom to top: the look's colours from its quietest to its loudest."""
+    return tuple(_colour(palette, round(i * (LEVELS - 1) / (light.SIDE - 1))) for i in range(light.SIDE))
+
+
+def lights(palette: str, low: float, high: float) -> list:
+    """The pump head's 14 lights as two level meters (firmware patch 16): the left side's rise with the low
+    notes, the right side's with the high ones, as the spectrum has them from left to right. 0 to 1 each."""
+    colours = light_colours(palette)
+    return light.arrange(light.meter(low ** 0.8, colours), light.meter(high ** 0.8, colours))
+
+
+def _loudest(levels) -> float:
+    """How loud a group of bands is, for a meter: its three loudest, so that one drum fills it."""
+    top = sorted(levels, reverse=True)[:3]
+    return sum(top) / len(top) if top else 0.0
+
+
 def frame_index(bass: float, rest: float) -> int:
     """The loudness step for the current sound: mostly the bass, where the beat is."""
     loud = 0.75 * bass + 0.25 * rest
@@ -186,6 +210,7 @@ class Visualizer(Mode):
         self.palette = self.values["palette"] if self.values["palette"] in PALETTES else "aurora"
         self._index: int | None = None
         self._look = None                              # the spectrum last returned, as pixels
+        self.lights_fade = LIGHT_FADE
         self.placeholder = ("Visualizer", "Drawing the frames…")
 
     async def _bars(self):
@@ -194,6 +219,7 @@ class Visualizer(Mode):
             self.status = "No sound output to listen to"
         else:
             self.status = "Following the music" if any(levels) else "Nothing is playing"
+        self.lights = lights(self.palette, _loudest(levels[:LOW_BANDS]), _loudest(levels[LOW_BANDS:]))
         heights = tuple(round(v * REACH) for v in levels)
         marks = tuple(round(v * REACH) for v in peaks)
         glow = min(GLOWS - 1, int(sum(levels[:4]) / 4 * GLOWS))          # the bass
@@ -219,6 +245,7 @@ class Visualizer(Mode):
             self.status = "No sound output to listen to"
         else:
             self.status = "Following the music" if bass or rest else "Nothing is playing"
+        self.lights = lights(self.palette, bass, rest)
         index = frame_index(bass, rest)
         if index == self._index:
             return None
