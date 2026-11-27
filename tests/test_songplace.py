@@ -32,6 +32,33 @@ def rows_of(samples: list[float]) -> list[list[float]]:
     return rows + loudness.end()
 
 
+def test_a_loudness_that_is_done_with_has_its_filters_freed_soon(monkeypatch):
+    """Its graph of filters is not freed with it (the graph and its filters hold each other), and the Ear
+    makes a new one after every silence: 1.1 MB each until Python's collector comes by (#58)."""
+    import gc
+
+    from deephack import filters
+
+    def graphs() -> int:
+        return sum(type(thing) is av.filter.Graph for thing in gc.get_objects())
+
+    monkeypatch.setattr(filters, "AFTER", 0.05)
+    gc.collect()
+    others = graphs()
+    gc.disable()
+    try:
+        ear = sp.Ear()
+        for n in range(5):                       # five pieces of sound with silence between them
+            ear.hear([0.1] * 800, RATE, n * 10.0)
+        assert graphs() - others == 5
+        until = time.monotonic() + 5
+        while graphs() - others > 1 and time.monotonic() < until:
+            time.sleep(0.02)
+        assert graphs() - others == 1            # the one that is listening
+    finally:
+        gc.enable()
+
+
 @pytest.fixture(scope="module")
 def song():
     """Forty seconds of a song: its samples, and its rows as the PC would have played them."""

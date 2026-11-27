@@ -896,7 +896,17 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   - *TikTok, for three hours:* 409 videos, 389 of them different, 28.3 pictures a second in the middle
     minute and 22.3 in the worst. Handles (1030) and threads (35) stood still for the three hours: the
     change after #53 holds. **Memory grew from 159 to 225 MB, some 22 MB an hour**, evenly, and went back
-    to 158 when the mode ended: something that lives as long as the player grows with the videos (#58).
+    to 158 when the mode ended. Looked into since (#58): ffmpeg's chains of filters that scale a video,
+    one for each size, nine kept. A chain of PyAV's and its filters hold each other, so the nine that
+    are dropped for a tenth size are not freed until Python's collector makes its full run, which is
+    seldom in a program that does the same for hours (it came when the next mode was made). 0.7 MB a
+    chain. `deephack/filters.py` sends for the collector two seconds after a drop: 250 videos of
+    fourteen sizes, played without the cooler, left 64 dropped chains and 57 MB before, and none
+    after. The same held for the chain that listens for a song's place in its music video (1.1 MB, a
+    new one after every silence). The video's 3 to 4 MB an hour are something else, and most likely
+    no fault: ffmpeg keeps an index of 37 to 50 bytes for every frame of an MP4 it has open (measured
+    on a file of 180,000 frames), and the night's 15 MB in three and a half hours are 48 bytes a
+    frame. Not seen growing as a stream is read: the files tried were read whole when opened.
   - *The Claude Code page, for one hour:* nobody worked at night, so no fire: a picture every ten seconds
     and the lights said again once a second. A mode's own lights over hours are still unseen.
   - *System, for one hour:* a picture a second, 3598 of them, the longest wait 1.5 s.

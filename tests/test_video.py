@@ -259,6 +259,45 @@ def test_videos_of_many_sizes_leave_no_threads_behind():
     assert native_threads() - before <= 4                    # (a thread or two of Python's own may come and go)
 
 
+def test_filters_that_are_dropped_are_freed_soon_not_whenever_python_gets_to_it(monkeypatch):
+    """A graph of filters and its filters hold each other, so one that is dropped waits for Python's
+    collector, and one that has lived for a while waits long: 66 MB of them after three hours of TikTok,
+    0.7 MB a graph (#58). The collector is sent for."""
+    import gc
+
+    import av
+
+    from deephack import filters
+
+    def graphs() -> int:
+        return sum(type(thing) is av.filter.Graph for thing in gc.get_objects())
+
+    def see(sizes) -> None:
+        for width, height in sizes:
+            frame = av.VideoFrame(width, height, "yuv420p")
+            for plane in frame.planes:
+                plane.update(bytes(plane.buffer_size))
+            video.picture(frame, "fill")
+
+    monkeypatch.setattr(filters, "AFTER", 0.05)
+    with video._graphs_lock:
+        video._graphs.clear()
+    gc.collect()
+    others = graphs()                            # (of other tests, should they still be about)
+    gc.disable()                                 # nothing but the run that is sent for: by itself the collector may
+    try:                                         # happen to come by in a test, which it did not in a night of TikTok
+        see((320 + 16 * n, 640) for n in range(9))
+        assert graphs() - others == 9
+        see([(640, 320)])                        # one more than are kept: the nine are dropped
+        assert len(video._graphs) == 1
+        until = time.monotonic() + 5
+        while graphs() - others > 1 and time.monotonic() < until:
+            time.sleep(0.02)
+        assert graphs() - others == 1
+    finally:
+        gc.enable()
+
+
 def test_a_video_is_decoded_by_a_few_threads_not_one_for_every_core(clip, monkeypatch):
     import av
 

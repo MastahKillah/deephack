@@ -43,7 +43,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from .. import ytdlp
+from .. import filters, ytdlp
 from ..render import H, W
 from ..sound import FRAME, RATE, Speaker
 from .base import Mode, Setting
@@ -207,6 +207,7 @@ def picture(frame, fit: str = "fill", size: tuple[int, int] = (W, H)) -> Image.I
         if key not in _graphs:
             if len(_graphs) > 8:
                 _graphs.clear()
+                filters.dropped()                # or they stay, 0.7 MB each, until Python's collector comes by
             graph = av.filter.Graph()
             graph.threads = 1                    # ffmpeg would give each of these a thread for every core and keep
                                                  # them: 210 idle threads after seven sizes of video on a PC with 32

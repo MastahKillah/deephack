@@ -42,7 +42,7 @@ from collections import deque
 from fractions import Fraction
 from itertools import accumulate
 
-from . import ytdlp
+from . import filters, ytdlp
 
 RATE = 8000                 # samples a second the sound is brought to before its loudness is taken
 PER = 50                    # rows of loudness a second
@@ -104,9 +104,14 @@ class Loudness:
             self._sinks.append(chain[-1])
         graph.configure()
         self._graph, self._source = graph, source
+        self._made = True
         self._bands = [array("f") for _ in range(BANDS)]         # what has come out of each band and is not a row yet
         self._last: deque[list[float]] = deque()                 # the logarithms of the last second's rows ...
         self._sums = [0.0] * BANDS                               # ... and their sum, band by band
+
+    def __del__(self):
+        if getattr(self, "_made", False):        # its graph is not freed with it (see filters.py): 1.1 MB, and
+            filters.dropped()                    # the Ear makes a new one after every silence
 
     def _rows(self) -> list[list[float]]:
         for band, sink in zip(self._bands, self._sinks):

@@ -18,6 +18,9 @@ Settings; a newer one is offered there when the cooler has an older one.
   cover's colours, as before: a setting.
 - **Auto** hands on the lights of the mode that has the screen. Until now the Claude Code page's fire and a
   game's team colours were only shown with that mode picked itself, not when Auto showed it.
+- **TikTok and Now Playing no longer take more memory by the hour.** What scales a video of a new size, and
+  what listens for the place in a music video, was dropped but not freed: 22 MB an hour with TikTok, a
+  megabyte with every silence while a music video was looked for. It is freed within seconds now.
 
 ## 0.17.0 (2026-11-26)
 
