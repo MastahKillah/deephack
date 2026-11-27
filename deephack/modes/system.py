@@ -158,7 +158,17 @@ class BridgeClient:
                 self._f = open(self.pipe, "r+b", buffering=0)
                 self._request("HELLO")
             body = self._request("GET_SENSOR_SNAPSHOT").get("body")
-            return body if isinstance(body, dict) else None
+            if not isinstance(body, dict):
+                return None
+
+            # Newer DeepCool responses wrap readings in body.snapshot.data.
+            if "snapshot" in body:
+                snapshot = body.get("snapshot")
+                data = snapshot.get("data") if isinstance(snapshot, dict) else None
+                return data if isinstance(data, dict) else None
+
+            # Keep compatibility with the legacy flat response format.
+            return body
         except (OSError, ValueError):
             self.close()
             return None

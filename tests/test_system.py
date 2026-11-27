@@ -26,8 +26,9 @@ def _answer(kind, seq, payload):
 class FakePipe:
     """The sensor service: answers each request, with an event pushed in front of the snapshot."""
 
-    def __init__(self):
+    def __init__(self, snapshot_body=SNAPSHOT):
         self.out = io.BytesIO()
+        self.snapshot_body = snapshot_body
         self.ops = []
 
     def __enter__(self):
@@ -44,7 +45,7 @@ class FakePipe:
         self.out.seek(0, io.SEEK_END)
         if request["op"] == "GET_SENSOR_SNAPSHOT":
             self.out.write(_answer(3, 0, {"event": "SENSOR_SNAPSHOT", "body": {}}))
-            self.out.write(_answer(2, seq, {"ok": True, "op": request["op"], "body": SNAPSHOT}))
+            self.out.write(_answer(2, seq, {"ok": True, "op": request["op"], "body": self.snapshot_body}))
         else:
             self.out.write(_answer(2, seq, {"ok": True, "op": request["op"], "body": {"server": "SensorBridge"}}))
         self.out.seek(pos)
@@ -72,6 +73,26 @@ def test_read_bridge(monkeypatch):
     monkeypatch.setattr(system, "open", lambda *args, **kwargs: pipe, raising=False)
     assert system.read_bridge() == SNAPSHOT and pipe.ops == ["HELLO", "GET_SENSOR_SNAPSHOT"]
 
+def test_read_bridge_unwraps_enveloped_snapshot(monkeypatch):
+    body = {
+        "event": "SENSOR_SNAPSHOT",
+        "sessionId": "test-session",
+        "snapshot": {
+            "collectedAtMs": 1_800_000_000_000,
+            "sequence": 1,
+            "data": SNAPSHOT,
+        },
+    }
+    pipe = FakePipe(body)
+    monkeypatch.setattr(system, "open", lambda *args, **kwargs: pipe, raising=False)
+    assert system.read_bridge() == SNAPSHOT
+    assert pipe.ops == ["HELLO", "GET_SENSOR_SNAPSHOT"]
+
+def test_read_bridge_rejects_malformed_enveloped_snapshot(monkeypatch):
+    body = {"event": "SENSOR_SNAPSHOT", "snapshot": {"data": []}}
+    pipe = FakePipe(body)
+    monkeypatch.setattr(system, "open", lambda *args, **kwargs: pipe, raising=False)
+    assert system.read_bridge() is None
 
 def test_read_bridge_without_the_service():
     assert system.read_bridge("\\\\.\\pipe\\deephack-test-no-such-pipe") is None
