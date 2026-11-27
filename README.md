@@ -94,6 +94,19 @@ python -m venv .venv
 The window closes to the system tray; quit from the tray menu. "Start with Windows" in Settings adds a per-user
 autostart entry.
 
+**Updates.** deephack asks GitHub once a day whether there is a newer release (one request to its public
+list of releases, no account; "Look for new versions" in Settings switches that off) and says so in
+Settings, with what is new in it, and once in the tray. Nothing is fetched until you press **Install**
+there. The app that was unpacked from the zip then fetches the new one, checks it against the release's
+`SHA256SUMS.txt`, and has it take the old one's place: the folder stays where it is, so autostart and
+shortcuts still lead to it, and your settings are not touched. A new version that does not start leaves
+the old one running, and says why. The check guards against a broken download, not against a bad
+release: the app is not signed, so what you trust is this GitHub account, as with a download by hand.
+A deephack that runs from source is told of a new release and updated the way it was installed
+(`git pull`). The cooler's firmware is never touched by an update of the app: when a new deephack
+carries a newer patch than the cooler has, the tray says so once and Settings offers it, as before.
+How it is done is at the head of [`deephack/update.py`](deephack/update.py).
+
 ### Things to know
 
 - **Quit the DeepCool app first.** It holds the cooler's USB interface exclusively. deephack shows a banner
@@ -199,6 +212,11 @@ version without one, or a tag that does not match the version, fails the run bef
 repository's Actions page is a trial run: the same tests and builds, kept with the run, nothing published.
 To build the app on your own PC: `pip install -e .[package]`, then
 `pyinstaller --noconfirm packaging/deephack.spec` makes `dist\deephack\`.
+
+An installed deephack finds a release by its tag, its zip by the name's end (`-windows-x64.zip`, one
+folder with `deephack.exe` in it) and its checksum in `SHA256SUMS.txt`, and an older one starts a
+newer one with `--apply-update` (see `deephack/update.py`): a release that changes any of these is
+one the app cannot update itself to.
 
 ## Protocol
 

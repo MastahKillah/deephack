@@ -25,6 +25,8 @@ DEFAULTS = {
     "slideshow": False,        # False: keep our image on screen. True: cooler cycles through all stored images.
     "close_to_tray": True,
     "ytdlp_current": False,    # True: look for a newer yt-dlp once a day and when a link will not open (ytdlp.py)
+    "update_check": True,      # True: ask GitHub once a day whether there is a newer deephack (update.py). It is
+                               # said, not installed: that is a button in Settings
     "light": "screen",         # the pump head's light strip: screen (edge colours) | motherboard | warning
     "light_level": 100,        # ... how bright, percent, when it follows the screen and deephack picks its colours
                                # (direct drawing firmware, patch 16; light.py)

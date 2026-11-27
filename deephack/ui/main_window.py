@@ -5,10 +5,10 @@ import time
 
 from PySide6.QtCore import QDir, Qt, QTimer, Signal
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
                                QKeySequenceEdit, QProgressBar, QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from .. import __version__, autostart, device, firmware, ytdlp
+from .. import __version__, autostart, device, firmware, update, ytdlp
 from ..config import Config
 from ..engine import Engine, quit_deepcool
 from ..hotkeys import Hotkeys, same
@@ -61,12 +61,23 @@ def _card() -> tuple[QFrame, QVBoxLayout]:
 
 class MainWindow(QMainWindow):
     readerChecked = Signal(str, str)             # how looking for a newer yt-dlp went (ytdlp.update), from its thread
+    updateChecked = Signal(str, object)          # ... and for a newer deephack (update.check)
+    updateProgress = Signal(float)               # how much of a newer deephack has been fetched, 0 to 1
+    updateStaged = Signal(str)                   # the new version runs and waits for this one to quit (""), or why not
+    noticed = Signal(str, str)                   # something for the tray to say once: what it is about ("app",
+                                                 # "firmware") and the words
 
     def __init__(self, config: Config, engine: Engine):
         super().__init__()
         self.config, self.engine = config, engine
         self.quitting = False
         self._placeholder = True
+        self._release = update.known()           # a newer deephack that was found, or None
+        self._cannot = update.cannot_install()   # why this deephack cannot install one itself ("": it can)
+        self._checking = self._updating = self._quiet = False
+        self._install_found = False              # (development, --update-now) install what the look finds, unasked
+        self._fw_newer = False                   # the app carries a newer firmware patch than the cooler has
+        self.pass_on: list[str] = []             # what a new version is started with after an update (app.py says)
         self._state: dict = {}
         self._own: dict[str, list | None] = {}   # mode id -> what that mode has the lights show (engine.lightsChanged)
         self._viewing = ""                       # the mode whose page is open; config "mode" is the one on the cooler.
@@ -247,6 +258,7 @@ class MainWindow(QMainWindow):
         self._pages.addWidget(self._build_settings_page())
         outer.addWidget(self._pages, 1)
         self._refresh_firmware()
+        self._refresh_update()
         return content
 
     def _build_mode_page(self) -> QWidget:
@@ -334,6 +346,39 @@ class MainWindow(QMainWindow):
         self._tray = self._switch_row(al, "Keep running when closed", "The window hides to the tray instead of quitting.",
                                       bool(self.config.get("close_to_tray")), lambda on: self.config.set("close_to_tray", on))
         cards.addWidget(app)
+
+        # a newer deephack: looked for on GitHub, and for the packaged app put in this one's place
+        self._up_card, ul = _card()
+        ul.addWidget(_label("UPDATES", "section"))
+        self._up_title = _label("")
+        self._up_notes = _label("", "hint", wrap=True)
+        self._up_notes.setTextFormat(Qt.TextFormat.MarkdownText)
+        self._up_notes.setOpenExternalLinks(True)
+        self._up_bar = QProgressBar()
+        self._up_bar.setTextVisible(False)
+        self._up_install = QPushButton("", objectName="primary")
+        self._up_install.clicked.connect(lambda _=False: self._install_update())
+        self._up_check = QPushButton("Look now")
+        self._up_check.clicked.connect(lambda _=False: self.check_update())
+        self._up_result = _label("", "hint", wrap=True)
+        self._up_result.setTextFormat(Qt.TextFormat.RichText)
+        self._up_result.setOpenExternalLinks(True)
+        for widget in (self._up_title, self._up_notes, self._up_bar):
+            ul.addWidget(widget)
+        row = QHBoxLayout()
+        row.setSpacing(12)
+        row.addWidget(self._up_install)
+        row.addWidget(self._up_check)
+        row.addWidget(self._up_result, 1)
+        ul.addLayout(row)
+        self._up_auto = self._switch_row(
+            ul, "Look for new versions", "Asks GitHub once a day and says when there is one. Nothing is installed "
+            "until you press the button.", bool(self.config.get("update_check")),
+            lambda on: self.config.set("update_check", on))
+        self.updateChecked.connect(self._on_update)
+        self.updateProgress.connect(self._on_update_progress)
+        self.updateStaged.connect(self._on_staged)
+        cards.addWidget(self._up_card)
 
         cooler, cl = _card()
         cl.addWidget(_label("COOLER", "section"))
@@ -462,6 +507,96 @@ class MainWindow(QMainWindow):
             how, f"Could not: {text}"))
         self._refresh_reader()
 
+    # ------------------------------------------------------------ a newer deephack
+    def _refresh_update(self) -> None:
+        release = self._release
+        self._up_title.setText(f"deephack {__version__}" if release is None else
+                               f"deephack {release.version} is available · this is {__version__}")
+        self._up_notes.setVisible(release is not None and bool(release.notes))
+        self._up_notes.setText(release.notes if release else "")
+        why = "" if release is None else self._cannot or ("" if release.zip_url else "This release has no packaged app.")
+        self._up_install.setVisible(release is not None and not why)
+        self._up_install.setText(f"Install {release.version}" if release else "")
+        self._up_install.setEnabled(not self._updating)
+        self._up_check.setEnabled(not self._updating and not self._checking)
+        self._up_bar.setVisible(self._updating)
+        if why and not self._checking:
+            self._say_update(f'{why} <a href="{release.page}" style="color: {style.LINK}; text-decoration: none;">'
+                             "The release on GitHub</a>")
+        self._refresh_mark()
+
+    def _say_update(self, text: str, colour: str = "") -> None:
+        self._up_result.setStyleSheet(f"color: {colour};" if colour else "")
+        self._up_result.setText(text)
+
+    def check_update(self, quiet: bool = False, install: bool = False) -> None:
+        """Ask GitHub for the newest deephack. In a thread: the answer comes as a signal. `quiet`: nobody
+        asked (the daily look), so only a newer one is said, and in the tray too. `install`: see --update-now."""
+        if self._checking or self._updating:
+            return
+        self._checking, self._quiet, self._install_found = True, quiet, install
+        if not quiet:
+            self._say_update("Asking GitHub…")
+        self._refresh_update()
+        threading.Thread(target=lambda: self.updateChecked.emit(*update.check()), daemon=True).start()
+
+    def _on_update(self, how: str, what) -> None:
+        self._checking = False
+        if how == "newer":
+            self._release = what
+            self._say_update("")
+            if update.tell_once("app", what.version) and self._quiet:
+                self.noticed.emit("app", f"deephack {what.version} is available. Settings says what is new in it.")
+        elif how == "current":
+            self._release = None
+            if not self._quiet:
+                self._say_update("This is the newest.", style.OK)
+        elif not self._quiet:
+            self._say_update(f"Could not ask: {what}", style.ERR)
+        self._refresh_update()
+        if how == "newer" and self._install_found:
+            self._install_update()
+
+    def _install_update(self) -> None:
+        """Fetch the newer deephack, have it take this one's place (update.py), and quit for it."""
+        release = self._release
+        if release is None or self._updating or self._cannot:
+            return
+        if (self._state.get("flash") or {}).get("stage") in ("sending", "restarting", "checking"):
+            return self._say_update("Not while the cooler's firmware is being written.", style.ERR)
+        self._updating = True
+        self._up_bar.setRange(0, 1000)
+        self._up_bar.setValue(0)
+        self._say_update(f"Fetching deephack {release.version}…")
+        self._refresh_update()
+        pass_on = self.pass_on + ([] if self.isVisible() else ["--minimized"])
+
+        def work() -> None:
+            try:
+                why = update.hand_over(update.stage(release, self.updateProgress.emit), pass_on)
+            except Exception as error:                       # noqa: BLE001  (the net, the disk, a zip that is none)
+                why = (str(error).strip() or type(error).__name__).splitlines()[0][:200]
+            self.updateStaged.emit(why)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _on_update_progress(self, share: float) -> None:
+        if share >= 1.0:                                     # all of it is here: no telling how far the rest is
+            self._up_bar.setRange(0, 0)
+            self._say_update("Unpacking it, and starting it…")
+        else:
+            self._up_bar.setValue(round(share * 1000))
+
+    def _on_staged(self, why: str) -> None:
+        if not why:                                          # the new version runs, and waits for this one to be gone
+            self._say_update("The new version takes over…")
+            self.quitting = True
+            QApplication.instance().quit()
+            return
+        self._updating = False
+        self._say_update(f"Could not update: {why}. Nothing was changed.", style.ERR)
+        self._refresh_update()
+
     # ------------------------------------------------------------ firmware
     def _ask_flash(self, which: str) -> None:
         running = self._state.get("firmware")
@@ -525,9 +660,24 @@ class MainWindow(QMainWindow):
         self._fw_install.setVisible(install)
         self._fw_restore.setVisible(restore)
         self._fw_forget.setVisible(bool(wanted))
-        newer = install and not busy and running["patch"] > 0      # the card is a page away now: a dot says so
-        self._settings_button.set_mark(style.WARN if newer else None,
-                                       f"Version {firmware.PATCH_VERSION} of the direct drawing firmware can be installed" if newer else "")
+        self._fw_newer = bool(install and not busy and running["patch"] > 0)
+        if self._fw_newer and update.tell_once("firmware", firmware.PATCH_VERSION):
+            self.noticed.emit("firmware", f"Version {firmware.PATCH_VERSION} of the direct drawing firmware can be installed: "
+                              f"the cooler has version {running['patch']}. It is in Settings, under Firmware.")
+        self._refresh_mark()
+
+    def _refresh_mark(self) -> None:
+        """The dot on the Settings button: its cards are a page away, and two of them can have news."""
+        news = []
+        if self._release is not None:
+            news.append(f"deephack {self._release.version} is available")
+        if self._fw_newer:
+            news.append(f"Version {firmware.PATCH_VERSION} of the direct drawing firmware can be installed")
+        self._settings_button.set_mark(style.WARN if news else None, " · ".join(news))
+
+    def show_notice(self, what: str) -> None:
+        """Open the card a notice was about ("app", "firmware")."""
+        self.open_settings(self._up_card if what == "app" else self._fw_card)
 
     def _refresh_needs(self) -> None:
         """The note on the page of a mode that needs the direct drawing firmware, when the cooler runs DeepCool's."""

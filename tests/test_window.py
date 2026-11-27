@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QPushButton  # noqa: E402
 
 from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect  # noqa: E402
 
-from deephack import autostart, capture, firmware, hotkeys  # noqa: E402
+from deephack import autostart, capture, firmware, hotkeys, update  # noqa: E402
 from deephack.config import Config  # noqa: E402
 from deephack.engine import Engine  # noqa: E402
 from deephack.modes import BY_ID, MODES  # noqa: E402
@@ -471,3 +471,117 @@ def test_the_preview_shows_a_modes_own_lights(window):
     window.view_mode("scene")                                             # the other page: that mode's
     window._on_preview("scene", [to_qimage(picture)], 0, False)
     assert preview.lights()[0] == (0, 128, 0)
+
+
+# ---------------------------------------------------------------- a newer deephack, and a newer firmware patch
+RELEASE = update.Release("99.1.0", "- **Something new.** It is.", "https://github.com/a7ex-turcan/deephack/releases/tag/v99.1.0",
+                         "deephack-99.1.0-windows-x64.zip", update.FILES + "v99.1.0/deephack-99.1.0-windows-x64.zip", 1000,
+                         update.FILES + "v99.1.0/SHA256SUMS.txt")
+
+
+def wait_for(app, done, seconds: float = 5.0) -> None:
+    import time
+
+    until = time.monotonic() + seconds
+    while not done() and time.monotonic() < until:
+        app.processEvents()
+        time.sleep(0.01)
+    assert done()
+
+
+def test_a_newer_deephack_is_said_in_settings_on_its_button_and_once_in_the_tray(window, monkeypatch):
+    said = []
+    window.noticed.connect(lambda what, text: said.append((what, text)))
+    monkeypatch.setattr(update, "check", lambda: ("newer", RELEASE))
+    window._settings_button.click()
+    assert "deephack " + update.__version__ in texts(window._up_card) and not window._up_install.isVisible()
+    window.check_update(quiet=True)                          # the daily look
+    wait_for(QApplication.instance(), lambda: window._release is not None)
+    assert f"deephack 99.1.0 is available · this is {update.__version__}" in texts(window._up_card)
+    assert window._up_notes.isVisible() and "Something new" in window._up_notes.text()
+    assert window._settings_button._live.isVisible() and "deephack 99.1.0 is available" in window._settings_button.toolTip()
+    assert [what for what, _ in said] == ["app"] and "99.1.0" in said[0][1]
+    # this deephack runs from Python: it says how it is updated and where the release is, and offers no button
+    assert not window._up_install.isVisible() and "Python of your own" in window._up_result.text()
+    assert RELEASE.page in window._up_result.text()
+    window.check_update(quiet=True)                          # the next day's look finds the same: said already
+    wait_for(QApplication.instance(), lambda: not window._checking)
+    assert len(said) == 1
+
+
+def test_looking_when_asked_says_what_it_found(window, monkeypatch):
+    said = []
+    window.noticed.connect(lambda what, text: said.append(what))
+    window._settings_button.click()
+    monkeypatch.setattr(update, "check", lambda: ("current", update.__version__))
+    window._up_check.click()
+    wait_for(QApplication.instance(), lambda: not window._checking)
+    assert window._up_result.text() == "This is the newest." and not window._settings_button._live.isVisible()
+    monkeypatch.setattr(update, "check", lambda: ("failed", "no net"))
+    window._up_check.click()
+    wait_for(QApplication.instance(), lambda: not window._checking)
+    assert window._up_result.text() == "Could not ask: no net"
+    monkeypatch.setattr(update, "check", lambda: ("newer", RELEASE))
+    window._up_check.click()                                 # somebody who is looking at it needs no word from the tray
+    wait_for(QApplication.instance(), lambda: window._release is not None)
+    assert said == []
+
+
+def test_the_packaged_app_fetches_the_new_version_and_quits_for_it(window, monkeypatch):
+    calls, quits, app = [], [], QApplication.instance()
+    monkeypatch.setattr(update, "check", lambda: ("newer", RELEASE))
+    monkeypatch.setattr(update, "stage", lambda release, progress=None: (progress(0.5), progress(1.0), calls.append(release.version),
+                                                                         "the folder")[-1])
+    monkeypatch.setattr(update, "hand_over", lambda staged, pass_on: (calls.append((staged, pass_on)), "")[1])
+    quitter = type("Quitter", (), {"quit": lambda self: quits.append(True)})()
+    monkeypatch.setattr(main_window, "QApplication", type("Stand", (), {"instance": staticmethod(lambda: quitter)}))
+    window._cannot = ""                                      # as in the folder with deephack.exe
+    window.pass_on = ["--no-device"]
+    window._settings_button.click()
+    window._up_check.click()
+    wait_for(app, lambda: window._release is not None)
+    assert window._up_install.isVisible() and window._up_install.text() == "Install 99.1.0"
+    window._up_install.click()
+    assert window._up_bar.isVisible() and not window._up_install.isEnabled()
+    wait_for(app, lambda: bool(quits))
+    assert calls == ["99.1.0", ("the folder", ["--no-device"])] and window.quitting
+
+
+def test_an_update_that_cannot_be_fetched_says_why_and_the_app_stays(window, monkeypatch):
+    def broken(release, progress=None):
+        raise ValueError("the download is not what the release says it should be")
+
+    monkeypatch.setattr(update, "stage", broken)
+    window._cannot, window._release = "", RELEASE
+    window._settings_button.click()
+    window._refresh_update()
+    window._up_install.click()
+    wait_for(QApplication.instance(), lambda: not window._updating)
+    assert "Could not update: the download is not what the release says" in window._up_result.text()
+    assert "Nothing was changed" in window._up_result.text() and not window.quitting
+    assert window._up_install.isEnabled() and not window._up_bar.isVisible()
+
+
+def test_the_app_is_not_replaced_while_the_coolers_firmware_is_written(window, monkeypatch):
+    monkeypatch.setattr(update, "stage", lambda *a, **k: pytest.fail("fetched"))
+    window._cannot, window._release = "", RELEASE
+    window._on_state(state(firmware.PATCH_VERSION, stage="sending", progress=0.4))
+    window._install_update()
+    assert not window._updating and "firmware is being written" in window._up_result.text()
+
+
+def test_a_newer_firmware_patch_is_said_once_in_the_tray(window):
+    said = []
+    window.noticed.connect(lambda what, text: said.append((what, text)))
+    window._on_state(state(firmware.PATCH_VERSION))          # the cooler has what the app carries
+    assert said == []
+    window._on_state(state(firmware.PATCH_VERSION - 1))
+    window._on_state(state(firmware.PATCH_VERSION - 1))
+    assert [what for what, _ in said] == ["firmware"]
+    assert f"Version {firmware.PATCH_VERSION}" in said[0][1] and f"version {firmware.PATCH_VERSION - 1}" in said[0][1]
+    assert "firmware" in window._settings_button.toolTip() and window._settings_button._live.isVisible()
+    window._on_state(state(0))                               # DeepCool's own: an offer, not news
+    assert len(said) == 1
+    window.show_notice("firmware")
+    assert window._pages.currentIndex() == 1
+

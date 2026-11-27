@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import json
 import sys
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QLockFile, QTimer
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon
 
-from . import APP_NAME, __version__
+from . import APP_NAME, __version__, update
 from .config import Config, config_dir
 from .engine import Engine
 from .modes import MODES
@@ -26,8 +28,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-device", action="store_true", help="(development) preview only, never touch the cooler")
     ap.add_argument("--settings", action="store_true", help="(development) open the Settings page")
     ap.add_argument("--config", metavar="JSON", help="(development) use another settings file")
+    ap.add_argument("--update-now", action="store_true", help="(development) look for a newer deephack at the start "
+                    "and install it without asking")
+    # how an older deephack starts a newer one that is to take its place: see update.py, and keep it as it is
+    ap.add_argument("--apply-update", metavar="FOLDER", help=argparse.SUPPRESS)
+    ap.add_argument("--wait-pid", type=int, default=0, help=argparse.SUPPRESS)
+    ap.add_argument("--pass-on", default="[]", help=argparse.SUPPRESS)
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args(argv)
+    if args.apply_update:
+        return update.apply(Path(args.apply_update), args.wait_pid, json.loads(args.pass_on))
 
     try:  # own taskbar identity instead of python.exe's
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f"{APP_NAME}.app")
@@ -54,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     config = Config(Path(args.config) if args.config else None)
     engine = Engine(config, use_device=not args.no_device)
     window = MainWindow(config, engine)
+    window.pass_on = (["--no-device"] if args.no_device else []) + (["--config", args.config] if args.config else [])
     app.installNativeEventFilter(window.hotkeys)     # keys that work in any window (hotkeys.py)
 
     def show_window() -> None:
@@ -107,6 +118,44 @@ def main(argv: list[str] | None = None) -> int:
                          "or let it sleep for a minute." if stage == "sending" else flash.get("message", ""))
 
     engine.stateChanged.connect(say_flash)
+
+    # what Settings has news about, said once in the tray; a click on it leads there
+    about = {"what": ""}
+
+    def notice(what: str, text: str) -> None:
+        about["what"] = what
+        tray.showMessage("deephack", text)
+
+    def notice_clicked() -> None:
+        what, about["what"] = about["what"], ""
+        if what:
+            show_window()
+            window.show_notice(what)
+
+    window.noticed.connect(notice)
+    tray.messageClicked.connect(notice_clicked)
+
+    def after_update() -> None:
+        """How an update of the app went, if this start is the end of one, and away with what it left behind."""
+        went = update.outcome()
+        if went:
+            tray.showMessage("deephack", f"This is deephack {went[1]} now." if went[0] == "updated" else
+                             f"The update did not work: {went[1]}. This is deephack {__version__} still.")
+        threading.Thread(target=update.tidy, daemon=True).start()
+
+    def look() -> None:
+        if config.get("update_check") and update.due():
+            window.check_update(quiet=True)
+
+    update.arrived()
+    QTimer.singleShot(6000, after_update)
+    if args.update_now:
+        QTimer.singleShot(3000, lambda: window.check_update(quiet=True, install=True))
+    elif not args.screenshot:                        # (a screenshot is a trial run: it asks nobody anything)
+        QTimer.singleShot(15000, look)
+        hourly = QTimer(app)
+        hourly.timeout.connect(look)
+        hourly.start(3600 * 1000)
     engine.start()
     if args.settings:
         window.open_settings()
