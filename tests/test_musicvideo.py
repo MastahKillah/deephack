@@ -243,7 +243,11 @@ def make(tmp_path, monkeypatch, values=None, found=OFFICIAL, direct=True):
     """The mode, with a track that plays and a search that finds `found` (an exception: it raises it)."""
     world = SimpleNamespace(clock=100.0, title="Numb", artist="Linkin Park", at=30.0, since=100.0, playing=True, seconds=188.0,
                             searched=[], clips=[], spots=[])
-    monkeypatch.setattr(now_playing.time, "monotonic", lambda: world.clock)
+    monkeypatch.setattr(
+        now_playing,
+        "time",
+        SimpleNamespace(monotonic=lambda: world.clock),
+    )
 
     async def track():
         if world.title is None:
@@ -268,6 +272,13 @@ def make(tmp_path, monkeypatch, values=None, found=OFFICIAL, direct=True):
     mode._found = Found(tmp_path / "found.json")
     return mode, world
 
+def test_make_keeps_the_process_monotonic_clock(tmp_path, monkeypatch):
+    original_monotonic = time.monotonic
+
+    _, world = make(tmp_path, monkeypatch)
+
+    assert now_playing.time.monotonic() == world.clock
+    assert time.monotonic is original_monotonic
 
 async def steps(mode, world, count=6, each=0.05):
     """Some calls of frame() with time passing; the pictures it gave."""
