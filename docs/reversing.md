@@ -2,12 +2,12 @@
 
 The MYSTIQUE is a liquid cooler with a 480 x 640 LCD on its pump head. DeepCool's app can show sensor
 readouts on it, or images you upload, and every image is written to the cooler's storage before it can
-be shown. This is how that became a screen a PC can draw on twenty-seven times a second, with its own
-logo when it starts: the USB protocol, the firmware run in an emulator, a patch of 1.2 KB, and the
-bootloader read out through that patch.
+be shown. This is how that became a screen a PC can draw on fifty-five times a second, with its own
+logo when it starts and the lights beside it in the PC's hands too: the USB protocol, the firmware run
+in an emulator, a patch of 2 KB, and the bootloader read out through that patch.
 
 (When this was first written the patch was 504 bytes and the app drew sixteen frames a second. Steps 5
-to 8 are what came after.)
+to 9 are what came after.)
 
 The short version of each step is here. The long one, with every claim marked as traced in the code,
 seen in the emulator or seen on the cooler, is in [firmware-analysis.md](firmware-analysis.md); the
@@ -164,6 +164,28 @@ firmware goes to a second screen with the same logo and waits there for a host, 
 start. The patch's memory command found that screen's object, and version 6 covers it as well. The
 patch is 1120 bytes of code now, and the picture 10 780.
 
+## 9. The lights
+
+Beside the screen the pump head has 14 lights, seven up each side, of the WS2812 kind on one wire. Set
+to follow the screen, the stock firmware gives each the colour of one pixel, five in from the
+picture's edge, ten times a second, and sends the fourteen as they are: no fade, and a white page with
+a dark border is fourteen dark lights. (It also reads the buffer that is being drawn into, not the one
+on the glass, so with drawn frames it was a picture behind.)
+
+Version 16 of the patch adds a command, `24`, with which the host says the fourteen colours and how
+quickly to go there, and takes over the light's task, the sixth jump: while the host's colours are on,
+it comes round every 16 ms, moves each value a share of the way and lets the firmware's own loop send
+them. Three seconds without the command and the cooler picks for itself again. In the emulator the wire
+was read back bit by bit; on the cooler, which light is where was found with the screen black, one
+light white at a time and a webcam on what it lit.
+
+What the colours are is the app's business from there: a share of the picture's edge for each light,
+weighted by how much colour is in it, or whatever a mode says, level meters for music, a fire, two
+teams' colours, the CPU's temperature up one side and the GPU's up the other.
+
+The patch is 2028 bytes of code now. With it the cooler was drawn on for ten hours in one go, video,
+TikTok and the rest: 778,000 pictures and 400,000 light commands, none refused.
+
 ## What is not known
 
 - **One cooler.** Everything on hardware was seen on a single unit.
@@ -172,7 +194,7 @@ patch is 1120 bytes of code now, and the picture 10 780.
 - **A way back from a firmware that does not start.** The bootloader only installs what is on the SD
   card, and only a running firmware can put a file there. An interrupted flash repeats itself; an image
   that is whole and wrong cannot be undone over USB.
-- **Where the 36 ms go.** One redraw of the screen, most likely. Not looked into.
+- **Why the later patches take 874 KB a second and not 997.** Seven packets where eight would go.
 
 The repository does not carry DeepCool's firmware or its bootloader. The patch is a table of bytes
 ([`deephack/firmware_patch.py`](../deephack/firmware_patch.py)) that the app applies to the image from
