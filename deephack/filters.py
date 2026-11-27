@@ -9,13 +9,21 @@ were 66 MB of them.
 
 So whoever drops a graph says so, and the collector is sent for: a little later, so that several drops are
 one run, and in a thread of its own, since a run is 20 to 100 ms in which nothing else of Python's moves.
+
+Python lets one thread collect at a time, and a second that asks while the first is at it is sent away
+with nothing done and nothing said (`gc.collect()` gives 0 at once). What was dropped since the first
+began would then wait for the next drop, or for ever. So a run that did not happen is asked for again.
+(Seen as a test that failed once in a release's build, 27 Nov 2026, and then made to happen here.)
 """
 from __future__ import annotations
 
 import gc
 import threading
+import time
 
 AFTER = 2.0                 # seconds from a drop to the collector's run: what is dropped until then goes with it
+AGAIN = 0.25                # seconds until a run that Python did not make is asked for again ...
+TRIES = 40                  # ... and how often at the most: ten seconds
 
 _due = threading.Lock()     # held from a drop until its run begins
 
@@ -32,6 +40,26 @@ def dropped() -> None:
         _due.release()
 
 
+def collect_now() -> bool:
+    """A full run of the collector in this thread. False when Python made none, because another thread
+    was in the middle of one: what that one frees is what was garbage when it began."""
+    me, mine = threading.get_ident(), []
+
+    def seen(phase: str, info: dict) -> None:    # Python calls this in the thread that collects
+        if phase == "start" and threading.get_ident() == me:
+            mine.append(True)
+
+    gc.callbacks.append(seen)
+    try:
+        gc.collect()
+    finally:
+        gc.callbacks.remove(seen)
+    return bool(mine)
+
+
 def _collect() -> None:
     _due.release()                               # first: a drop during the run is for the next one
-    gc.collect()
+    for _ in range(TRIES):
+        if collect_now():
+            return
+        time.sleep(AGAIN)

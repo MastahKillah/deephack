@@ -8,6 +8,12 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
+## Unreleased
+
+- **Memory of video scalers is freed more surely.** The clean-up added in 0.18.0 could be skipped when
+  Python happened to be tidying up at the same moment, and then waited for the next video of a new size.
+  It is asked for again now until it has run.
+
 ## 0.19.1 (2026-11-27)
 
 - **Sensor readings with DeepCool's app 1.2.16.** That version hands the readings out in another shape,
