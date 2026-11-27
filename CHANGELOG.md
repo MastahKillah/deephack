@@ -8,7 +8,7 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
-## Unreleased
+## 0.19.0 (2026-11-27)
 
 - **deephack updates itself.** It asks GitHub once a day whether there is a newer release and says so in
   Settings, with what is new, and once in the tray. **Install** there fetches it, checks it and puts it in
@@ -17,6 +17,9 @@ Settings; a newer one is offered there when the cooler has an older one.
   switches the daily look off. A deephack that runs from source is told, and updated as it was installed.
 - **A newer firmware patch is said in the tray**, once, when the app carries one the cooler does not have.
   It was a dot on the Settings button only. Installing it is still a button in Settings, and yours to press.
+- **Coming from 0.18.0 or older:** those cannot update themselves, so this version is one more download by
+  hand: quit deephack and put the new folder in the old one's place. Your settings are kept. From here on
+  the app does it.
 
 ## 0.18.0 (2026-11-27)
 
