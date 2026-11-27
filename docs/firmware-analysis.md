@@ -883,6 +883,24 @@ which ran DeepCool's v2.70 at that point. Watched with the webcam, a frame every
   The PC was in use for other things in the first hour (a build and the tests, which cost a minute at
   15.5), and locked and idle after that. Not run: eight hours of each, as the issue asked; an animation,
   a sleep and a wake-up of the PC in between.
+- **Ten hours with patch 16** (26 Nov 2026, 22:21, to 27 Nov, 08:21; the same script, which now also counts
+  how often the lights are told their colours). One process, 778,000 pictures and some 400,000 light
+  commands: **not one picture refused, not one light command not taken, no error from the cooler**, which
+  stayed connected all night. The PC was idle.
+  - *The same YouTube video, for four hours:* 24.9 pictures a second in the middle minute (16.5 on 22 Nov),
+    the lights told 13.7 times a second. **At 00:01 the PC had no network for eight minutes** (names were
+    not resolved). The picture stood, the last one drawn again every ten seconds so that the cooler kept
+    it; the player tried again, said "Cannot play it" in between, and played on by itself at 00:09, with a
+    second opening. Memory: 161 MB after the first half hour, 176 at the end, again some 3 to 4 MB an
+    hour; all of it given back when the mode ended.
+  - *TikTok, for three hours:* 409 videos, 389 of them different, 28.3 pictures a second in the middle
+    minute and 22.3 in the worst. Handles (1030) and threads (35) stood still for the three hours: the
+    change after #53 holds. **Memory grew from 159 to 225 MB, some 22 MB an hour**, evenly, and went back
+    to 158 when the mode ended: something that lives as long as the player grows with the videos (#58).
+  - *The Claude Code page, for one hour:* nobody worked at night, so no fire: a picture every ten seconds
+    and the lights said again once a second. A mode's own lights over hours are still unseen.
+  - *System, for one hour:* a picture a second, 3598 of them, the longest wait 1.5 s.
+  - *Scene, for one hour:* 35.3 pictures a second in the middle minute, 27.6 to 42.7; memory stood still.
 - **The PC's screen on the cooler** (Mirror, 22 Nov 2026; `deephack/modes/mirror.py`, `deephack/capture.py`).
   A window of 960 x 1280 in which everything moves 60 times a second, shown filling the screen: 15.8
   pictures a second on the cooler and 21 % of one CPU core for the whole of deephack (JPEGs of 37 KB at
