@@ -146,10 +146,11 @@ sum, then writes it to the filesystem in 4 KiB chunks. This is true for every fi
 - **An upload that does not finish leaves the firmware waiting.** The receive state (`FUN_000200ec`,
   state byte at `0x200006D4`: 0 waits for a header, 1 takes data) only moves on when the byte count is
   reached **and** the sum16 matches. With a wrong sum it stays in state 1 with nothing left to take;
-  with bytes missing it takes whatever comes next for them, the header and the JPEG of the next
   picture upload included. *Seen in the emulator:* a firmware update stopped 200 packets short, then a
   picture upload: the picture is not stored (its bytes went into the unfinished file), and the one
-  after it is. Nothing was flashed in any of this: the file never became whole.
+  after it is. Nothing was flashed in any of this: the file never became whole. The JPEG and GIF driver
+  paths use the same abort helper when a header or data packet fails; GIF frames are preflighted before
+  the upload is announced, so an invalid later frame cannot strand an earlier one in progress.
 - **`dcldfinish` calls an upload off.** Every packet is compared with it, in every state: it sets the
   flag that ends the upload loop and frees the staging buffer, and the state is 0 afterwards. But in
   state 1 the packet is **counted as data first**. With fewer than its 55 bytes missing it completes

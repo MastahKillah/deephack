@@ -128,6 +128,17 @@ def test_dcldfinish_is_only_sent_where_it_cannot_complete_the_file():
         assert firmware.finish_is_safe(image, len(image) - left) == (device.sum16(image[-left:]) != device.sum16(tail))
 
 
+def test_end_upload_reports_a_short_marker_write_as_failure():
+    class Device:
+        def write(self, ep, data, timeout=None):
+            return len(data) - 1
+
+    class Driver:
+        dev = Device()
+
+    assert not firmware.end_upload(Driver(), STOCK, 0)
+
+
 def test_waiting_for_the_restart():
     def looks(*seen):
         seen = list(seen)

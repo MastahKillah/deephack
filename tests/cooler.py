@@ -304,6 +304,15 @@ class CoolerModel:
                 self._upload = None
                 self.log.append(("update given up", len(cur["data"])))
         elif data.startswith(b"dcldfinish"):
+            if up["stage"] == "data":
+                # The firmware counts the 55-byte marker as data before checking it. If those
+                # bytes complete the current file and its sum matches, that file is accepted;
+                # otherwise the unfinished upload is discarded and the staging buffer is freed.
+                missing = max(0, cur["size"] - len(cur["data"]))
+                cur["data"] += data[:missing]
+                if len(cur["data"]) == cur["size"] and device.sum16(cur["data"]) == cur["sum"] & 0xFFFF:
+                    up["files"].append(cur)
+                    up["stage"] = "header"
             self._finish(data)
         elif up["stage"] == "refused":
             pass                                            # thrown away, and nothing is said
@@ -356,15 +365,16 @@ class CoolerModel:
         self.drawn = self.part = None                       # the firmware leaves its upload screen and loads the stored picture
         if data != FINISH:
             self._violate("malformed dcldfinish")
-        if up["stage"] == "refused" or up["stage"] == "header" and not up["files"] and up.get("looks"):
-            self.log.append(("upload called off", up["stage"]))     # nothing arrived, or nothing was sent after a look
-            return                                                  # at the heap: the firmware leaves its upload screen
-        if up["stage"] == "data":
-            self._violate("dcldfinish before all of a file's data arrived")
+        if up["stage"] in ("refused", "data"):
+            self.log.append(("upload called off", up["stage"]))
             return
         files = up["files"]
         if not files:
-            self._violate("an upload without a file")
+            self.log.append(("upload called off", up["stage"]))
+            return
+        if files[0]["type"] == device.FILE_GIF and len(files) != files[0]["count"]:
+            # A failed animation must not turn its already received prefix into a stored GIF.
+            self.log.append(("upload called off", up["stage"]))
             return
         for f in files:
             try:
