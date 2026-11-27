@@ -65,6 +65,36 @@ def test_read_limits(tmp_path):
     assert cu.read_limits(tmp_path / "missing.json") is None
 
 
+def test_the_limits_are_read_from_what_claude_code_hands_its_status_line(tmp_path):
+    """The file may be the status line command's input as it came: the limits are its `rate_limits`, with
+    the reset in seconds since 1970 and a percentage that need not be whole. No plugin has to write it."""
+    now = 1_795_800_000.0
+    p = tmp_path / "usage.json"
+    handed = {"session_id": "abc", "cwd": "C:\\somewhere", "model": {"id": "m", "display_name": "M"}, "version": "2.1.330",
+              "rate_limits": {"five_hour": {"used_percentage": 41.5, "resets_at": now + 3600},
+                              "seven_day": {"used_percentage": 30, "resets_at": int(now) + 86400},
+                              "model_scoped": [{"model": "m", "used_percentage": 9}]}}
+    p.write_text(json.dumps(handed))
+    assert cu.read_limits(p, now) == {"five_hour": (42, now + 3600), "seven_day": (30, now + 86400)}
+    assert cu.read_limits(p, now + 7200) == {"five_hour": (0, None), "seven_day": (30, now + 86400)}     # rolled over
+    handed["rate_limits"] = {"seven_day": {"used_percentage": 30.4, "resets_at": None}}       # a plan without the 5 hours
+    p.write_text(json.dumps(handed))
+    assert cu.read_limits(p, now) == {"seven_day": (30, None)}
+    del handed["rate_limits"]                                # before the session's first answer: no limits yet
+    p.write_text(json.dumps(handed))
+    assert cu.read_limits(p, now) is None
+
+
+def test_a_limits_file_that_is_being_written_is_no_reading(tmp_path):
+    """The status line's one line empties the file and writes it anew: a look in between finds nothing, or a part."""
+    p = tmp_path / "usage.json"
+    for half in ("", '{"rate_limits": {"five_hour": {"used_perc', "[]", "null", '"text"'):
+        p.write_text(half)
+        assert cu.read_limits(p) is None
+    p.write_text(json.dumps({"rate_limits": {"five_hour": {"used_percentage": True, "resets_at": True}}}))
+    assert cu.read_limits(p) is None
+
+
 def test_limits_are_the_highest_of_the_newest_window(tmp_path, monkeypatch):
     now = 1_000_000.0
     reset, later = now + 3600, now + 3600 + 7 * 86400

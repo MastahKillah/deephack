@@ -613,8 +613,8 @@ class Tamagotchi(Mode):
                 hint="On DeepCool's own firmware each state is an 8-frame animation stored on the cooler, rewritten "
                      "only when the state, a percentage or a score changes. With the direct drawing firmware nothing "
                      "is stored: the pet reacts at once, dances to the beat, and the percentages follow within "
-                     "seconds whatever is picked here. Limits come from the claude-hud usage snapshot, like the "
-                     "Claude Code mode."),
+                     "seconds whatever is picked here. Limits come from what Claude Code tells its status line, "
+                     "like the Claude Code mode's."),
         Setting("cover", "Behind the dancing pet", "choice", "art", (("art", "The album's cover"), ("plain", "Its own colours")),
                 hint="The cover of what plays, in large pixels and darkened, with the bass's flashes over it. With the "
                      "direct drawing firmware; on DeepCool's own the pet keeps its own colours."),

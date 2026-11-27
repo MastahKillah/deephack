@@ -150,16 +150,32 @@ Nothing leaves your machine and no credentials are read.
   running session in `~/.claude/sessions`: its name, and whether it is busy, idle or waiting for you. Claude
   Code describes that file nowhere; it was seen with 2.1.330. Without it, a session whose log was written in
   the last half minute counts as working. The names show on the cooler and nowhere else.
-- **Plan limits** are only handed out by Claude Code to status line plugins. deephack reads the snapshot file
-  that the [claude-hud](https://github.com/jarrodwatts/claude-hud) plugin can write. Add this to
-  `~/.claude/plugins/claude-hud/config.json` (adjust the user name):
+- **Plan limits** are handed out by Claude Code in one place only: the input of its status line command
+  (`rate_limits`, in its [status line's documentation](https://code.claude.com/docs/en/statusline)). So the
+  status line saves that input where deephack reads it, `%APPDATA%\deephack\claude-usage.json`. One line
+  in `~/.claude/settings.json` does it, with no plugin and no other program:
 
   ```json
-  { "display": { "externalUsageWritePath": "C:\\Users\\you\\AppData\\Roaming\\deephack\\claude-usage.json" } }
+  { "statusLine": { "type": "command",
+      "command": "IFS= read -r -d '' j; printf '%s' \"$j\" > \"$APPDATA/deephack/claude-usage.json\"" } }
   ```
 
-  The snapshot only updates while a Claude Code session is open. Only the windows your plan
-  has are drawn (some plans have no 5-hour window); without a snapshot the limits card is left out.
+  If you have a status line already, it goes behind that, fed the same input (`your-command` is what
+  your setting says now):
+
+  ```json
+  { "statusLine": { "type": "command",
+      "command": "IFS= read -r -d '' j; printf '%s' \"$j\" > \"$APPDATA/deephack/claude-usage.json\"; your-command <<< \"$j\"" } }
+  ```
+
+  Claude Code runs the command in Git Bash on Windows, and the line uses nothing but bash itself: it
+  starts no program, where a `tee` in its place took 200 ms of every run here. The file then holds the
+  whole of what the status line was told by the session that wrote last, its folder and model among it,
+  and stays on this PC. A snapshot written by the [claude-hud](https://github.com/jarrodwatts/claude-hud)
+  plugin (`display.externalUsageWritePath` in its `config.json`, set to that file) is read as well.
+
+  The file only changes while a Claude Code session is open. Only the windows your plan has are drawn
+  (some plans have no 5-hour window); without the file the limits card is left out.
 
 ## Adding a mode
 

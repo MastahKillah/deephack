@@ -2,8 +2,10 @@
 
 Local sources only, no network and no credentials:
 
-* Plan limits (5-hour and weekly) come from a snapshot file written by the claude-hud status line plugin
-  (its `display.externalUsageWritePath` option). Claude Code hands those numbers to status line plugins.
+* Plan limits (5-hour and weekly) come from a file in deephack's settings folder that holds what Claude
+  Code hands its status line command: that is the one place it gives those numbers out (`rate_limits` in
+  the command's input). A status line of one line puts the input there and needs no other program (the
+  README has it); the claude-hud plugin's snapshot (`display.externalUsageWritePath`) is read as well.
   Every open session writes that file with the numbers it heard last, so it is read through Limits, which
   makes one steady number of them.
 * Today's tokens and requests are summed from Claude Code's session logs in ~/.claude/projects. Those
@@ -301,21 +303,33 @@ class Activity:
 
 # ------------------------------------------------------------------ plan limits
 def read_limits(path: Path, now: float | None = None) -> dict | None:
-    """{'five_hour': (percent, reset_epoch | None), 'seven_day': (...)} from the claude-hud snapshot, or None."""
+    """{'five_hour': (percent, reset_epoch | None), 'seven_day': (...)} from the limits file, or None.
+
+    The file is what Claude Code hands its status line command, as it came (the limits are its
+    `rate_limits`, each window's `resets_at` in seconds since 1970), or the snapshot the claude-hud plugin
+    writes (the two windows at the top, `resets_at` as text). A file that is being written this moment
+    is empty or half there: that is None, like no file, and the next look has it whole."""
     now = now or time.time()
     try:
         raw = json.loads(path.read_text(encoding="utf8"))
     except (OSError, ValueError):
         return None
+    if not isinstance(raw, dict):
+        return None
+    if isinstance(raw.get("rate_limits"), dict):
+        raw = raw["rate_limits"]
     out = {}
     for key in ("five_hour", "seven_day"):
         w = raw.get(key)
-        if not isinstance(w, dict) or not isinstance(w.get("used_percentage"), (int, float)):
+        if not isinstance(w, dict) or isinstance(w.get("used_percentage"), bool) \
+                or not isinstance(w.get("used_percentage"), (int, float)):
             continue
-        reset = None
-        if isinstance(w.get("resets_at"), str):
+        reset, at = None, w.get("resets_at")
+        if isinstance(at, (int, float)) and not isinstance(at, bool) and at > 0:
+            reset = float(at)
+        elif isinstance(at, str):
             try:
-                reset = datetime.fromisoformat(w["resets_at"].replace("Z", "+00:00")).timestamp()
+                reset = datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp()
             except ValueError:
                 reset = None
         pct = max(0, min(100, round(w["used_percentage"])))
@@ -755,8 +769,9 @@ class ClaudeUsage(Mode):
                 hint="On DeepCool's own firmware, where each refresh rewrites the display. With the direct drawing "
                      "firmware the page is live and this is not used: the numbers count up as requests are logged, "
                      "a flame shows how many tokens a minute are burning, and each session that is working or "
-                     "waiting for you has its line. Plan limits need the claude-hud plugin writing a usage "
-                     "snapshot; everything else comes from Claude Code's own files on this PC."),
+                     "waiting for you has its line. Plan limits need one line in Claude Code's settings that "
+                     "saves what its status line is told (the README has it); everything else comes from "
+                     "Claude Code's own files on this PC."),
     )
 
     def __init__(self, values=None):

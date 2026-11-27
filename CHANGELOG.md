@@ -13,6 +13,9 @@ Settings; a newer one is offered there when the cooler has an older one.
 - **Sensor readings with DeepCool's app 1.2.16.** That version hands the readings out in another shape,
   and deephack found none in it: Live, System and Game Cover's temperatures were all nought. Both shapes
   are read now. Found and fixed by MastahKillah, the project's first contribution from outside.
+- **Claude Code's plan limits without a plugin.** One line as Claude Code's status line saves what Claude
+  Code tells it, and deephack reads the limits from that: the README has the line, also for in front of
+  a status line you have. The claude-hud plugin's snapshot is still read.
 
 ## 0.19.0 (2026-11-27)
 
