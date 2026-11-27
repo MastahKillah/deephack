@@ -8,7 +8,7 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
-## Unreleased
+## 0.19.1 (2026-11-27)
 
 - **Sensor readings with DeepCool's app 1.2.16.** That version hands the readings out in another shape,
   and deephack found none in it: Live, System and Game Cover's temperatures were all nought. Both shapes
