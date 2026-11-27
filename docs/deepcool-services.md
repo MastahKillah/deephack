@@ -49,6 +49,12 @@ A request body is `{"op": "<OP>", "body": {}}`, a response `{"ok": true, "op": "
 The observer sends `HELLO` first; deephack does the same, then only `GET_SENSOR_SNAPSHOT`. `ageMs` in
 the events puts the readings at 0.2 to 0.4 seconds old.
 
+**Where the readings are in the answer differs by the app's version.** With v1.2.15 they are the
+answer's `body` itself. With v1.2.16 (seen on another owner's PC, 27 Nov 2026, issue #61) the body is
+`{"event": "SENSOR_SNAPSHOT", "snapshot": {"collectedAtMs": ..., "sequence": ..., "data": {...}}}` and the
+readings are `body.snapshot.data`. deephack takes either (`BridgeClient.snapshot()`); a deephack up to
+0.19.0 found no reading in the newer answer and showed noughts.
+
 **Snapshot:** 28 entries, each `{"Unit": ..., "Value": ...}` except `"Fan list"`. Values from the machine
 above:
 
