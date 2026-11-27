@@ -189,7 +189,7 @@ TikTok and the rest: 778,000 pictures and 400,000 light commands, none refused.
 ## What is not known
 
 - **One cooler.** Everything on hardware was seen on a single unit.
-- **v2.71.** That unit shipped with 2.71, a build that is in no version of the app that can still be
+- **v2.71.** That unit shipped with 2.71 (and so did the second owner's who reported, in November 2026), a build that is in no version of the app that can still be
   downloaded. Flashing the patched 2.70 was a one-way downgrade.
 - **A way back from a firmware that does not start.** The bootloader only installs what is on the SD
   card, and only a running firmware can put a file there. An interrupted flash repeats itself; an image

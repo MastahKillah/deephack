@@ -49,6 +49,12 @@ What that means:
   So 2.71 was never given out through the app: it looks like a build that only the factory used, for a
   reason nobody outside knows (a fix, or a change in the hardware). DeepCool's support is the one place
   left to ask.
+- **A second cooler reports 2.71 as well** (27 Nov 2026, another owner's MYSTIQUE 360 ARGB, issue #61):
+  `bcdDevice` `0x0247`, read from its USB descriptor with a tool that is neither deephack nor DeepCool's
+  app. Two of two, so 2.71 may be what every unit leaves the factory with, and 2.70 the build nobody's
+  cooler runs until it is put there. That owner's app, 1.2.16, carries `MYSTIQUE_2.70.bin` with the size
+  and the SHA-256 the patch is made for, as the installer had said. Nothing was flashed on that cooler:
+  that 2.70 runs on a unit that came with 2.71 is still known of one.
 
 ## Platform
 
