@@ -74,20 +74,21 @@ def test_a_failed_upload_header_is_called_off_and_the_next_upload_works(cooler, 
     assert cooler.flash_writes == 1
 
 
-def test_a_lost_start_reply_is_recovered_before_the_next_upload(cooler, monkeypatch):
+def test_a_start_reply_read_error_is_recovered_before_the_next_upload(cooler, monkeypatch):
     real_read = cooler.read
     failed = [False]
 
-    def lost_start_reply(ep, size, timeout=None):
+    def failed_start_reply_read(ep, size, timeout=None):
         if (not failed[0] and cooler.log and cooler.log[-1][0] == "cmd" and
                 cooler.log[-1][1] == device.CMD_START_DOWNLOAD):
             failed[0] = True
-            raise RuntimeError("simulated lost start reply")
+            real_read(ep, size, timeout)  # consume the reply before simulating a transport error
+            raise RuntimeError("simulated start-reply read error")
         return real_read(ep, size, timeout)
 
-    monkeypatch.setattr(cooler, "read", lost_start_reply)
+    monkeypatch.setattr(cooler, "read", failed_start_reply_read)
     with device.Mystique() as m:
-        with pytest.raises(RuntimeError, match="simulated lost start reply"):
+        with pytest.raises(RuntimeError, match="simulated start-reply read error"):
             m.upload_jpeg("h" * 32, JPEG)
         assert cooler._upload is None
         assert cooler.log[-1] == ("upload called off", "header")
