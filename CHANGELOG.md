@@ -8,7 +8,7 @@ the release is cut.
 "Patch" is the direct drawing patch for the cooler's firmware. The app carries it and installs it from
 Settings; a newer one is offered there when the cooler has an older one.
 
-## Unreleased
+## 0.18.0 (2026-11-27)
 
 - **Game Cover: temperatures while you play.** With the direct drawing firmware a strip along the bottom of
   the cover shows the CPU's and the GPU's temperature and load, new every second, for as long as the game
