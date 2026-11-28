@@ -158,6 +158,28 @@ sum, then writes it to the filesystem in 4 KiB chunks. This is true for every fi
   the file, and if the sum then matched, a file with a wrong end would be stored (for a firmware
   update: flashed). `deephack.firmware.end_upload` sends it only where that cannot be, and for both
   images that can be sent it never can, wherever the upload stops (`tests/test_firmware.py`).
+- **The driver calls a picture upload off that stops** (`upload_jpeg` and `upload_gif`, by MastahKillah,
+  issue #19). *Seen in the emulator* (`tests/test_flash.py`): a still that stops at its third packet,
+  then the marker: state 0, nothing on the card, commands are answered, and the next upload is stored.
+  The same when the answer to `0F` is lost. A last packet that arrived although its write said it had
+  not: the file is whole then, and the marker stores it like any other. *On the cooler* (28 Nov 2026,
+  patch 16): a still broken off at its third packet, the marker 0.4 s after the upload began, and the
+  cooler answered the next command at once and took the next upload. The rest here is the emulator's.
+- **An animation's frames are written as they arrive**, so calling one off does not undo them. *Seen in
+  the emulator:* an animation of two frames that stops in its second leaves
+  `GIF/000_<id>/angle_0/index000.jpg` and no `config.cfg`. The firmware has no animation in its list
+  then: the next one, under another id, is number 000 as well, and whole. The **same** id sent again,
+  whole, goes into the folder that is there and gets no `config.cfg` either: it is not an animation
+  until the cooler has been off and on, for at power-on the firmware removes a folder that has no
+  `config.cfg`, and the id is stored like a new one after that.
+- **An id that is on the card keeps its `config.cfg`.** *Seen in the emulator, and not looked into:* an
+  animation of 2 frames in 1000 ms, then the same id with 3 frames in 600: the three new frames are on
+  the card, and `config.cfg` still says `gifrate=2` and `gifalltime=1000`. What the cooler plays then,
+  before and after it was switched off, is open: deephack stores all its animations under one id.
+- **`dcldfinish` with no upload on is a stray packet.** *Seen in the emulator:* the firmware takes it
+  and answers no command after it (ten seconds of its time were waited). It is the endpoint that is not
+  armed again after a packet that is not a command (see "The USB device controller"): only the upload
+  loop takes such a packet. So the marker is sent only where an upload was begun.
 - **A firmware update that arrives wrong is not flashed.** *Seen in the emulator*
   (`tests/test_flash.py`), with the first 68 KiB of the stock image standing in: a header that
   announces another sum, one byte changed on the way, and an upload the sender stops half way. In each

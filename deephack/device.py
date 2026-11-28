@@ -223,23 +223,18 @@ class Mystique:
 
         if not firmware.end_upload(self, image, sent):
             raise RuntimeError(
-                "the image upload failed and the cooler could not be safely returned to its ready state; "
-                "power-cycle the cooler before trying another upload"
+                "the picture upload failed and the cooler could not be told that it is over; "
+                "if it is still connected, switch it off and on before the next upload"
             ) from cause
 
     def _start_image_upload(self, first_image: bytes) -> None:
+        # A start command that does not go out is the caller's error as it is: if it arrived all the
+        # same, the firmware waits six seconds for a header and then gives up by itself. No marker is
+        # sent after it: with no upload on, the firmware takes that packet and no command after it.
         packet = frame(CMD_START_DOWNLOAD)
-        try:
-            written = self.dev.write(1, packet, self.timeout)
-        except BaseException as error:
-            raise RuntimeError(
-                "the upload-start command's delivery is uncertain; power-cycle the cooler before trying another upload"
-            ) from error
+        written = self.dev.write(1, packet, self.timeout)
         if written != len(packet):
-            raise RuntimeError(
-                f"short write of the upload-start command ({written}/{len(packet)} bytes); "
-                "power-cycle the cooler before trying another upload"
-            )
+            raise usb.core.USBError(f"short write of the upload-start command ({written}/{len(packet)} bytes)")
         try:
             self._read_reply(CMD_START_DOWNLOAD)
         except BaseException as error:
@@ -251,14 +246,14 @@ class Mystique:
         try:
             written = self.dev.write(1, header, self.timeout)
             if written != len(header):
-                raise OSError(f"short upload-header write ({written}/{len(header)} bytes)")
+                raise usb.core.USBError(f"short upload-header write ({written}/{len(header)} bytes)")
             for offset in range(0, len(image), 64):
                 packet = image[offset:offset + 64]
                 written = self.dev.write(1, packet, self.timeout)
                 if isinstance(written, int):
                     sent += max(0, min(written, len(packet)))
                 if written != len(packet):
-                    raise OSError(f"short image-data write ({written}/{len(packet)} bytes)")
+                    raise usb.core.USBError(f"short image-data write ({written}/{len(packet)} bytes)")
         except BaseException as error:
             # The last USB packet may have arrived even when the host saw an error. end_upload
             # checks both sent and sent + 64 before deciding that dcldfinish is safe.
@@ -266,21 +261,12 @@ class Mystique:
             raise
 
     def _finish_image_upload(self) -> None:
+        # A marker whose write fails may have arrived all the same, and is not sent again: a second one
+        # would come after the upload has ended, and the firmware takes no command after such a packet.
         finish = b"dcldfinish".ljust(55, b"\0")
-        try:
-            written = self.dev.write(1, finish, self.timeout)
-        except BaseException as error:
-            # A failed write can still have reached the device. Sending a second finish blindly
-            # could itself be a stray packet after the first one ended the upload.
-            raise RuntimeError(
-                "the final upload marker's delivery is uncertain; check the cooler before retrying, "
-                "and power-cycle it if it is still on the upload screen"
-            ) from error
+        written = self.dev.write(1, finish, self.timeout)
         if written != len(finish):
-            raise RuntimeError(
-                f"short final upload-marker write ({written}/{len(finish)} bytes); "
-                "the upload's completion state is uncertain"
-            )
+            raise usb.core.USBError(f"short write of the final upload marker ({written}/{len(finish)} bytes)")
 
     # -- high level ------------------------------------------------------
     def uuid(self) -> str:
